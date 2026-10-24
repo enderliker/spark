@@ -1754,12 +1754,319 @@ static inline bool add_values(Value a, Value b, Value *out)
 #define READ_CONSTANT() (frame->closure->function->chunk.constants[READ_U16()])
 #define READ_STRING() AS_STRING(READ_CONSTANT())
 
+/* Reads a big-endian u16 operand at `p`. */
+#define U16_AT(p) ((uint16_t)(((p)[0] << 8) | (p)[1]))
+
+/* Reloads the state cached in locals from the VM after anything that may have
+ * changed it (the cold path, calls and returns). */
+#define LOAD_FRAME()                                                      \
+    do {                                                                  \
+        ip = frame->ip;                                                   \
+        slots = frame->slots;                                             \
+        constants = frame->closure->function->chunk.constants;           \
+    } while (0)
+
+/* The loop has two paths. The hot path below keeps `ip` and `sp` in local
+ * variables (so the compiler can keep them in registers) and only handles the
+ * common, error-free, allocation-free cases. Anything else jumps to `cold`
+ * with `ip` still pointing at the opcode: the cold path stores `ip` and `sp`
+ * back into the VM and runs the general implementation, so errors, the GC and
+ * natives always see a consistent state. */
 static InterpretResult run(int base_frame)
 {
     CallFrame *frame = &vm.frames[vm.frame_count - 1];
+    uint8_t *ip;
+    Value *slots;
+    Value *constants;
+    Value *sp = vm.stack_top;
+
+    LOAD_FRAME();
 
     for (;;) {
-        uint8_t instruction = READ_BYTE();
+        uint8_t instruction;
+
+        switch (*ip) {
+        case OP_CONSTANT:
+            *sp++ = constants[U16_AT(ip + 1)];
+            ip += 3;
+            continue;
+
+        case OP_NIL:
+            *sp++ = NIL_VAL;
+            ip += 1;
+            continue;
+
+        case OP_TRUE:
+            *sp++ = BOOL_VAL(true);
+            ip += 1;
+            continue;
+
+        case OP_FALSE:
+            *sp++ = BOOL_VAL(false);
+            ip += 1;
+            continue;
+
+        case OP_POP:
+            sp--;
+            ip += 1;
+            continue;
+
+        case OP_GET_LOCAL:
+            *sp++ = slots[ip[1]];
+            ip += 2;
+            continue;
+
+        case OP_SET_LOCAL:
+            slots[ip[1]] = *--sp;
+            ip += 2;
+            continue;
+
+        case OP_GET_GLOBAL: {
+            GlobalSlot *global = &vm.global_slots[U16_AT(ip + 1)];
+
+            if (!global->defined) {
+                goto cold;
+            }
+            *sp++ = global->value;
+            ip += 3;
+            continue;
+        }
+
+        case OP_ADD: {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+            ip += 1;
+            continue;
+        }
+
+        case OP_SUBTRACT: {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+            ip += 1;
+            continue;
+        }
+
+        case OP_MULTIPLY: {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+            ip += 1;
+            continue;
+        }
+
+        case OP_LESS: {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+            ip += 1;
+            continue;
+        }
+
+        case OP_GREATER: {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
+            ip += 1;
+            continue;
+        }
+
+        case OP_ADD_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            *sp++ = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+            ip += 4;
+            continue;
+        }
+
+        case OP_SUBTRACT_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            *sp++ = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+            ip += 4;
+            continue;
+        }
+
+        case OP_MULTIPLY_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            *sp++ = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+            ip += 4;
+            continue;
+        }
+
+        case OP_LESS_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            *sp++ = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+            ip += 4;
+            continue;
+        }
+
+        case OP_GREATER_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            *sp++ = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
+            ip += 4;
+            continue;
+        }
+
+        case OP_JUMP:
+            ip += 3 + U16_AT(ip + 1);
+            continue;
+
+        case OP_JUMP_IF_FALSE:
+            if (value_is_falsey(sp[-1])) {
+                ip += 3 + U16_AT(ip + 1);
+            } else {
+                ip += 3;
+            }
+            continue;
+
+        case OP_JUMP_IF_FALSE_POP:
+            if (value_is_falsey(*--sp)) {
+                ip += 3 + U16_AT(ip + 1);
+            } else {
+                ip += 3;
+            }
+            continue;
+
+        case OP_JUMP_IF_NOT_LESS_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            if (AS_NUMBER(a) < AS_NUMBER(b)) {
+                ip += 6;
+            } else {
+                ip += 6 + U16_AT(ip + 4);
+            }
+            continue;
+        }
+
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+
+            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+                goto cold;
+            }
+            if (AS_NUMBER(a) > AS_NUMBER(b)) {
+                ip += 6;
+            } else {
+                ip += 6 + U16_AT(ip + 4);
+            }
+            continue;
+        }
+
+        case OP_LOOP:
+            ip += 3 - U16_AT(ip + 1);
+            continue;
+
+        case OP_CALL: {
+            int arg_count = ip[1];
+            Value callee = sp[-1 - arg_count];
+
+            /* Fast path: a closure called with the right number of arguments
+             * and room for another frame. Everything else (natives, errors)
+             * goes through the general path. */
+            if (callee.type == VAL_OBJ && AS_OBJ(callee)->type == OBJ_CLOSURE) {
+                ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
+                ObjFunction *function = closure->function;
+
+                if (arg_count == function->arity && vm.frame_count < FRAMES_MAX) {
+                    CallFrame *callee_frame = &vm.frames[vm.frame_count++];
+
+                    frame->ip = ip + 2;
+                    callee_frame->closure = closure;
+                    callee_frame->ip = function->chunk.code;
+                    callee_frame->slots = sp - arg_count - 1;
+                    frame = callee_frame;
+                    LOAD_FRAME();
+                    continue;
+                }
+            }
+            goto cold;
+        }
+
+        case OP_RETURN_LOCAL:
+        case OP_RETURN: {
+            int remaining = vm.frame_count - 1;
+            Value result;
+
+            /* Returning from the outermost frame of this run() (or of the
+             * program) is handled by the general path. */
+            if (remaining == 0 || remaining == base_frame) {
+                goto cold;
+            }
+            result = *ip == OP_RETURN ? sp[-1] : slots[ip[1]];
+            if (vm.open_upvalues) {
+                close_upvalues(slots);
+            }
+            vm.frame_count = remaining;
+            sp = slots;
+            *sp++ = result;
+            frame = &vm.frames[remaining - 1];
+            LOAD_FRAME();
+            continue;
+        }
+
+        default:
+            break;
+        }
+
+    cold:
+        frame->ip = ip;
+        vm.stack_top = sp;
+        instruction = READ_BYTE();
 
         switch (instruction) {
         case OP_CONSTANT:
@@ -2303,6 +2610,10 @@ static InterpretResult run(int base_frame)
             vm_runtime_error("unknown instruction (%d)", instruction);
             return INTERPRET_RUNTIME_ERROR;
         }
+
+        /* The general path may have changed the frame, the stack or the ip. */
+        sp = vm.stack_top;
+        LOAD_FRAME();
     }
 }
 

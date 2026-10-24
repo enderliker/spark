@@ -141,6 +141,21 @@ All of them reuse the same helpers (`compare_values`, `arithmetic_values`,
 `add_values`) as the general operations, so error messages and semantics are identical.
 The `fib(27)` benchmark went from ~22 ms to ~13 ms with these fusions alone.
 
+### Hot/cold dispatch
+
+The execution loop keeps `ip`, the stack top, the current frame's slots and its
+constant pool in local variables. A hot path handles the error-free,
+allocation-free instructions that dominate numeric loops and recursion:
+constants, locals, globals, numeric arithmetic/comparisons, fused
+superinstructions, jumps, closure calls and returns. Anything else (natives,
+allocations, string operations, type errors, undefined globals) jumps to the
+general path after writing `ip` and `sp` back into the VM, so the GC and error
+reporting always see a consistent state. `CALL` uses the hot path only for a
+closure with matching arity and an available frame; `RETURN` does the same
+unless it would leave the current `run()` (frame 0 or `base_frame`). The fast
+return also skips `close_upvalues` when no upvalue is open. This brought the
+`fib(27)` benchmark to ~9.5 ms minimum on the development machine.
+
 ## Stack and frames
 
 The value stack is a fixed array of `STACK_MAX` (131072) `Value`. A frame stores the
