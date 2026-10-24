@@ -1,0 +1,232 @@
+// Recorrido por todo el lenguaje según docs/language.md.
+// Cada comprobación es un assert: si algo no cumple la documentación,
+// el programa termina con un error y el test falla.
+
+print("== 1. Léxico y literales");
+assert(42 == 42 and type(42) == "number" and is_int(42), "entero");
+assert(is_int(0xFF) and 0xFF == 255, "hexadecimal");
+assert(0b1010 == 10 and 0o17 == 15, "binario y octal");
+assert(1_000_000 == 1000000 and 0xFF_FF == 65535, "separadores");
+assert(3.14 > 3 and !is_int(3.0) and 1.5e3 == 1500, "flotantes");
+assert(nil == nil and true != false, "nil y booleanos");
+assert(len("a\tb") == 3 and len("\\") == 1 and len("\"") == 1, "escapes en texto");
+assert(len("\0") == 1 and len("\r\n") == 2, "escapes nulo y retorno");
+assert([1, "dos", true][1] == "dos", "literal de arreglo");
+assert({"k": [2, 3]}["k"][1] == 3, "literal de mapa anidado");
+var nombre = "Spark";
+assert("hola ${nombre}, x=${1 + 2}" == "hola Spark, x=3", "interpolación");
+assert("cuesta $$5" == "cuesta $5", "dólar literal");
+print("ok");
+
+print("== 2. Tipos");
+assert(type(nil) == "nil" and type(true) == "bool" and type("s") == "string", "tipos básicos");
+assert(type([]) == "array" and type({}) == "map" and type(print) == "function", "tipos compuestos");
+assert(type(1.0) == "number" and is_int(1) and !is_int(1.0), "int y number");
+assert(int(3.9) == 3 and int(-3.9) == -3 and float(2) == 2.0, "conversiones");
+assert(int("42") == 42 and num("2.5") == 2.5, "conversión desde texto");
+assert(9223372036854775807 == 9223372036854775807 and is_int(9223372036854775807), "máximo int64");
+assert(type(9223372036854775807 + 1) == "number" and !is_int(9223372036854775807 + 1), "desborde promueve a float");
+assert(1 == 1.0 and {1: "a"}[1.0] == "a", "1 == 1.0 y misma clave");
+assert([1] == [1] == false, "arreglos por identidad");
+assert("ab" == "a" + "b", "strings por contenido");
+assert(!(nil) and !false and 0 and "" and [], "truthy: 0, \"\" y [] son verdaderos");
+print("ok");
+
+print("== 3. Operadores");
+assert(1 + 2 * 3 == 7 and (1 + 2) * 3 == 9, "precedencia aritmética");
+assert(10 / 4 == 2.5 and 10 div 4 == 2 and -7 div 2 == -3, "/ y div");
+assert(-7 % 2 == -1 and 7 % 3 == 1, "resto");
+assert("a" + "b" == "ab", "concatenación");
+assert(1 < 2 and 2 <= 2 and 3 > 2 and 2 >= 2 and "a" < "b", "comparaciones");
+assert((true and 2) == 2 and (false and 1) == false, "and devuelve operando");
+assert((nil or "d") == "d" and (0 or 9) == 0, "or devuelve operando");
+assert((nil ?? "x") == "x" and (false ?? "x") == false and (0 ?? 1) == 0, "?? solo con nil");
+assert((nil ?? nil ?? 3) == 3, "?? asociativo a la derecha");
+assert((1 < 2 ? "si" : "no") == "si" and (false ? 1 : false ? 2 : 3) == 3, "ternario anidado");
+assert((5 & 3) == 1 and (5 | 3) == 7 and (5 ^ 3) == 6 and ~5 == -6, "bit a bit");
+assert((1 << 4) == 16 and (-16 >> 2) == -4, "desplazamientos");
+assert((1 << 2 + 3) == 32 and (2 + 3 & 1) == 1, "precedencia de bits");
+var m = 6;
+m &= 3; assert(m == 2, "&=");
+m |= 8; assert(m == 10, "|=");
+m ^= 1; assert(m == 11, "^=");
+m <<= 2; assert(m == 44, "<<=");
+m >>= 1; assert(m == 22, ">>=");
+print("ok");
+
+print("== 4. Variables y ámbito");
+var global = 1;
+{
+    var local = 2;
+    assert(global + local == 3, "bloque ve global");
+    var global = 10;
+    assert(global == 10, "sombra en bloque");
+}
+assert(global == 1, "sombra no afecta al exterior");
+var vacia;
+assert(vacia == nil, "var sin valor es nil");
+const PI_ENT = 3;
+assert(PI_ENT == 3, "const");
+var x = 10; x += 1; x -= 2; x *= 3; x /= 2;
+assert(x == 13.5, "asignaciones compuestas");
+var arr = [1, 2]; arr[1] += 10; arr[0] = 5;
+assert(arr[0] == 5 and arr[1] == 12, "asignación a índice");
+var mp = {"k": 1}; mp["k"] += 1; mp["n"] = 9;
+assert(mp["k"] == 2 and mp["n"] == 9, "asignación a clave");
+print("ok");
+
+print("== 5. Control de flujo");
+var r = "";
+if (1 > 2) { r = "a"; } else if (2 > 1) { r = "b"; } else { r = "c"; }
+assert(r == "b", "if / else if / else");
+var i = 0;
+while (i < 5) { i += 1; }
+assert(i == 5, "while");
+var d = 0;
+do { d += 1; } while (false);
+assert(d == 1, "do/while se ejecuta al menos una vez");
+var suma = 0;
+for (var j = 0; j < 10; j += 1) {
+    if (j == 3) { continue; }
+    if (j == 8) { break; }
+    suma += j;
+}
+assert(suma == 0 + 1 + 2 + 4 + 5 + 6 + 7, "for con continue y break");
+var k = 0;
+for (;;) { k += 1; if (k == 4) { break; } }
+assert(k == 4, "for sin partes");
+var total = 0;
+for (var v in [10, 20, 30]) { total += v; }
+assert(total == 60, "for-in sobre arreglo");
+var claves = [];
+for (var key in {"a": 1, "b": 2}) { push(claves, key); }
+sort(claves);
+assert(claves[0] == "a" and claves[1] == "b", "for-in sobre mapa");
+var letras = "";
+for (var ch in "spark") { letras = ch + letras; }
+assert(letras == "kraps", "for-in sobre texto");
+var cuenta = 0;
+outer: for (var a = 0; a < 3; a += 1) {
+    for (var b = 0; b < 3; b += 1) {
+        if (b == 1) { continue outer; }
+        if (a == 2) { break outer; }
+        cuenta += 1;
+    }
+}
+assert(cuenta == 2, "etiquetas con break/continue");
+var caso = "";
+switch (2) {
+    case 1: caso = "uno";
+    case 2: caso = "dos";
+    case 3: caso = "tres";
+    default: caso = "otro";
+}
+assert(caso == "dos", "switch sin fallthrough");
+switch (9) { case 1: caso = "x"; default: caso = "defecto"; }
+assert(caso == "defecto", "switch default");
+print("ok");
+
+print("== 6. Funciones y closures");
+fn add(a, b) { return a + b; }
+var doble = fn(x) { return x * 2; };
+assert(add(2, 3) == 5 and doble(4) == 8, "funciones y anónimas");
+fn sin_retorno() { var z = 1; }
+assert(sin_retorno() == nil, "sin return devuelve nil");
+fn hacer_contador() {
+    var total = 0;
+    return fn(inc) { total += inc; return total; };
+}
+var c1 = hacer_contador();
+assert(c1(5) == 5 and c1(3) == 8, "closure con estado");
+var c2 = hacer_contador();
+assert(c2(1) == 1, "cada llamada crea su propio estado");
+fn ser_recursiva(n) { if (n < 2) { return n; } return ser_recursiva(n - 1) + ser_recursiva(n - 2); }
+assert(ser_recursiva(15) == 610, "recursión");
+var fs = [];
+for (var q = 0; q < 3; q += 1) { var val = q; push(fs, fn() { return val; }); }
+assert(fs[0]() == 0 and fs[1]() == 1 and fs[2]() == 2, "captura por iteración");
+print("ok");
+
+print("== 7. Arreglos");
+var a2 = [1, 2, 3];
+assert(len(a2) == 3 and a2[0] == 1 and a2[2] == 3, "lectura");
+push(a2, 4);
+assert(pop(a2) == 4 and len(a2) == 3, "push y pop");
+assert(contains(a2, 2) and index_of(a2, 3) == 2 and index_of(a2, 9) == -1, "búsqueda");
+insert(a2, 0, 0);
+assert(a2[0] == 0 and len(a2) == 4, "insert");
+assert(remove(a2, 0) == 0 and len(a2) == 3, "remove");
+reverse(a2);
+assert(a2[0] == 3 and a2[2] == 1, "reverse");
+fill(a2, 7);
+assert(a2[0] == 7 and a2[2] == 7, "fill");
+var base = [1, 2, 3, 4, 5];
+assert(len(slice(base, 1, 3)) == 2 and slice(base, 3)[0] == 4, "slice");
+assert(len(slice(base, 2, 99)) == 3, "slice recorta el final");
+var copia = slice(base, 0);
+copia[0] = 100;
+assert(base[0] == 1, "slice crea copia");
+assert(len(map([1, 2], fn(x) { return x * 10; })) == 2, "map");
+assert(filter([1, 2, 3, 4], fn(x) { return x % 2 == 0; })[1] == 4, "filter");
+assert(reduce([1, 2, 3, 4], fn(a, b) { return a + b; }) == 10, "reduce sin inicial");
+assert(reduce([], fn(a, b) { return a + b; }, 7) == 7, "reduce con inicial");
+var acumulado = 0;
+each([1, 2, 3], fn(x) { acumulado += x; });
+assert(acumulado == 6, "each");
+var orden = [3, 1, 2];
+sort(orden);
+assert(orden[0] == 1 and orden[2] == 3, "sort");
+sort_by(orden, fn(x, y) { return x > y; });
+assert(orden[0] == 3, "sort_by");
+var anidado = [[1, 2], [3]];
+assert(anidado[0][1] == 2 and len(anidado[1]) == 1, "arreglos anidados");
+assert(range(3)[2] == 2 and len(range(2, 5)) == 3, "range");
+print("ok");
+
+print("== 8. Mapas");
+var persona = {"name": "Ada", "age": 36};
+assert(persona["name"] == "Ada" and len(persona) == 2, "lectura y longitud");
+persona["age"] += 1;
+persona["city"] = "London";
+assert(has(persona, "age") and !has(persona, "height"), "has");
+assert(persona["missing"] == nil, "clave inexistente da nil");
+assert(contains(persona, "city") and get(persona, "x", "def") == "def", "contains y get");
+assert(len(keys(persona)) == 3 and len(values(persona)) == 3, "keys y values");
+assert(del(persona, "age") and !del(persona, "age"), "del");
+var fusion = {"a": 1};
+merge(fusion, {"a": 2, "b": 3});
+assert(fusion["a"] == 2 and fusion["b"] == 3, "merge");
+clear(fusion);
+assert(len(fusion) == 0, "clear");
+var por_arr = {};
+por_arr[[1]] = "arr";
+assert(por_arr[[1]] == nil, "claves arreglo por identidad");
+print("ok");
+
+print("== 9. Strings");
+assert("spark"[0] == "s" and "spark"[4] == "k", "indexación");
+assert(substr("abcdef", 1, 3) == "bcd" and substr("program", 5) == "am", "substr");
+assert(substr("abc", 10) == "", "substr fuera del final");
+assert(len("ñandú") == 5, "longitud en caracteres UTF-8");
+assert(len(split("a,b,c", ",")) == 3 and split("abc", "")[1] == "b", "split");
+assert(join(["a", "b"], "-") == "a-b", "join");
+assert(upper("hola") == "HOLA" and lower("ÁB") == "Áb" and trim("  x  ") == "x", "upper/lower/trim");
+assert(repeat("ab", 3) == "ababab", "repeat");
+assert(replace("aXbX", "X", "-") == "a-b-", "replace");
+assert(starts_with("spark", "sp") and ends_with("spark", "rk"), "prefijo y sufijo");
+assert(contains("spark", "ar") and index_of("spark", "r") == 3, "búsqueda en texto");
+assert(str(42) == "42" and str(nil) == "nil", "str");
+print("ok");
+
+print("== 10. Natives numéricos");
+assert(abs(-3) == 3 and is_int(abs(-3)), "abs conserva entero");
+assert(floor(2.7) == 2 and ceil(2.1) == 3 and round(2.5) == 3, "redondeo");
+assert(sqrt(16) == 4 and pow(2, 10) == 1024, "sqrt y pow");
+assert(min(3, 1) == 1 and max(3, 1) == 3, "min y max");
+assert(int(num("12.7")) == 12, "conversión combinada");
+print("ok");
+
+print("== 11. Limpieza final");
+assert(clock() >= 0, "clock");
+print("ok");
+print("lenguaje completo: todas las comprobaciones pasaron");
