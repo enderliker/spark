@@ -1138,6 +1138,10 @@ static Value native_repeat(int arg_count, Value *args)
         return NIL_VAL;
     }
     int length = string->length * times;
+
+    if (length == 0) {
+        return OBJ_VAL(object_string("", 0));
+    }
     char *buffer = malloc((size_t)length + 1);
 
     if (!buffer) {
