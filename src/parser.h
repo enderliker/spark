@@ -8,8 +8,9 @@
 #include "ast.h"
 
 /* Parses the code and leaves the program (a block) in *out.
- * Returns false and fills in `error`/`error_line` if there is a syntax error. */
+ * Returns false and fills in `error`/`error_line`/`error_column` if there is a
+ * syntax error (the column is 0 when it is unknown). */
 bool parse_source(const char *source, Arena *arena, Stmt **out,
-                  char *error, size_t error_size, int *error_line);
+                  char *error, size_t error_size, int *error_line, int *error_column);
 
 #endif

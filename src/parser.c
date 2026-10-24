@@ -13,6 +13,7 @@ typedef struct {
     jmp_buf jump;
     char error[256];
     int error_line;
+    int error_column;
 } Parser;
 
 static Stmt *declaration(Parser *parser);
@@ -24,6 +25,7 @@ static void fail_at(Parser *parser, Token token, const char *message)
 {
     snprintf(parser->error, sizeof(parser->error), "%s", message);
     parser->error_line = token.line;
+    parser->error_column = token.column;
     longjmp(parser->jump, 1);
 }
 
@@ -85,21 +87,23 @@ static void *new_node(Parser *parser, size_t size)
     return arena_alloc(parser->arena, size);
 }
 
-static Expr *new_expr(Parser *parser, ExprKind kind, int line)
+static Expr *new_expr(Parser *parser, ExprKind kind, int line, int column)
 {
     Expr *expr = new_node(parser, sizeof(Expr));
 
     expr->kind = kind;
     expr->line = line;
+    expr->column = column;
     return expr;
 }
 
-static Stmt *new_stmt(Parser *parser, StmtKind kind, int line)
+static Stmt *new_stmt(Parser *parser, StmtKind kind, int line, int column)
 {
     Stmt *stmt = new_node(parser, sizeof(Stmt));
 
     stmt->kind = kind;
     stmt->line = line;
+    stmt->column = column;
     return stmt;
 }
 
@@ -243,7 +247,7 @@ static InterpPart *append_interp_part(Parser *parser, InterpPart **head, InterpP
 
 static Expr *parse_interpolation(Parser *parser, Token first)
 {
-    Expr *expr = new_expr(parser, EXPR_INTERPOLATION, first.line);
+    Expr *expr = new_expr(parser, EXPR_INTERPOLATION, first.line, first.column);
     InterpPart *head = NULL;
     InterpPart *tail = NULL;
     InterpPart *part = append_interp_part(parser, &head, &tail);
@@ -279,28 +283,28 @@ static Expr *primary(Parser *parser)
     Token token = parser->current;
 
     if (match(parser, TOKEN_FALSE)) {
-        Expr *expr = new_expr(parser, EXPR_BOOL, token.line);
+        Expr *expr = new_expr(parser, EXPR_BOOL, token.line, token.column);
 
         expr->as.boolean = false;
         return expr;
     }
     if (match(parser, TOKEN_TRUE)) {
-        Expr *expr = new_expr(parser, EXPR_BOOL, token.line);
+        Expr *expr = new_expr(parser, EXPR_BOOL, token.line, token.column);
 
         expr->as.boolean = true;
         return expr;
     }
     if (match(parser, TOKEN_NIL)) {
-        return new_expr(parser, EXPR_NIL, token.line);
+        return new_expr(parser, EXPR_NIL, token.line, token.column);
     }
     if (match(parser, TOKEN_NUMBER)) {
-        Expr *expr = new_expr(parser, EXPR_NUMBER, token.line);
+        Expr *expr = new_expr(parser, EXPR_NUMBER, token.line, token.column);
 
         expr->as.number = parse_number_literal(parser, token);
         return expr;
     }
     if (match(parser, TOKEN_STRING)) {
-        Expr *expr = new_expr(parser, EXPR_STRING, token.line);
+        Expr *expr = new_expr(parser, EXPR_STRING, token.line, token.column);
 
         expr->as.string = parse_string_part(parser, token);
         return expr;
@@ -309,7 +313,7 @@ static Expr *primary(Parser *parser)
         return parse_interpolation(parser, token);
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
-        Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line);
+        Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line, token.column);
 
         expr->as.variable = text_from_token(parser, token);
         return expr;
@@ -321,7 +325,7 @@ static Expr *primary(Parser *parser)
         return inner;
     }
     if (match(parser, TOKEN_LEFT_BRACKET)) {
-        Expr *array = new_expr(parser, EXPR_ARRAY, token.line);
+        Expr *array = new_expr(parser, EXPR_ARRAY, token.line, token.column);
         ExprList *head = NULL;
         ExprList *tail = NULL;
         int count = 0;
@@ -341,7 +345,7 @@ static Expr *primary(Parser *parser)
         return array;
     }
     if (match(parser, TOKEN_LEFT_BRACE)) {
-        Expr *map = new_expr(parser, EXPR_MAP, token.line);
+        Expr *map = new_expr(parser, EXPR_MAP, token.line, token.column);
         MapPair *head = NULL;
         MapPair *tail = NULL;
         int count = 0;
@@ -372,7 +376,7 @@ static Expr *primary(Parser *parser)
         return map;
     }
     if (match(parser, TOKEN_FN)) {
-        Expr *fn = new_expr(parser, EXPR_FUNCTION, token.line);
+        Expr *fn = new_expr(parser, EXPR_FUNCTION, token.line, token.column);
         ParamList *params = NULL;
         ParamList *params_tail = NULL;
         int param_count = 0;
@@ -431,7 +435,7 @@ static Expr *call(Parser *parser)
 
     for (;;) {
         if (match(parser, TOKEN_LEFT_PAREN)) {
-            Expr *call_expr = new_expr(parser, EXPR_CALL, expr->line);
+            Expr *call_expr = new_expr(parser, EXPR_CALL, expr->line, expr->column);
             int count = 0;
             ExprList *arguments = parse_arguments(parser, &count);
 
@@ -440,7 +444,7 @@ static Expr *call(Parser *parser)
             call_expr->as.call.argument_count = count;
             expr = call_expr;
         } else if (match(parser, TOKEN_LEFT_BRACKET)) {
-            Expr *index = new_expr(parser, EXPR_INDEX, expr->line);
+            Expr *index = new_expr(parser, EXPR_INDEX, expr->line, parser->previous.column);
 
             index->as.index.object = expr;
             index->as.index.index = expression(parser);
@@ -457,7 +461,7 @@ static Expr *unary(Parser *parser)
 {
     if (match(parser, TOKEN_BANG) || match(parser, TOKEN_NOT) || match(parser, TOKEN_MINUS)) {
         Token op = parser->previous;
-        Expr *expr = new_expr(parser, EXPR_UNARY, op.line);
+        Expr *expr = new_expr(parser, EXPR_UNARY, op.line, op.column);
 
         expr->as.unary.op = op.type;
         expr->as.unary.operand = unary(parser);
@@ -472,7 +476,7 @@ static Expr *factor(Parser *parser)
 
     while (match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) || match(parser, TOKEN_PERCENT)) {
         Token op = parser->previous;
-        Expr *binary = new_expr(parser, EXPR_BINARY, op.line);
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
@@ -488,7 +492,7 @@ static Expr *term(Parser *parser)
 
     while (match(parser, TOKEN_PLUS) || match(parser, TOKEN_MINUS)) {
         Token op = parser->previous;
-        Expr *binary = new_expr(parser, EXPR_BINARY, op.line);
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
@@ -505,7 +509,7 @@ static Expr *comparison(Parser *parser)
     while (match(parser, TOKEN_GREATER) || match(parser, TOKEN_GREATER_EQUAL) ||
            match(parser, TOKEN_LESS) || match(parser, TOKEN_LESS_EQUAL)) {
         Token op = parser->previous;
-        Expr *binary = new_expr(parser, EXPR_BINARY, op.line);
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
@@ -521,7 +525,7 @@ static Expr *equality(Parser *parser)
 
     while (match(parser, TOKEN_EQUAL_EQUAL) || match(parser, TOKEN_BANG_EQUAL)) {
         Token op = parser->previous;
-        Expr *binary = new_expr(parser, EXPR_BINARY, op.line);
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
@@ -537,7 +541,7 @@ static Expr *logic_and(Parser *parser)
 
     while (match(parser, TOKEN_AND)) {
         Token op = parser->previous;
-        Expr *logical = new_expr(parser, EXPR_LOGICAL, op.line);
+        Expr *logical = new_expr(parser, EXPR_LOGICAL, op.line, op.column);
 
         logical->as.logical.left = expr;
         logical->as.logical.op = op.type;
@@ -553,7 +557,7 @@ static Expr *logic_or(Parser *parser)
 
     while (match(parser, TOKEN_OR)) {
         Token op = parser->previous;
-        Expr *logical = new_expr(parser, EXPR_LOGICAL, op.line);
+        Expr *logical = new_expr(parser, EXPR_LOGICAL, op.line, op.column);
 
         logical->as.logical.left = expr;
         logical->as.logical.op = op.type;
@@ -569,7 +573,7 @@ static Expr *coalesce(Parser *parser)
 
     if (match(parser, TOKEN_QUESTION_QUESTION)) {
         Token op = parser->previous;
-        Expr *coalesce_expr = new_expr(parser, EXPR_COALESCE, op.line);
+        Expr *coalesce_expr = new_expr(parser, EXPR_COALESCE, op.line, op.column);
 
         coalesce_expr->as.coalesce.left = expr;
         coalesce_expr->as.coalesce.right = coalesce(parser);
@@ -584,7 +588,7 @@ static Expr *ternary(Parser *parser)
 
     if (match(parser, TOKEN_QUESTION)) {
         Token op = parser->previous;
-        Expr *conditional = new_expr(parser, EXPR_TERNARY, op.line);
+        Expr *conditional = new_expr(parser, EXPR_TERNARY, op.line, op.column);
 
         conditional->as.ternary.condition = expr;
         conditional->as.ternary.then_branch = expression(parser);
@@ -603,13 +607,14 @@ static Expr *expression(Parser *parser)
 static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)
 {
     int line = parser->current.line;
+    int column = parser->current.column;
     Expr *expr = expression(parser);
 
     if (match(parser, TOKEN_EQUAL) || match(parser, TOKEN_PLUS_EQUAL) ||
         match(parser, TOKEN_MINUS_EQUAL) || match(parser, TOKEN_STAR_EQUAL) ||
         match(parser, TOKEN_SLASH_EQUAL)) {
         Token op = parser->previous;
-        Stmt *stmt = new_stmt(parser, STMT_ASSIGN, line);
+        Stmt *stmt = new_stmt(parser, STMT_ASSIGN, expr->line, expr->column);
 
         if (expr->kind != EXPR_VARIABLE && expr->kind != EXPR_INDEX) {
             fail_at(parser, op, "can only assign to a variable or an array element");
@@ -623,7 +628,7 @@ static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)
         return stmt;
     }
 
-    Stmt *stmt = new_stmt(parser, STMT_EXPRESSION, line);
+    Stmt *stmt = new_stmt(parser, STMT_EXPRESSION, line, column);
 
     stmt->as.expression = expr;
     if (with_semicolon) {
@@ -634,7 +639,7 @@ static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)
 
 static Stmt *block(Parser *parser)
 {
-    Stmt *stmt = new_stmt(parser, STMT_BLOCK, parser->previous.line);
+    Stmt *stmt = new_stmt(parser, STMT_BLOCK, parser->previous.line, parser->previous.column);
     StmtList *head = NULL;
     StmtList *tail = NULL;
 
@@ -648,7 +653,7 @@ static Stmt *block(Parser *parser)
 
 static Stmt *var_declaration_after_name(Parser *parser, Token name, bool with_semicolon)
 {
-    Stmt *stmt = new_stmt(parser, STMT_VAR, name.line);
+    Stmt *stmt = new_stmt(parser, STMT_VAR, name.line, name.column);
 
     stmt->as.var.name = text_from_token(parser, name);
     stmt->as.var.initializer = NULL;
@@ -665,7 +670,7 @@ static Stmt *var_declaration_after_name(Parser *parser, Token name, bool with_se
 static Stmt *parse_const_declaration(Parser *parser)
 {
     Token name = consume(parser, TOKEN_IDENTIFIER, "expected the constant name");
-    Stmt *stmt = new_stmt(parser, STMT_VAR, name.line);
+    Stmt *stmt = new_stmt(parser, STMT_VAR, name.line, name.column);
 
     stmt->as.var.name = text_from_token(parser, name);
     stmt->as.var.initializer = NULL;
@@ -709,7 +714,7 @@ static void parse_params(Parser *parser, ParamList **params, ParamList **tail, i
 static Stmt *function_declaration(Parser *parser)
 {
     Token name = consume(parser, TOKEN_IDENTIFIER, "expected the function name");
-    Stmt *stmt = new_stmt(parser, STMT_FUNCTION, name.line);
+    Stmt *stmt = new_stmt(parser, STMT_FUNCTION, name.line, name.column);
     ParamList *params;
     ParamList *tail;
     int count;
@@ -725,9 +730,9 @@ static Stmt *function_declaration(Parser *parser)
     return stmt;
 }
 
-static Stmt *if_statement(Parser *parser, int line)
+static Stmt *if_statement(Parser *parser, int line, int column)
 {
-    Stmt *stmt = new_stmt(parser, STMT_IF, line);
+    Stmt *stmt = new_stmt(parser, STMT_IF, line, column);
 
     consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'if'");
     stmt->as.if_stmt.condition = expression(parser);
@@ -737,9 +742,9 @@ static Stmt *if_statement(Parser *parser, int line)
     return stmt;
 }
 
-static Stmt *while_statement(Parser *parser, int line)
+static Stmt *while_statement(Parser *parser, int line, int column)
 {
-    Stmt *stmt = new_stmt(parser, STMT_WHILE, line);
+    Stmt *stmt = new_stmt(parser, STMT_WHILE, line, column);
 
     consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'while'");
     stmt->as.while_stmt.condition = expression(parser);
@@ -748,9 +753,9 @@ static Stmt *while_statement(Parser *parser, int line)
     return stmt;
 }
 
-static Stmt *do_while_statement(Parser *parser, int line)
+static Stmt *do_while_statement(Parser *parser, int line, int column)
 {
-    Stmt *stmt = new_stmt(parser, STMT_DO_WHILE, line);
+    Stmt *stmt = new_stmt(parser, STMT_DO_WHILE, line, column);
 
     stmt->as.do_while.body = statement(parser);
     consume(parser, TOKEN_WHILE, "expected 'while' after the body of 'do'");
@@ -761,9 +766,9 @@ static Stmt *do_while_statement(Parser *parser, int line)
     return stmt;
 }
 
-static Stmt *switch_statement(Parser *parser, int line)
+static Stmt *switch_statement(Parser *parser, int line, int column)
 {
-    Stmt *stmt = new_stmt(parser, STMT_SWITCH, line);
+    Stmt *stmt = new_stmt(parser, STMT_SWITCH, line, column);
     SwitchCase *head = NULL;
     SwitchCase *tail = NULL;
     bool has_default = false;
@@ -808,9 +813,9 @@ static Stmt *switch_statement(Parser *parser, int line)
     return stmt;
 }
 
-static Stmt *for_statement(Parser *parser, int line)
+static Stmt *for_statement(Parser *parser, int line, int column)
 {
-    Stmt *stmt = new_stmt(parser, STMT_FOR, line);
+    Stmt *stmt = new_stmt(parser, STMT_FOR, line, column);
 
     consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'for'");
 
@@ -818,7 +823,7 @@ static Stmt *for_statement(Parser *parser, int line)
         Token name = consume(parser, TOKEN_IDENTIFIER, "expected the variable name");
 
         if (match(parser, TOKEN_IN)) {
-            Stmt *for_in = new_stmt(parser, STMT_FOR_IN, line);
+            Stmt *for_in = new_stmt(parser, STMT_FOR_IN, line, column);
 
             for_in->as.for_in.name = text_from_token(parser, name);
             for_in->as.for_in.iterable = expression(parser);
@@ -859,22 +864,23 @@ static bool next_is_colon(Parser *parser)
 static Stmt *labelled_loop(Parser *parser, Token label)
 {
     int line = parser->current.line;
+    int column = parser->current.column;
     Text name = text_from_token(parser, label);
 
     if (match(parser, TOKEN_WHILE)) {
-        Stmt *stmt = while_statement(parser, line);
+        Stmt *stmt = while_statement(parser, line, column);
 
         stmt->as.while_stmt.label = name;
         return stmt;
     }
     if (match(parser, TOKEN_DO)) {
-        Stmt *stmt = do_while_statement(parser, line);
+        Stmt *stmt = do_while_statement(parser, line, column);
 
         stmt->as.do_while.label = name;
         return stmt;
     }
     if (match(parser, TOKEN_FOR)) {
-        Stmt *stmt = for_statement(parser, line);
+        Stmt *stmt = for_statement(parser, line, column);
 
         if (stmt->kind == STMT_FOR_IN) {
             stmt->as.for_in.label = name;
@@ -890,6 +896,7 @@ static Stmt *labelled_loop(Parser *parser, Token label)
 static Stmt *statement(Parser *parser)
 {
     int line = parser->current.line;
+    int column = parser->current.column;
 
     if (next_is_colon(parser)) {
         Token label = parser->current;
@@ -899,29 +906,29 @@ static Stmt *statement(Parser *parser)
         return labelled_loop(parser, label);
     }
     if (match(parser, TOKEN_IF)) {
-        return if_statement(parser, line);
+        return if_statement(parser, line, column);
     }
     if (match(parser, TOKEN_WHILE)) {
-        return while_statement(parser, line);
+        return while_statement(parser, line, column);
     }
     if (match(parser, TOKEN_DO)) {
-        return do_while_statement(parser, line);
+        return do_while_statement(parser, line, column);
     }
     if (match(parser, TOKEN_SWITCH)) {
-        return switch_statement(parser, line);
+        return switch_statement(parser, line, column);
     }
     if (match(parser, TOKEN_FOR)) {
-        return for_statement(parser, line);
+        return for_statement(parser, line, column);
     }
     if (match(parser, TOKEN_RETURN)) {
-        Stmt *stmt = new_stmt(parser, STMT_RETURN, line);
+        Stmt *stmt = new_stmt(parser, STMT_RETURN, line, column);
 
         stmt->as.ret.value = check(parser, TOKEN_SEMICOLON) ? NULL : expression(parser);
         consume(parser, TOKEN_SEMICOLON, "expected ';' after 'return'");
         return stmt;
     }
     if (match(parser, TOKEN_BREAK)) {
-        Stmt *stmt = new_stmt(parser, STMT_BREAK, line);
+        Stmt *stmt = new_stmt(parser, STMT_BREAK, line, column);
 
         if (match(parser, TOKEN_IDENTIFIER)) {
             stmt->as.jump.label = text_from_token(parser, parser->previous);
@@ -930,7 +937,7 @@ static Stmt *statement(Parser *parser)
         return stmt;
     }
     if (match(parser, TOKEN_CONTINUE)) {
-        Stmt *stmt = new_stmt(parser, STMT_CONTINUE, line);
+        Stmt *stmt = new_stmt(parser, STMT_CONTINUE, line, column);
 
         if (match(parser, TOKEN_IDENTIFIER)) {
             stmt->as.jump.label = text_from_token(parser, parser->previous);
@@ -960,7 +967,7 @@ static Stmt *declaration(Parser *parser)
 
 static Stmt *parse_program(Parser *parser)
 {
-    Stmt *program = new_stmt(parser, STMT_BLOCK, 1);
+    Stmt *program = new_stmt(parser, STMT_BLOCK, 1, 1);
     StmtList *head = NULL;
     StmtList *tail = NULL;
 
@@ -972,7 +979,7 @@ static Stmt *parse_program(Parser *parser)
 }
 
 bool parse_source(const char *source, Arena *arena, Stmt **out,
-                  char *error, size_t error_size, int *error_line)
+                  char *error, size_t error_size, int *error_line, int *error_column)
 {
     Parser parser;
 
@@ -991,6 +998,9 @@ bool parse_source(const char *source, Arena *arena, Stmt **out,
     }
     if (error_line) {
         *error_line = parser.error_line;
+    }
+    if (error_column) {
+        *error_column = parser.error_column;
     }
     return false;
 }

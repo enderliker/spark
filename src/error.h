@@ -22,4 +22,10 @@ typedef enum {
 
 const char *error_type_name(ErrorType type);
 
+/* Prints "<Type> at line N: message" followed by the offending source line and
+ * a caret under `column` (1-based). `source` and the column are optional: when
+ * the column is 0 the caret points at the first non-blank character. */
+void error_print(ErrorType type, int line, int column, const char *source,
+                 const char *message);
+
 #endif

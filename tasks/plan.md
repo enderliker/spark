@@ -2,7 +2,7 @@
 
 ## Overview
 
-Spark today is a working bytecode interpreter (93 tests, fib(27) ~9.5 ms). The goal
+Spark today is a working bytecode interpreter (95 tests, fib(27) ~9.5 ms). The goal
 of this plan is to fill the seven gaps identified for the language: syntax, data
 types, functions, standard library / I/O, VM performance and limits, semantics, and
 tooling/ecosystem. This is a **multi-phase, multi-session roadmap**; it is planned in
@@ -206,7 +206,9 @@ Still open (answer at the start of the relevant phase):
 - **Q3 (modules, Phase 6):** shared global namespace vs per-module namespace? Path
   resolution, and module search paths?
 - **Q4 (exceptions, Phase 6):** syntax `try { } catch (e) { } finally { }`, uncaught
-  behavior, and the type of the caught value.
+  behavior, and the type of the caught value. Runtime errors already carry an
+  `ErrorType` category; decide whether `catch` receives the category, the message or
+  both.
 - **Q6 (concurrency, Phase 8):** coroutines (VM green threads), and is it wanted at all?
 - **Q7 (breaking changes):** acceptable to change existing test expectations/docs where
   a new feature requires it?
@@ -214,6 +216,6 @@ Still open (answer at the start of the relevant phase):
 
 ## Baseline (for regression checks)
 
-- Tests: 93 passing (`python3 tests/run_tests.py`).
+- Tests: 95 passing (`python3 tests/run_tests.py`).
 - Benchmark: `fib(27)` minimum ~9.5 ms, median ~10 ms (`python3 benchmarks/run.py`).
 - No warnings, sanitizers clean.

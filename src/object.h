@@ -42,6 +42,7 @@ typedef struct ObjFunction {
     int upvalue_count;
     Chunk chunk;
     ObjString *name;
+    const char *source; /* borrowed from the VM; used to show error snippets */
 } ObjFunction;
 
 typedef struct ObjUpvalue {

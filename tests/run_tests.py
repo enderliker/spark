@@ -160,6 +160,27 @@ def test_repl() -> None:
     )
 
 
+def test_error_snippets() -> None:
+    print("\nError snippets")
+    runtime = run([str(ERRORS / "tipos.spark")])
+    report(
+        "a runtime error shows the failing line and a caret",
+        runtime.returncode == 70
+        and 'print(1 + "a");' in runtime.stderr
+        and "^" in runtime.stderr,
+        runtime.stderr,
+    )
+
+    syntax = run([str(ERRORS / "falta_punto_y_coma.spark")])
+    report(
+        "a syntax error shows the failing line and a caret",
+        syntax.returncode == 65
+        and "print(x);" in syntax.stderr
+        and "^" in syntax.stderr,
+        syntax.stderr,
+    )
+
+
 def test_cli() -> None:
     print("\nCommand-line interface")
     version = run(["--version"])
@@ -192,6 +213,7 @@ def main() -> int:
     test_cases()
     test_errors()
     test_repl()
+    test_error_snippets()
     test_cli()
 
     failed = [name for name, ok, _ in results if not ok]

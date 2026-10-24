@@ -34,6 +34,11 @@ typedef struct {
 } GlobalSlot;
 
 typedef struct {
+    char *text;
+    size_t length;
+} SourceText;
+
+typedef struct {
     CallFrame frames[FRAMES_MAX];
     int frame_count;
     Value stack[STACK_MAX];
@@ -43,6 +48,9 @@ typedef struct {
     int global_count;
     int global_capacity;
     ObjUpvalue *open_upvalues;
+    SourceText *sources;
+    int source_count;
+    int source_capacity;
     bool had_error;
 } VM;
 
@@ -1533,6 +1541,8 @@ void vm_runtime_error(ErrorType type, const char *fmt, ...)
     va_list ap;
     char message[512];
     int line = 0;
+    int column = 0;
+    const char *source = NULL;
 
     va_start(ap, fmt);
     vsnprintf(message, sizeof(message), fmt, ap);
@@ -1548,10 +1558,12 @@ void vm_runtime_error(ErrorType type, const char *fmt, ...)
         }
         if (function->chunk.count > 0 && offset < function->chunk.count) {
             line = function->chunk.lines[offset];
+            column = function->chunk.columns[offset];
         }
+        source = function->source;
     }
 
-    fprintf(stderr, "%s at line %d: %s\n", error_type_name(type), line, message);
+    error_print(type, line, column, source, message);
     for (int i = vm.frame_count - 1; i >= 0; i--) {
         CallFrame *frame = &vm.frames[i];
         ObjFunction *function = frame->closure->function;
@@ -2747,6 +2759,13 @@ void vm_free(void)
     vm.global_slots = NULL;
     vm.global_count = 0;
     vm.global_capacity = 0;
+    for (int i = 0; i < vm.source_count; i++) {
+        mem_realloc(vm.sources[i].text, vm.sources[i].length + 1, 0);
+    }
+    mem_realloc(vm.sources, sizeof(SourceText) * (size_t)vm.source_capacity, 0);
+    vm.sources = NULL;
+    vm.source_count = 0;
+    vm.source_capacity = 0;
     intern_free_table();
 
     Obj *object = objects_head();
@@ -2767,28 +2786,48 @@ void vm_free(void)
     vm_ready = false;
 }
 
+static const char *vm_own_source(const char *source)
+{
+    size_t length = strlen(source);
+    char *copy = mem_realloc(NULL, 0, length + 1);
+
+    memcpy(copy, source, length + 1);
+    if (vm.source_count == vm.source_capacity) {
+        int capacity = vm.source_capacity < 4 ? 4 : vm.source_capacity * 2;
+
+        vm.sources = mem_realloc(vm.sources, sizeof(SourceText) * (size_t)vm.source_capacity,
+                                 sizeof(SourceText) * (size_t)capacity);
+        vm.source_capacity = capacity;
+    }
+    vm.sources[vm.source_count].text = copy;
+    vm.sources[vm.source_count].length = length;
+    vm.source_count++;
+    return copy;
+}
+
 InterpretResult vm_interpret(const char *source, const char *script_name, bool repl_mode)
 {
     Arena arena;
     Stmt *program = NULL;
     char error[256];
     int error_line = 0;
+    int error_column = 0;
+    const char *owned = vm_own_source(source);
 
     arena_init(&arena);
-    if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line)) {
-        fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_SYNTAX), error_line,
-                error);
+    if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line,
+                      &error_column)) {
+        error_print(ERROR_SYNTAX, error_line, error_column, owned, error);
         arena_free(&arena);
         return INTERPRET_COMPILE_ERROR;
     }
 
-    ObjFunction *function = compile_ast(program, script_name, repl_mode, error, sizeof(error),
-                                        &error_line);
+    ObjFunction *function = compile_ast(program, script_name, owned, repl_mode, error,
+                                        sizeof(error), &error_line, &error_column);
 
     arena_free(&arena);
     if (!function) {
-        fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_COMPILE), error_line,
-                error);
+        error_print(ERROR_COMPILE, error_line, error_column, owned, error);
         return INTERPRET_COMPILE_ERROR;
     }
 

@@ -409,13 +409,16 @@ reported before anything runs:
 
 ```
 SyntaxError at line 3: expected ';' after the declaration
-CompileError at line 2: cannot assign to constant 'x'
+   3 | var x = 1
+     |         ^
 ```
 
-Runtime errors show the line and the call trace:
+Runtime errors show the failing source line with a caret and the call trace:
 
 ```
 ZeroDivisionError at line 4: division by zero
+   4 |     return a / b;
+     |            ^
   in divide (line 4)
   in program.spark (line 7)
 ```

@@ -36,10 +36,12 @@ typedef struct {
     const char *start;
     int length;
     int line;
+    int column;
 } Token;
 
 typedef struct {
     const char *source;
+    const char *line_start;
     const char *start;
     const char *current;
     int line;

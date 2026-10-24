@@ -545,7 +545,8 @@ propose a shared global namespace (A6).
 
 ### T42 - `throw` + `try`/`catch`/`finally`
 **Description:** Exception handler stack in the VM; `OP_THROW` unwinds to the nearest
-handler; uncaught throw is a runtime error. Caught value per Q4.
+handler; uncaught throw is a runtime error. Caught value per Q4. Runtime diagnostics
+already carry an `ErrorType` category (`src/error.h`) that a handler can dispatch on.
 **Acceptance criteria:**
 - [ ] `finally` always runs; stack/upvalues are cleaned during unwinding.
 - [ ] Errors inside `catch`/`finally` behave correctly.

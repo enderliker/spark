@@ -214,7 +214,7 @@ example, `print(1 + 2);` compiles to:
 
 `tests/run_tests.py` runs valid programs comparing exact output, error cases checking
 the exit code and a `stderr` fragment, REPL sessions and the CLI options. There are
-93 tests, plus the `-fsanitize=address,undefined` build used during development.
+95 tests, plus the `-fsanitize=address,undefined` build used during development.
 
 ## Benchmark
 

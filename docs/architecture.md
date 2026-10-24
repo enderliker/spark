@@ -235,10 +235,15 @@ for strings. The same rule applies to a callback result that is stored after
 
 ## Errors
 
+- Every diagnostic has an `ErrorType` category (a name such as `TypeError`) shared by
+  the parser, the compiler and the VM, so a future try/catch can dispatch on it.
 - The parser and the compiler use `setjmp`/`longjmp`: they abort on the first error and
-  return the message and line.
-- Runtime errors print the line of the current instruction and a trace of the frames,
-  from the innermost to the script.
+  return the message, line and column.
+- Tokens, AST nodes and bytecode instructions carry a source column, so an error can
+  print the offending line and a caret under it. Every function keeps a borrowed
+  pointer to its source text, which the VM owns for the whole session.
+- Runtime errors print the category, the line, the source snippet and a trace of the
+  frames, from the innermost to the script.
 - After a runtime error the VM closes the open upvalues, clears the stack and frames
   and leaves the globals intact; the REPL can continue.
 - The REPL compiles in `repl_mode`, which turns each expression statement into
@@ -253,7 +258,7 @@ for strings. The same rule applies to a callback result that is stored after
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump` and a missing file.
 
-There are 93 tests. During development the project was also compiled with
+There are 95 tests. During development the project was also compiled with
 `-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the

@@ -55,7 +55,9 @@ typedef struct {
     jmp_buf jump;
     char message[256];
     int line;
+    int column;
     bool repl_mode;
+    const char *source;
     ConstGlobal *const_globals;
 } CompileContext;
 
@@ -68,6 +70,7 @@ typedef struct Compiler {
     Upvalue upvalues[MAX_UPVALUES];
     int upvalue_count;
     int scope_depth;
+    int column;
     LoopCtx *loop;
     CompileContext *ctx;
 } Compiler;
@@ -83,6 +86,7 @@ static void compile_error(Compiler *compiler, int line, const char *fmt, ...)
     vsnprintf(compiler->ctx->message, sizeof(compiler->ctx->message), fmt, ap);
     va_end(ap);
     compiler->ctx->line = line;
+    compiler->ctx->column = compiler->column;
     longjmp(compiler->ctx->jump, 1);
 }
 
@@ -98,7 +102,7 @@ static ObjString *name_constant(Text name)
 
 static void emit_byte(Compiler *compiler, uint8_t byte, int line)
 {
-    chunk_write(&compiler->function->chunk, byte, line);
+    chunk_write(&compiler->function->chunk, byte, line, compiler->column);
 }
 
 static void emit_u16(Compiler *compiler, uint16_t value, int line)
@@ -190,6 +194,7 @@ static void init_compiler(Compiler *compiler, Compiler *enclosing, FunctionType 
     compiler->type = type;
     compiler->ctx = ctx;
     compiler->function = object_function();
+    compiler->function->source = ctx->source;
     compiler->scope_depth = type == FUNC_FUNCTION ? 1 : 0;
 
     /* Slot 0 holds the running closure. */
@@ -452,6 +457,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
 {
     Expr *target = stmt->as.assign.target;
 
+    compiler->column = stmt->column;
     if (target->kind == EXPR_VARIABLE) {
         VarRef ref = resolve_variable(compiler, target->as.variable, line);
 
@@ -461,6 +467,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
         }
         compile_expression(compiler, stmt->as.assign.value);
         if (op != TOKEN_EQUAL) {
+            compiler->column = stmt->column;
             switch (op) {
             case TOKEN_PLUS_EQUAL: emit_byte(compiler, OP_ADD, line); break;
             case TOKEN_MINUS_EQUAL: emit_byte(compiler, OP_SUBTRACT, line); break;
@@ -469,17 +476,20 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
             default: break;
             }
         }
+        compiler->column = stmt->column;
         emit_set(compiler, ref, line);
         return;
     }
 
     compile_expression(compiler, target->as.index.object);
     compile_expression(compiler, target->as.index.index);
+    compiler->column = stmt->column;
     if (op != TOKEN_EQUAL) {
         emit_byte(compiler, OP_DUP2, line);
         emit_byte(compiler, OP_INDEX, line);
     }
     compile_expression(compiler, stmt->as.assign.value);
+    compiler->column = stmt->column;
     if (op != TOKEN_EQUAL) {
         switch (op) {
         case TOKEN_PLUS_EQUAL: emit_byte(compiler, OP_ADD, line); break;
@@ -489,6 +499,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
         default: break;
         }
     }
+    compiler->column = stmt->column;
     emit_byte(compiler, OP_INDEX_SET, line);
 }
 
@@ -874,6 +885,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
 {
     int line = stmt->line;
 
+    compiler->column = stmt->column;
     switch (stmt->kind) {
     case STMT_EXPRESSION:
         compile_expression(compiler, stmt->as.expression);
@@ -895,6 +907,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
             } else {
                 emit_byte(compiler, OP_NIL, line);
             }
+            compiler->column = stmt->column;
             if (stmt->as.var.is_const) {
                 mark_global_const(compiler, name, line);
                 emit_byte(compiler, OP_DEFINE_GLOBAL_CONST, line);
@@ -995,6 +1008,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         } else {
             emit_byte(compiler, OP_NIL, line);
         }
+        compiler->column = stmt->column;
         emit_byte(compiler, OP_RETURN, line);
         break;
 
@@ -1058,6 +1072,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 {
     int line = expr->line;
 
+    compiler->column = expr->column;
     switch (expr->kind) {
     case EXPR_NUMBER:
         emit_constant(compiler, NUMBER_VAL(expr->as.number), line);
@@ -1078,6 +1093,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 
     case EXPR_UNARY:
         compile_expression(compiler, expr->as.unary.operand);
+        compiler->column = expr->column;
         emit_byte(compiler, expr->as.unary.op == TOKEN_MINUS ? OP_NEGATE : OP_NOT, line);
         break;
 
@@ -1103,6 +1119,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         }
         compile_expression(compiler, left);
         compile_expression(compiler, right);
+        compiler->column = expr->column;
         compile_binary_operator(compiler, expr->as.binary.op, line);
         break;
     }
@@ -1110,6 +1127,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     case EXPR_LOGICAL:
         if (expr->as.logical.op == TOKEN_AND) {
             compile_expression(compiler, expr->as.logical.left);
+            compiler->column = expr->column;
             int end_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, line);
 
             emit_byte(compiler, OP_POP, line);
@@ -1117,6 +1135,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
             patch_jump(compiler, end_jump);
         } else {
             compile_expression(compiler, expr->as.logical.left);
+            compiler->column = expr->column;
             int else_jump = emit_jump(compiler, OP_JUMP_IF_FALSE, line);
             int end_jump = emit_jump(compiler, OP_JUMP, line);
 
@@ -1129,9 +1148,11 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 
     case EXPR_TERNARY: {
         compile_expression(compiler, expr->as.ternary.condition);
+        compiler->column = expr->column;
         int else_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
 
         compile_expression(compiler, expr->as.ternary.then_branch);
+        compiler->column = expr->column;
         int end_jump = emit_jump(compiler, OP_JUMP, line);
         patch_jump(compiler, else_jump);
         compile_expression(compiler, expr->as.ternary.else_branch);
@@ -1141,6 +1162,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 
     case EXPR_COALESCE: {
         compile_expression(compiler, expr->as.coalesce.left);
+        compiler->column = expr->column;
         emit_byte(compiler, OP_DUP, line);
         emit_byte(compiler, OP_NIL, line);
         emit_byte(compiler, OP_EQUAL, line);
@@ -1166,6 +1188,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
             compile_expression(compiler, arg->expr);
         }
+        compiler->column = expr->column;
         emit_byte(compiler, OP_CALL, line);
         emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
         break;
@@ -1173,6 +1196,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     case EXPR_INDEX:
         compile_expression(compiler, expr->as.index.object);
         compile_expression(compiler, expr->as.index.index);
+        compiler->column = expr->column;
         emit_byte(compiler, OP_INDEX, line);
         break;
 
@@ -1180,6 +1204,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         for (ExprList *item = expr->as.array.items; item; item = item->next) {
             compile_expression(compiler, item->expr);
         }
+        compiler->column = expr->column;
         emit_byte(compiler, OP_ARRAY, line);
         emit_u16(compiler, (uint16_t)expr->as.array.count, line);
         break;
@@ -1189,6 +1214,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
             compile_expression(compiler, pair->key);
             compile_expression(compiler, pair->value);
         }
+        compiler->column = expr->column;
         emit_byte(compiler, OP_MAP, line);
         emit_u16(compiler, (uint16_t)expr->as.map.count, line);
         break;
@@ -1238,8 +1264,8 @@ static void free_const_globals(CompileContext *ctx)
     ctx->const_globals = NULL;
 }
 
-ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
-                         char *error, size_t error_size, int *error_line)
+ObjFunction *compile_ast(Stmt *program, const char *name, const char *source, bool repl_mode,
+                         char *error, size_t error_size, int *error_line, int *error_column)
 {
     CompileContext ctx;
     Compiler compiler;
@@ -1248,6 +1274,7 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
     vm_init();
     memset(&ctx, 0, sizeof(ctx));
     ctx.repl_mode = repl_mode;
+    ctx.source = source;
 
     mem_pause_gc();
     if (setjmp(ctx.jump) != 0) {
@@ -1259,6 +1286,9 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
         if (error_line) {
             *error_line = ctx.line;
         }
+        if (error_column) {
+            *error_column = ctx.column;
+        }
         return NULL;
     }
 
@@ -1268,6 +1298,7 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
     for (StmtList *list = program->as.block.statements; list; list = list->next) {
         compile_statement(&compiler, list->stmt);
     }
+    compiler.column = program->column;
     emit_byte(&compiler, OP_NIL, program->line);
     emit_byte(&compiler, OP_RETURN, program->line);
 

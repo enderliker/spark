@@ -71,6 +71,7 @@ typedef enum {
 struct Expr {
     ExprKind kind;
     int line;
+    int column;
     union {
         double number;
         Text string;
@@ -148,6 +149,7 @@ typedef enum {
 struct Stmt {
     StmtKind kind;
     int line;
+    int column;
     union {
         Expr *expression;
         struct {

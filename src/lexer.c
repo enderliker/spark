@@ -8,6 +8,7 @@
 void lexer_init(Lexer *lexer, const char *source)
 {
     lexer->source = source;
+    lexer->line_start = source;
     lexer->start = source;
     lexer->current = source;
     lexer->line = 1;
@@ -48,6 +49,20 @@ static bool match(Lexer *lexer, char expected)
     return true;
 }
 
+/* Column of `position` in display characters (1-based), counting UTF-8
+ * sequences as one character. */
+static int column_at(const Lexer *lexer, const char *position)
+{
+    int column = 1;
+
+    for (const char *p = lexer->line_start; p < position; p++) {
+        if (((unsigned char)*p & 0xc0) != 0x80) {
+            column++;
+        }
+    }
+    return column;
+}
+
 static Token make_token(const Lexer *lexer, TokenType type)
 {
     Token token;
@@ -56,6 +71,7 @@ static Token make_token(const Lexer *lexer, TokenType type)
     token.start = lexer->start;
     token.length = (int)(lexer->current - lexer->start);
     token.line = lexer->line;
+    token.column = column_at(lexer, lexer->start);
     return token;
 }
 
@@ -68,6 +84,7 @@ static Token error_token(Lexer *lexer, const char *message)
     token.start = lexer->start;
     token.length = (int)(lexer->current - lexer->start);
     token.line = lexer->line;
+    token.column = column_at(lexer, lexer->start);
     return token;
 }
 
@@ -85,6 +102,7 @@ static void skip_whitespace(Lexer *lexer)
         case '\n':
             lexer->line++;
             advance(lexer);
+            lexer->line_start = lexer->current;
             break;
         case '/':
             if (peek_next(lexer) == '/') {
@@ -105,10 +123,15 @@ static void skip_whitespace(Lexer *lexer)
                         advance(lexer);
                         depth--;
                     } else {
-                        if (peek(lexer) == '\n') {
+                        bool newline = peek(lexer) == '\n';
+
+                        if (newline) {
                             lexer->line++;
                         }
                         advance(lexer);
+                        if (newline) {
+                            lexer->line_start = lexer->current;
+                        }
                     }
                 }
             } else {
@@ -372,6 +395,9 @@ static Token string_part(Lexer *lexer, bool first)
             lexer->line++;
         }
         advance(lexer);
+        if (c == '\n') {
+            lexer->line_start = lexer->current;
+        }
     }
     return error_token(lexer, "unterminated string (missing closing quote)");
 }

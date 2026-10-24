@@ -66,6 +66,7 @@ typedef struct {
     int capacity;
     uint8_t *code;
     int *lines;
+    int *columns;
     int constants_count;
     int constants_capacity;
     Value *constants;
@@ -73,7 +74,7 @@ typedef struct {
 
 void chunk_init(Chunk *chunk);
 void chunk_free(Chunk *chunk);
-void chunk_write(Chunk *chunk, uint8_t byte, int line);
+void chunk_write(Chunk *chunk, uint8_t byte, int line, int column);
 int chunk_add_constant(Chunk *chunk, Value value);
 void chunk_disassemble(const Chunk *chunk, const char *name);
 void chunk_disassemble_function(const ObjFunction *function);

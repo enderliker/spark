@@ -7,6 +7,7 @@
 #include "buf.h"
 #include "chunk.h"
 #include "compiler.h"
+#include "error.h"
 #include "parser.h"
 #include "vm.h"
 
@@ -127,20 +128,20 @@ static int run_file(const char *path, bool dump)
         Stmt *program = NULL;
         char error[256];
         int error_line = 0;
+        int error_column = 0;
         int status = 0;
 
         arena_init(&arena);
-        if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line)) {
-            fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_SYNTAX),
-                    error_line, error);
+        if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line,
+                          &error_column)) {
+            error_print(ERROR_SYNTAX, error_line, error_column, source, error);
             status = 65;
         } else {
-            ObjFunction *function = compile_ast(program, path, false, error, sizeof(error),
-                                                &error_line);
+            ObjFunction *function = compile_ast(program, path, source, false, error,
+                                                sizeof(error), &error_line, &error_column);
 
             if (!function) {
-                fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_COMPILE),
-                        error_line, error);
+                error_print(ERROR_COMPILE, error_line, error_column, source, error);
                 status = 65;
             } else {
                 chunk_disassemble_function(function);
