@@ -199,10 +199,10 @@ initializer; `const` is not required to be a compile-time constant, just immutab
 **Description:** `switch (expr) { case v: ...; default: ...; }` with fall-through or
 auto-break (decide; propose auto-break for safety) .
 **Acceptance criteria:**
-- [ ] Semantics documented precisely (fall-through vs auto-break).
-- [ ] Works with numbers and strings (and maps on equality).
+- [x] Semantics documented precisely (fall-through vs auto-break).
+- [x] Works with numbers and strings (and maps on equality).
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** M.

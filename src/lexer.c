@@ -143,10 +143,12 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("break")) return TOKEN_BREAK;
         break;
     case 'c':
+        if (IS("case")) return TOKEN_CASE;
         if (IS("const")) return TOKEN_CONST;
         if (IS("continue")) return TOKEN_CONTINUE;
         break;
     case 'd':
+        if (IS("default")) return TOKEN_DEFAULT;
         if (IS("do")) return TOKEN_DO;
         break;
     case 'e':
@@ -170,6 +172,9 @@ static TokenType identifier_type(const Lexer *lexer)
         break;
     case 'r':
         if (IS("return")) return TOKEN_RETURN;
+        break;
+    case 's':
+        if (IS("switch")) return TOKEN_SWITCH;
         break;
     case 't':
         if (IS("true")) return TOKEN_TRUE;
@@ -416,6 +421,9 @@ const char *token_type_name(TokenType type)
     case TOKEN_ELSE: return "'else'";
     case TOKEN_WHILE: return "'while'";
     case TOKEN_DO: return "'do'";
+    case TOKEN_SWITCH: return "'switch'";
+    case TOKEN_CASE: return "'case'";
+    case TOKEN_DEFAULT: return "'default'";
     case TOKEN_FOR: return "'for'";
     case TOKEN_IN: return "'in'";
     case TOKEN_RETURN: return "'return'";

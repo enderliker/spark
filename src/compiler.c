@@ -34,6 +34,7 @@ typedef enum {
 typedef struct LoopCtx {
     struct LoopCtx *previous;
     Text label;
+    bool is_switch;
     int start;
     int continue_target; /* -1 while it is not known */
     int local_count;
@@ -750,16 +751,91 @@ static void compile_for(Compiler *compiler, Stmt *stmt, int line)
     free(loop.continues);
 }
 
-static LoopCtx *find_loop(Compiler *compiler, Text label, int line, const char *keyword)
+static void add_break_jump(LoopCtx *loop, int offset)
+{
+    if (loop->break_count + 1 > loop->break_capacity) {
+        loop->break_capacity = loop->break_capacity < 4 ? 4 : loop->break_capacity * 2;
+        loop->breaks = realloc(loop->breaks, sizeof(int) * (size_t)loop->break_capacity);
+    }
+    loop->breaks[loop->break_count++] = offset;
+}
+
+static void compile_switch(Compiler *compiler, Stmt *stmt, int line)
+{
+    static const Text subject_name = {" switch", 7};
+    LoopCtx ctx;
+    SwitchCase *default_case = NULL;
+    int subject_slot;
+
+    begin_scope(compiler);
+    compile_expression(compiler, stmt->as.switch_stmt.subject);
+    subject_slot = add_local(compiler, subject_name, line);
+    mark_local_initialized(compiler);
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.is_switch = true;
+    ctx.local_count = compiler->local_count;
+    ctx.previous = compiler->loop;
+    compiler->loop = &ctx;
+
+    for (SwitchCase *case_node = stmt->as.switch_stmt.cases; case_node;
+         case_node = case_node->next) {
+        if (!case_node->value) {
+            default_case = case_node;
+            continue;
+        }
+
+        emit_byte(compiler, OP_GET_LOCAL, line);
+        emit_byte(compiler, (uint8_t)subject_slot, line);
+        compile_expression(compiler, case_node->value);
+        emit_byte(compiler, OP_EQUAL, line);
+        int next_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+
+        begin_scope(compiler);
+        for (StmtList *list = case_node->body; list; list = list->next) {
+            compile_statement(compiler, list->stmt);
+        }
+        end_scope(compiler, line);
+
+        add_break_jump(&ctx, emit_jump(compiler, OP_JUMP, line));
+        patch_jump(compiler, next_jump);
+    }
+
+    if (default_case) {
+        begin_scope(compiler);
+        for (StmtList *list = default_case->body; list; list = list->next) {
+            compile_statement(compiler, list->stmt);
+        }
+        end_scope(compiler, line);
+    }
+
+    compiler->loop = ctx.previous;
+    for (int i = 0; i < ctx.break_count; i++) {
+        patch_offset(compiler, ctx.breaks[i]);
+    }
+    free(ctx.breaks);
+    end_scope(compiler, line);
+}
+
+static LoopCtx *find_loop(Compiler *compiler, Text label, int line, bool is_continue)
 {
     if (label.length == 0) {
-        if (!compiler->loop) {
-            compile_error(compiler, line, "'%s' can only be used inside a loop", keyword);
+        LoopCtx *loop = compiler->loop;
+
+        if (is_continue) {
+            while (loop && loop->is_switch) {
+                loop = loop->previous;
+            }
         }
-        return compiler->loop;
+        if (!loop) {
+            compile_error(compiler, line,
+                          is_continue ? "'continue' can only be used inside a loop"
+                                      : "'break' can only be used inside a loop or switch");
+        }
+        return loop;
     }
     for (LoopCtx *loop = compiler->loop; loop; loop = loop->previous) {
-        if (text_equals(loop->label, label)) {
+        if (!loop->is_switch && text_equals(loop->label, label)) {
             return loop;
         }
     }
@@ -770,21 +846,15 @@ static LoopCtx *find_loop(Compiler *compiler, Text label, int line, const char *
 
 static void compile_break(Compiler *compiler, Text label, int line)
 {
-    LoopCtx *loop = find_loop(compiler, label, line, "break");
+    LoopCtx *loop = find_loop(compiler, label, line, false);
 
     compile_cleanup_to(compiler, loop->local_count, line);
-    int offset = emit_jump(compiler, OP_JUMP, line);
-
-    if (loop->break_count + 1 > loop->break_capacity) {
-        loop->break_capacity = loop->break_capacity < 4 ? 4 : loop->break_capacity * 2;
-        loop->breaks = realloc(loop->breaks, sizeof(int) * (size_t)loop->break_capacity);
-    }
-    loop->breaks[loop->break_count++] = offset;
+    add_break_jump(loop, emit_jump(compiler, OP_JUMP, line));
 }
 
 static void compile_continue(Compiler *compiler, Text label, int line)
 {
-    LoopCtx *loop = find_loop(compiler, label, line, "continue");
+    LoopCtx *loop = find_loop(compiler, label, line, true);
 
     compile_cleanup_to(compiler, loop->local_count, line);
     if (loop->continue_target >= 0) {
@@ -868,6 +938,10 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
 
     case STMT_DO_WHILE:
         compile_do_while(compiler, stmt, line);
+        break;
+
+    case STMT_SWITCH:
+        compile_switch(compiler, stmt, line);
         break;
 
     case STMT_FOR:

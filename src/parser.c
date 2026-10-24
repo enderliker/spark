@@ -709,6 +709,53 @@ static Stmt *do_while_statement(Parser *parser, int line)
     return stmt;
 }
 
+static Stmt *switch_statement(Parser *parser, int line)
+{
+    Stmt *stmt = new_stmt(parser, STMT_SWITCH, line);
+    SwitchCase *head = NULL;
+    SwitchCase *tail = NULL;
+    bool has_default = false;
+
+    consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'switch'");
+    stmt->as.switch_stmt.subject = expression(parser);
+    consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the switch value");
+    consume(parser, TOKEN_LEFT_BRACE, "expected '{' after the switch value");
+
+    while (!check(parser, TOKEN_RIGHT_BRACE) && !check(parser, TOKEN_EOF)) {
+        SwitchCase *case_node = new_node(parser, sizeof(SwitchCase));
+        StmtList *body_tail = NULL;
+
+        if (match(parser, TOKEN_CASE)) {
+            case_node->value = expression(parser);
+            consume(parser, TOKEN_COLON, "expected ':' after the case value");
+        } else if (match(parser, TOKEN_DEFAULT)) {
+            if (has_default) {
+                fail(parser, "a switch can only have one 'default'");
+            }
+            has_default = true;
+            case_node->value = NULL;
+            consume(parser, TOKEN_COLON, "expected ':' after 'default'");
+        } else {
+            fail(parser, "expected 'case' or 'default' in the switch");
+        }
+
+        while (!check(parser, TOKEN_CASE) && !check(parser, TOKEN_DEFAULT) &&
+               !check(parser, TOKEN_RIGHT_BRACE) && !check(parser, TOKEN_EOF)) {
+            list_append_stmt(parser, &case_node->body, &body_tail, declaration(parser));
+        }
+        if (tail) {
+            tail->next = case_node;
+        } else {
+            head = case_node;
+        }
+        tail = case_node;
+    }
+
+    consume(parser, TOKEN_RIGHT_BRACE, "expected '}' when closing the switch");
+    stmt->as.switch_stmt.cases = head;
+    return stmt;
+}
+
 static Stmt *for_statement(Parser *parser, int line)
 {
     Stmt *stmt = new_stmt(parser, STMT_FOR, line);
@@ -807,6 +854,9 @@ static Stmt *statement(Parser *parser)
     }
     if (match(parser, TOKEN_DO)) {
         return do_while_statement(parser, line);
+    }
+    if (match(parser, TOKEN_SWITCH)) {
+        return switch_statement(parser, line);
     }
     if (match(parser, TOKEN_FOR)) {
         return for_statement(parser, line);

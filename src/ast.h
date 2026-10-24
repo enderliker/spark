@@ -36,6 +36,12 @@ typedef struct MapPair {
     struct MapPair *next;
 } MapPair;
 
+typedef struct SwitchCase {
+    Expr *value; /* NULL for default */
+    StmtList *body;
+    struct SwitchCase *next;
+} SwitchCase;
+
 typedef enum {
     EXPR_NUMBER,
     EXPR_STRING,
@@ -119,6 +125,7 @@ typedef enum {
     STMT_IF,
     STMT_WHILE,
     STMT_DO_WHILE,
+    STMT_SWITCH,
     STMT_FOR,
     STMT_FOR_IN,
     STMT_FUNCTION,
@@ -160,6 +167,10 @@ struct Stmt {
             Stmt *body;
             Expr *condition;
         } do_while;
+        struct {
+            Expr *subject;
+            SwitchCase *cases;
+        } switch_stmt;
         struct {
             Text label;
             Stmt *initializer;

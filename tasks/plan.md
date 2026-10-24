@@ -87,7 +87,7 @@ original numbering:
 - [x] T13 Null-coalescing `??`
 - [x] T14 `do { } while`
 - [x] T15 Labelled loops + labelled `break`/`continue`
-- [ ] T16 `switch`/`case`/`default`
+- [x] T16 `switch`/`case`/`default`
 - [ ] T17 String interpolation
 - [x] T18 Numeric literal sugar (hex/bin/oct, `_` separators)
 

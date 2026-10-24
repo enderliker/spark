@@ -1,0 +1,91 @@
+fn describe(value) {
+    switch (value) {
+        case 1:
+            return "one";
+        case 2:
+            return "two";
+        case "hello":
+            return "greeting";
+        default:
+            return "other";
+    }
+}
+print(describe(1), describe(2), describe("hello"), describe(3));
+
+// Cases do not fall through: only the matching body runs.
+var log = "";
+switch (2) {
+    case 1:
+        log = log + "one";
+    case 2:
+        log = log + "two";
+    case 3:
+        log = log + "three";
+    default:
+        log = log + "default";
+}
+print(log);
+
+// The subject is evaluated once; case values are evaluated in order.
+var calls = "";
+fn subject() { calls = calls + "S"; return 2; }
+fn value(n) { calls = calls + str(n); return n; }
+switch (subject()) {
+    case value(1): calls = calls + "a";
+    case value(2): calls = calls + "b";
+    case value(3): calls = calls + "c";
+    default: calls = calls + "d";
+}
+print(calls);
+
+// default may appear before the cases.
+switch (9) {
+    default: print("fallback");
+    case 1: print("one");
+}
+switch (1) {
+    default: print("fallback");
+    case 1: print("one");
+}
+
+// Values are compared with ==; maps and arrays compare by identity.
+var key = {"a": 1};
+switch (key) {
+    case {"a": 1}: print("equal map");
+    case key: print("same map");
+    default: print("other");
+}
+
+// break exits the switch, not the enclosing loop.
+var i = 0;
+while (i < 3) {
+    switch (i) {
+        case 1:
+            print("one");
+            break;
+        default:
+            print("other");
+    }
+    i += 1;
+}
+print(i);
+
+// continue inside a switch targets the enclosing loop.
+var seen = "";
+for (var n = 0; n < 4; n += 1) {
+    switch (n) {
+        case 1: continue;
+        case 2: seen = seen + "two"; break;
+        default: seen = seen + str(n);
+    }
+}
+print(seen);
+
+// Nested switches.
+switch (1) {
+    case 1:
+        switch (2) {
+            case 2: print("inner");
+        }
+        print("outer");
+}

@@ -36,7 +36,7 @@ They start with a letter (including `á`, `ñ`, etc.), `_` or a valid UTF-8
 continuation byte; they continue with letters, digits and `_`. The keywords are:
 
 ```
-var const fn if else while for in return break continue do
+var const fn if else while for in return break continue do switch case default
 true false nil and or not
 ```
 
@@ -189,6 +189,27 @@ for (var character in "spark") {
     print(character);
 }
 ```
+
+### switch
+
+```spark
+switch (value) {
+    case 1:
+        print("one");
+    case 2:
+        print("two");
+    default:
+        print("other");
+}
+```
+
+- The subject is evaluated once and compared with each `case` value using `==`.
+- Case values are expressions evaluated in order until one matches.
+- Cases do **not** fall through: only the matching body runs and it ends
+  automatically. An empty case body does nothing.
+- `default` may appear anywhere and runs only when no case matches.
+- `break` exits the switch; `continue` targets the enclosing loop. Use a loop label
+  to break out of an outer loop.
 
 ### Labelled loops
 
