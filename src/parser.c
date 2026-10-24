@@ -746,10 +746,59 @@ static Stmt *for_statement(Parser *parser, int line)
     return stmt;
 }
 
+static bool next_is_colon(Parser *parser)
+{
+    Lexer lookahead;
+
+    if (parser->current.type != TOKEN_IDENTIFIER) {
+        return false;
+    }
+    lookahead = parser->lexer;
+    return lexer_next(&lookahead).type == TOKEN_COLON;
+}
+
+static Stmt *labelled_loop(Parser *parser, Token label)
+{
+    int line = parser->current.line;
+    Text name = text_from_token(parser, label);
+
+    if (match(parser, TOKEN_WHILE)) {
+        Stmt *stmt = while_statement(parser, line);
+
+        stmt->as.while_stmt.label = name;
+        return stmt;
+    }
+    if (match(parser, TOKEN_DO)) {
+        Stmt *stmt = do_while_statement(parser, line);
+
+        stmt->as.do_while.label = name;
+        return stmt;
+    }
+    if (match(parser, TOKEN_FOR)) {
+        Stmt *stmt = for_statement(parser, line);
+
+        if (stmt->kind == STMT_FOR_IN) {
+            stmt->as.for_in.label = name;
+        } else {
+            stmt->as.for_stmt.label = name;
+        }
+        return stmt;
+    }
+    fail(parser, "a label must be followed by a loop");
+    return NULL;
+}
+
 static Stmt *statement(Parser *parser)
 {
     int line = parser->current.line;
 
+    if (next_is_colon(parser)) {
+        Token label = parser->current;
+
+        advance(parser);
+        consume(parser, TOKEN_COLON, "expected ':' after the label");
+        return labelled_loop(parser, label);
+    }
     if (match(parser, TOKEN_IF)) {
         return if_statement(parser, line);
     }
@@ -772,12 +821,18 @@ static Stmt *statement(Parser *parser)
     if (match(parser, TOKEN_BREAK)) {
         Stmt *stmt = new_stmt(parser, STMT_BREAK, line);
 
+        if (match(parser, TOKEN_IDENTIFIER)) {
+            stmt->as.jump.label = text_from_token(parser, parser->previous);
+        }
         consume(parser, TOKEN_SEMICOLON, "expected ';' after 'break'");
         return stmt;
     }
     if (match(parser, TOKEN_CONTINUE)) {
         Stmt *stmt = new_stmt(parser, STMT_CONTINUE, line);
 
+        if (match(parser, TOKEN_IDENTIFIER)) {
+            stmt->as.jump.label = text_from_token(parser, parser->previous);
+        }
         consume(parser, TOKEN_SEMICOLON, "expected ';' after 'continue'");
         return stmt;
     }

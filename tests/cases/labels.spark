@@ -1,0 +1,63 @@
+// A labelled break exits the named loop.
+var found = "";
+outer: for (var i = 0; i < 3; i += 1) {
+    for (var j = 0; j < 3; j += 1) {
+        if (i == 1 and j == 1) {
+            found = str(i) + str(j);
+            break outer;
+        }
+    }
+}
+print(found);
+
+// A labelled continue jumps to the named loop's next iteration.
+var pairs = "";
+outer: for (var i = 0; i < 3; i += 1) {
+    for (var j = 0; j < 3; j += 1) {
+        if (j == 1) { continue outer; }
+        pairs = pairs + str(i) + str(j);
+    }
+}
+print(pairs);
+
+// Labels work on while and do/while too.
+var n = 0;
+var sum = 0;
+counting: while (true) {
+    n += 1;
+    if (n > 3) { break counting; }
+    sum += n;
+}
+print(sum);
+
+var m = 0;
+var seen = "";
+once: do {
+    m += 1;
+    seen = seen + str(m);
+    if (m < 2) { continue once; }
+    break once;
+} while (true);
+print(seen);
+
+// Leaving nested scopes cleans up for-in locals and captured variables.
+var out = "";
+outer: for (var i = 0; i < 2; i += 1) {
+    var local = i * 10;
+    for (var j in [0, 1, 2]) {
+        var inner = local + j;
+        if (inner == 11) { break outer; }
+        out = out + str(inner) + ",";
+    }
+}
+print(out);
+
+var saved = nil;
+outer: for (var i = 0; i < 2; i += 1) {
+    for (var j = 0; j < 2; j += 1) {
+        var captured = j;
+        saved = fn() { return captured; };
+        break outer;
+    }
+}
+print(saved());

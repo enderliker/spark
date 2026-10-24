@@ -32,6 +32,8 @@ typedef enum {
 } FunctionType;
 
 typedef struct LoopCtx {
+    struct LoopCtx *previous;
+    Text label;
     int start;
     int continue_target; /* -1 while it is not known */
     int local_count;
@@ -598,8 +600,10 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
     loop.start = loop_start;
     loop.continue_target = -1;
     loop.local_count = compiler->local_count - 1;
+    loop.label = stmt->as.for_in.label;
 
     LoopCtx *previous_loop = compiler->loop;
+    loop.previous = previous_loop;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.for_in.body);
     compiler->loop = previous_loop;
@@ -639,10 +643,12 @@ static void compile_while(Compiler *compiler, Stmt *stmt, int line)
     loop.start = loop_start;
     loop.continue_target = loop_start;
     loop.local_count = compiler->local_count;
+    loop.label = stmt->as.while_stmt.label;
 
     int exit_jump = emit_condition_jump(compiler, stmt->as.while_stmt.condition, line);
 
     LoopCtx *previous_loop = compiler->loop;
+    loop.previous = previous_loop;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.while_stmt.body);
     compiler->loop = previous_loop;
@@ -667,8 +673,10 @@ static void compile_do_while(Compiler *compiler, Stmt *stmt, int line)
     loop.start = loop_start;
     loop.continue_target = -1;
     loop.local_count = compiler->local_count;
+    loop.label = stmt->as.do_while.label;
 
     LoopCtx *previous_loop = compiler->loop;
+    loop.previous = previous_loop;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.do_while.body);
     compiler->loop = previous_loop;
@@ -711,8 +719,10 @@ static void compile_for(Compiler *compiler, Stmt *stmt, int line)
     loop.start = loop_start;
     loop.continue_target = -1;
     loop.local_count = compiler->local_count;
+    loop.label = stmt->as.for_stmt.label;
 
     LoopCtx *previous_loop = compiler->loop;
+    loop.previous = previous_loop;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.for_stmt.body);
     compiler->loop = previous_loop;
@@ -740,12 +750,27 @@ static void compile_for(Compiler *compiler, Stmt *stmt, int line)
     free(loop.continues);
 }
 
-static void compile_break(Compiler *compiler, int line)
+static LoopCtx *find_loop(Compiler *compiler, Text label, int line, const char *keyword)
 {
-    if (!compiler->loop) {
-        compile_error(compiler, line, "'break' can only be used inside a loop");
+    if (label.length == 0) {
+        if (!compiler->loop) {
+            compile_error(compiler, line, "'%s' can only be used inside a loop", keyword);
+        }
+        return compiler->loop;
     }
-    LoopCtx *loop = compiler->loop;
+    for (LoopCtx *loop = compiler->loop; loop; loop = loop->previous) {
+        if (text_equals(loop->label, label)) {
+            return loop;
+        }
+    }
+    compile_error(compiler, line, "no enclosing loop is labelled '%.*s'", label.length,
+                  label.chars);
+    return NULL;
+}
+
+static void compile_break(Compiler *compiler, Text label, int line)
+{
+    LoopCtx *loop = find_loop(compiler, label, line, "break");
 
     compile_cleanup_to(compiler, loop->local_count, line);
     int offset = emit_jump(compiler, OP_JUMP, line);
@@ -757,12 +782,9 @@ static void compile_break(Compiler *compiler, int line)
     loop->breaks[loop->break_count++] = offset;
 }
 
-static void compile_continue(Compiler *compiler, int line)
+static void compile_continue(Compiler *compiler, Text label, int line)
 {
-    if (!compiler->loop) {
-        compile_error(compiler, line, "'continue' can only be used inside a loop");
-    }
-    LoopCtx *loop = compiler->loop;
+    LoopCtx *loop = find_loop(compiler, label, line, "continue");
 
     compile_cleanup_to(compiler, loop->local_count, line);
     if (loop->continue_target >= 0) {
@@ -897,11 +919,11 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         break;
 
     case STMT_BREAK:
-        compile_break(compiler, line);
+        compile_break(compiler, stmt->as.jump.label, line);
         break;
 
     case STMT_CONTINUE:
-        compile_continue(compiler, line);
+        compile_continue(compiler, stmt->as.jump.label, line);
         break;
     }
 }

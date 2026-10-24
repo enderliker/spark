@@ -190,6 +190,23 @@ for (var character in "spark") {
 }
 ```
 
+### Labelled loops
+
+`while`, `do/while`, `for` and `for-in` accept a label. `break label` and
+`continue label` target that loop instead of the innermost one:
+
+```spark
+outer: for (var i = 0; i < 3; i += 1) {
+    for (var j = 0; j < 3; j += 1) {
+        if (j == 1) { continue outer; }
+        if (i == 2) { break outer; }
+    }
+}
+```
+
+The label must be followed by a loop, and the loop it names must be enclosing the
+`break`/`continue`; otherwise it is a compile error.
+
 Any value can be used as a condition: `nil` and `false` are falsey; everything else is
 truthy. `break` and `continue` may only appear inside a loop; `return` only inside a
 function.

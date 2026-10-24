@@ -187,10 +187,10 @@ initializer; `const` is not required to be a compile-time constant, just immutab
 ### T15 - Labelled loops + labelled `break`/`continue`
 **Description:** `outer: for (...) { ... break outer; }`.
 **Acceptance criteria:**
-- [ ] Breaking/continuing a non-existent label is a compile error.
-- [ ] Stack cleanup is correct when breaking out of nested scopes.
+- [x] Breaking/continuing a non-existent label is a compile error.
+- [x] Stack cleanup is correct when breaking out of nested scopes.
 **Verification:**
-- [ ] Fixture with nested loops; suite; sanitizers; docs.
+- [x] Fixture with nested loops; suite; sanitizers; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** M.

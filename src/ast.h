@@ -151,20 +151,24 @@ struct Stmt {
             Stmt *else_branch;
         } if_stmt;
         struct {
+            Text label;
             Expr *condition;
             Stmt *body;
         } while_stmt;
         struct {
+            Text label;
             Stmt *body;
             Expr *condition;
         } do_while;
         struct {
+            Text label;
             Stmt *initializer;
             Expr *condition;
             Stmt *step;
             Stmt *body;
         } for_stmt;
         struct {
+            Text label;
             Text name;
             Expr *iterable;
             Stmt *body;
@@ -178,6 +182,9 @@ struct Stmt {
         struct {
             Expr *value;
         } ret;
+        struct {
+            Text label;
+        } jump;
     } as;
 };
 
