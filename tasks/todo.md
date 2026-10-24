@@ -210,10 +210,10 @@ auto-break (decide; propose auto-break for safety) .
 ### T17 - String interpolation
 **Description:** `"hello ${name}, x=${1 + 2}"` compiles to concatenation.
 **Acceptance criteria:**
-- [ ] `${...}` accepts arbitrary expressions; `$$` escapes a literal `$`.
-- [ ] Existing escapes still work.
+- [x] `${...}` accepts arbitrary expressions; `$$` escapes a literal `$`.
+- [x] Existing escapes still work.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c`, `src/parser.c`, `tests/`, `docs/language.md`.
 **Scope:** M.

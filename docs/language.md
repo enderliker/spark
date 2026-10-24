@@ -30,6 +30,17 @@ false
 Strings support the escapes `\n`, `\t`, `\r`, `\\`, `\"` and `\0`. Any other escape
 is a syntax error.
 
+Strings can interpolate expressions with `${...}`. The expression is converted to
+text and concatenated with the surrounding literal; any expression is allowed. Use
+`$$` for a literal dollar sign:
+
+```spark
+var name = "Spark";
+print("hello ${name}, x=${1 + 2}");   // hello Spark, x=3
+print("cost: $$5");                    // cost: $5
+print("${ "nested ${name}" }");        // nested Spark
+```
+
 ### Identifiers
 
 They start with a letter (including `á`, `ñ`, etc.), `_` or a valid UTF-8

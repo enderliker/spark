@@ -1,0 +1,21 @@
+var name = "Spark";
+print("hello ${name}, x=${1 + 2}");
+print("${1}${2}");
+print("a$$b");
+print("cost: $$5");
+print("${nil} ${true} ${[1, 2]}");
+print("nested ${ "inner ${name}" } done");
+print("escapes \n\t\"\\ end");
+print("${ "quoted" }");
+print("${ 1 ? "yes" : "no" }");
+print("map ${ {"a": 1}["a"] }");
+
+fn double(x) { return x * 2; }
+print("call ${double(21)}");
+print("${ "a" + "b" }");
+print("empty '${""}'");
+print("braces ${ {1: 2}[1] }");
+print("pre${name}mid${name}post");
+print("multi
+line ${name}
+end");

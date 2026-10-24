@@ -42,6 +42,13 @@ typedef struct SwitchCase {
     struct SwitchCase *next;
 } SwitchCase;
 
+typedef struct InterpPart {
+    bool is_expression;
+    Text text;
+    Expr *expr;
+    struct InterpPart *next;
+} InterpPart;
+
 typedef enum {
     EXPR_NUMBER,
     EXPR_STRING,
@@ -57,6 +64,7 @@ typedef enum {
     EXPR_INDEX,
     EXPR_ARRAY,
     EXPR_MAP,
+    EXPR_INTERPOLATION,
     EXPR_FUNCTION
 } ExprKind;
 
@@ -108,6 +116,9 @@ struct Expr {
             MapPair *pairs;
             int count;
         } map;
+        struct {
+            InterpPart *parts;
+        } interpolation;
         struct {
             Text name;
             ParamList *params;

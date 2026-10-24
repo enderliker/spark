@@ -2055,6 +2055,10 @@ static InterpretResult run(int base_frame)
             break;
         }
 
+        case OP_TO_STRING:
+            vm.stack_top[-1] = OBJ_VAL(value_to_string(peek(0)));
+            break;
+
         case OP_EQUAL: {
             Value b = pop();
             Value a = pop();

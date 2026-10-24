@@ -11,6 +11,8 @@ void lexer_init(Lexer *lexer, const char *source)
     lexer->start = source;
     lexer->current = source;
     lexer->line = 1;
+    lexer->interpolation_count = 0;
+    lexer->resume_string = false;
     lexer->error[0] = '\0';
 }
 
@@ -311,26 +313,58 @@ static Token number(Lexer *lexer)
     return make_token(lexer, TOKEN_NUMBER);
 }
 
-static Token string_token(Lexer *lexer)
+static Token string_part(Lexer *lexer, bool first)
 {
-    while (!is_at_end(lexer) && peek(lexer) != '"') {
-        if (peek(lexer) == '\n') {
-            lexer->line++;
+    lexer->start = lexer->current;
+
+    while (!is_at_end(lexer)) {
+        char c = peek(lexer);
+
+        if (c == '"') {
+            Token token = make_token(lexer, first ? TOKEN_STRING : TOKEN_STRING_END);
+
+            advance(lexer); /* closing quote */
+            return token;
         }
-        if (peek(lexer) == '\\' && peek_next(lexer) != '\0') {
+        if (c == '$' && peek_next(lexer) == '$') {
             advance(lexer);
+            advance(lexer);
+            continue;
+        }
+        if (c == '$' && peek_next(lexer) == '{') {
+            Token token = make_token(lexer, TOKEN_STRING_PART);
+
+            advance(lexer); /* '$' */
+            advance(lexer); /* '{' */
+            if (lexer->interpolation_count ==
+                (int)(sizeof(lexer->interpolation_depth) / sizeof(lexer->interpolation_depth[0]))) {
+                return error_token(lexer, "too many nested string interpolations");
+            }
+            lexer->interpolation_depth[lexer->interpolation_count++] = 0;
+            return token;
+        }
+        if (c == '\\' && peek_next(lexer) != '\0') {
+            advance(lexer);
+        } else if (c == '\n') {
+            lexer->line++;
         }
         advance(lexer);
     }
-    if (is_at_end(lexer)) {
-        return error_token(lexer, "unterminated string (missing closing quote)");
-    }
-    advance(lexer); /* closing quote */
-    return make_token(lexer, TOKEN_STRING);
+    return error_token(lexer, "unterminated string (missing closing quote)");
+}
+
+static Token string_token(Lexer *lexer)
+{
+    return string_part(lexer, true);
 }
 
 Token lexer_next(Lexer *lexer)
 {
+    if (lexer->resume_string) {
+        lexer->resume_string = false;
+        return string_part(lexer, false);
+    }
+
     skip_whitespace(lexer);
     lexer->start = lexer->current;
 
@@ -339,6 +373,24 @@ Token lexer_next(Lexer *lexer)
     }
 
     char c = advance(lexer);
+
+    if (lexer->interpolation_count > 0) {
+        if (c == '{') {
+            lexer->interpolation_depth[lexer->interpolation_count - 1]++;
+            return make_token(lexer, TOKEN_LEFT_BRACE);
+        }
+        if (c == '}') {
+            int *depth = &lexer->interpolation_depth[lexer->interpolation_count - 1];
+
+            if (*depth == 0) {
+                lexer->interpolation_count--;
+                lexer->resume_string = true;
+                return make_token(lexer, TOKEN_INTERPOLATION_END);
+            }
+            (*depth)--;
+            return make_token(lexer, TOKEN_RIGHT_BRACE);
+        }
+    }
 
     if (is_identifier_start(c)) {
         return identifier(lexer);
@@ -413,6 +465,9 @@ const char *token_type_name(TokenType type)
     case TOKEN_LESS_EQUAL: return "'<='";
     case TOKEN_IDENTIFIER: return "an identifier";
     case TOKEN_STRING: return "a string";
+    case TOKEN_STRING_PART: return "a string part";
+    case TOKEN_STRING_END: return "the end of the string";
+    case TOKEN_INTERPOLATION_END: return "'}'";
     case TOKEN_NUMBER: return "a number";
     case TOKEN_VAR: return "'var'";
     case TOKEN_CONST: return "'const'";

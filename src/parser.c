@@ -142,25 +142,28 @@ static void list_append_param(Parser *parser, ParamList **head, ParamList **tail
     *tail = node;
 }
 
-static Text parse_string_literal(Parser *parser, Token token)
+static Text parse_string_part(Parser *parser, Token token)
 {
-    int raw_length = token.length - 2;
-    const char *raw = token.start + 1;
-    char *buffer = new_node(parser, (size_t)raw_length + 1);
+    char *buffer = new_node(parser, (size_t)token.length + 1);
     int out = 0;
 
-    for (int i = 0; i < raw_length; i++) {
-        char c = raw[i];
+    for (int i = 0; i < token.length; i++) {
+        char c = token.start[i];
 
+        if (c == '$' && i + 1 < token.length && token.start[i + 1] == '$') {
+            buffer[out++] = '$';
+            i++;
+            continue;
+        }
         if (c != '\\') {
             buffer[out++] = c;
             continue;
         }
         i++;
-        if (i >= raw_length) {
+        if (i >= token.length) {
             fail_at(parser, token, "incomplete escape sequence in the string");
         }
-        switch (raw[i]) {
+        switch (token.start[i]) {
         case 'n': buffer[out++] = '\n'; break;
         case 't': buffer[out++] = '\t'; break;
         case 'r': buffer[out++] = '\r'; break;
@@ -170,7 +173,7 @@ static Text parse_string_literal(Parser *parser, Token token)
         default: {
             char message[96];
 
-            snprintf(message, sizeof(message), "unknown escape '\\%c'", raw[i]);
+            snprintf(message, sizeof(message), "unknown escape '\\%c'", token.start[i]);
             fail_at(parser, token, message);
             break;
         }
@@ -225,6 +228,52 @@ static double parse_number_literal(Parser *parser, Token token)
     return value;
 }
 
+static InterpPart *append_interp_part(Parser *parser, InterpPart **head, InterpPart **tail)
+{
+    InterpPart *part = new_node(parser, sizeof(InterpPart));
+
+    if (*tail) {
+        (*tail)->next = part;
+    } else {
+        *head = part;
+    }
+    *tail = part;
+    return part;
+}
+
+static Expr *parse_interpolation(Parser *parser, Token first)
+{
+    Expr *expr = new_expr(parser, EXPR_INTERPOLATION, first.line);
+    InterpPart *head = NULL;
+    InterpPart *tail = NULL;
+    InterpPart *part = append_interp_part(parser, &head, &tail);
+
+    part->text = parse_string_part(parser, first);
+
+    for (;;) {
+        part = append_interp_part(parser, &head, &tail);
+        part->is_expression = true;
+        part->expr = expression(parser);
+        consume(parser, TOKEN_INTERPOLATION_END, "expected '}' when closing the interpolation");
+
+        Token next = parser->current;
+        if (next.type == TOKEN_STRING_END) {
+            advance(parser);
+            part = append_interp_part(parser, &head, &tail);
+            part->text = parse_string_part(parser, next);
+            break;
+        }
+        if (next.type != TOKEN_STRING_PART) {
+            fail(parser, "expected the rest of the string");
+        }
+        advance(parser);
+        part = append_interp_part(parser, &head, &tail);
+        part->text = parse_string_part(parser, next);
+    }
+    expr->as.interpolation.parts = head;
+    return expr;
+}
+
 static Expr *primary(Parser *parser)
 {
     Token token = parser->current;
@@ -253,8 +302,11 @@ static Expr *primary(Parser *parser)
     if (match(parser, TOKEN_STRING)) {
         Expr *expr = new_expr(parser, EXPR_STRING, token.line);
 
-        expr->as.string = parse_string_literal(parser, token);
+        expr->as.string = parse_string_part(parser, token);
         return expr;
+    }
+    if (match(parser, TOKEN_STRING_PART)) {
+        return parse_interpolation(parser, token);
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line);

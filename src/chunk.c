@@ -77,6 +77,7 @@ const char *opcode_name(OpCode op)
     case OP_MAP: return "MAP";
     case OP_ITER_KEYS: return "ITER_KEYS";
     case OP_LEN: return "LEN";
+    case OP_TO_STRING: return "TO_STRING";
     case OP_EQUAL: return "EQUAL";
     case OP_GREATER: return "GREATER";
     case OP_LESS: return "LESS";

@@ -27,6 +27,7 @@ typedef enum {
     OP_MAP,           /* u16: number of key/value pairs */
     OP_ITER_KEYS,     /* turns the iterable into an array of keys/values */
     OP_LEN,           /* length of an array, map or string */
+    OP_TO_STRING,     /* converts the top value to a string */
     OP_EQUAL,
     OP_GREATER,
     OP_LESS,

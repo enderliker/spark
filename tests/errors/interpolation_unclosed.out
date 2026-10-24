@@ -1,0 +1,2 @@
+exit: 65
+stderr: expected '}' when closing the interpolation

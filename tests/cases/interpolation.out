@@ -1,0 +1,19 @@
+hello Spark, x=3
+12
+a$b
+cost: $5
+nil true [1, 2]
+nested inner Spark done
+escapes 
+	"\ end
+quoted
+yes
+map 1
+call 42
+ab
+empty ''
+braces 2
+preSparkmidSparkpost
+multi
+line Spark
+end

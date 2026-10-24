@@ -88,7 +88,7 @@ original numbering:
 - [x] T14 `do { } while`
 - [x] T15 Labelled loops + labelled `break`/`continue`
 - [x] T16 `switch`/`case`/`default`
-- [ ] T17 String interpolation
+- [x] T17 String interpolation
 - [x] T18 Numeric literal sugar (hex/bin/oct, `_` separators)
 
 ### Checkpoint: Phase 2

@@ -1187,6 +1187,31 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         emit_u16(compiler, (uint16_t)expr->as.map.count, line);
         break;
 
+    case EXPR_INTERPOLATION: {
+        bool have_value = false;
+
+        for (InterpPart *part = expr->as.interpolation.parts; part; part = part->next) {
+            if (part->is_expression) {
+                compile_expression(compiler, part->expr);
+                emit_byte(compiler, OP_TO_STRING, line);
+            } else {
+                if (part->text.length == 0) {
+                    continue;
+                }
+                emit_constant(compiler,
+                              OBJ_VAL(object_string(part->text.chars, part->text.length)), line);
+            }
+            if (have_value) {
+                emit_byte(compiler, OP_ADD, line);
+            }
+            have_value = true;
+        }
+        if (!have_value) {
+            emit_constant(compiler, OBJ_VAL(object_string("", 0)), line);
+        }
+        break;
+    }
+
     case EXPR_FUNCTION:
         compile_function_value(compiler, expr->as.function.name, expr->as.function.params,
                                expr->as.function.body, line);

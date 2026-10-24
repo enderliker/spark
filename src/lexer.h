@@ -2,6 +2,8 @@
 #ifndef SPARK_LEXER_H
 #define SPARK_LEXER_H
 
+#include <stdbool.h>
+
 typedef enum {
     TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,
     TOKEN_LEFT_BRACE, TOKEN_RIGHT_BRACE,
@@ -17,6 +19,7 @@ typedef enum {
     TOKEN_LESS, TOKEN_LESS_EQUAL,
 
     TOKEN_IDENTIFIER, TOKEN_STRING, TOKEN_NUMBER,
+    TOKEN_STRING_PART, TOKEN_STRING_END, TOKEN_INTERPOLATION_END,
 
     TOKEN_VAR, TOKEN_CONST, TOKEN_FN,
     TOKEN_IF, TOKEN_ELSE, TOKEN_WHILE, TOKEN_FOR, TOKEN_IN,
@@ -40,6 +43,9 @@ typedef struct {
     const char *start;
     const char *current;
     int line;
+    int interpolation_depth[64];
+    int interpolation_count;
+    bool resume_string;
     char error[128];
 } Lexer;
 
