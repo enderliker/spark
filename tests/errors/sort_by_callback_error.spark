@@ -1,0 +1,1 @@
+print(sort_by([2, 1], fn(a, b) { return a / 0; }));

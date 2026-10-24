@@ -226,7 +226,7 @@ for strings. The same rule applies to a callback result that is stored after
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump` and a missing file.
 
-There are 59 tests. During development the project was also compiled with
+There are 63 tests. During development the project was also compiled with
 `-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the

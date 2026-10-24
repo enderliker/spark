@@ -154,7 +154,7 @@ The full reference is in [docs/language.md](docs/language.md) and the internals 
 | `slice(array, start, end?)` | New array with `[start, end)`. |
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
 | `split(text, sep)` / `join(array, sep)` | Text to array and back (empty separator splits into characters). |
-| `trim(text)` / `upper(text)` / `lower(text)` | Whitespace trim and ASCII case conversion. |
+| `trim(text)` / `upper(text)` / `lower(text)` | ASCII whitespace trim and ASCII case conversion. |
 | `repeat(text, n)` / `replace(text, old, new)` | Repeat and replace all occurrences. |
 | `clear(map)` / `merge(dest, src)` / `get(map, key, default?)` | Map helpers. |
 | `map(array, fn)` / `filter(array, fn)` | Transform / select with a callback. |
@@ -211,7 +211,7 @@ example, `print(1 + 2);` compiles to:
 
 `tests/run_tests.py` runs valid programs comparing exact output, error cases checking
 the exit code and a `stderr` fragment, REPL sessions and the CLI options. There are
-59 tests, plus the `-fsanitize=address,undefined` build used during development.
+63 tests, plus the `-fsanitize=address,undefined` build used during development.
 
 ## Benchmark
 

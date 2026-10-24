@@ -27,3 +27,23 @@ print(len(data), has(data, "a"));
 var extra = {"b": 20, "c": 30};
 var merged = merge({"a": 1}, extra);
 print(get(merged, "a"), get(merged, "b"), get(merged, "c"), len(merged));
+
+// Edge cases.
+insert(numbers, len(numbers), 8);
+print(numbers);
+print(remove(numbers, len(numbers) - 1));
+print(numbers);
+
+var base = [1, 2, 3];
+var part = slice(base, 1);
+part[0] = 99;
+print(base, part);
+
+var self = {"a": 1, "b": 2};
+merge(self, self);
+print(len(self), get(self, "a"), get(self, "b"));
+print(get({"a": nil}, "a", 9));
+
+clear(data);
+data["x"] = 5;
+print(len(data), data["x"]);

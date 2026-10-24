@@ -996,6 +996,16 @@ static Value native_split(int arg_count, Value *args)
     return OBJ_VAL(parts);
 }
 
+static bool buf_append_checked(buf_t *buffer, const void *data, size_t length,
+                               const char *function)
+{
+    if (buf_append(buffer, data, length) != 0) {
+        vm_runtime_error("could not allocate memory for '%s'", function);
+        return false;
+    }
+    return true;
+}
+
 static Value native_join(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -1015,12 +1025,17 @@ static Value native_join(int arg_count, Value *args)
 
     buf_init(&buffer);
     for (int i = 0; i < array->count; i++) {
-        if (i > 0) {
-            buf_append(&buffer, separator->chars, (size_t)separator->length);
+        if (i > 0 && !buf_append_checked(&buffer, separator->chars,
+                                         (size_t)separator->length, "join")) {
+            buf_free(&buffer);
+            return NIL_VAL;
         }
         ObjString *piece = value_to_string(array->items[i]);
 
-        buf_append(&buffer, piece->chars, (size_t)piece->length);
+        if (!buf_append_checked(&buffer, piece->chars, (size_t)piece->length, "join")) {
+            buf_free(&buffer);
+            return NIL_VAL;
+        }
         if (buffer.len > (size_t)INT_MAX) {
             buf_free(&buffer);
             vm_runtime_error("'join' would create a string that is too long");
@@ -1058,24 +1073,30 @@ static Value native_trim(int arg_count, Value *args)
     return OBJ_VAL(object_string(string->chars + start, end - start));
 }
 
-static Value native_upper(int arg_count, Value *args)
+static Value string_case_convert(Value value, bool to_upper)
 {
-    (void)arg_count;
-    if (!is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error("'upper' expects a string, received %s", value_type_name(args[0]));
+    const char *name = to_upper ? "upper" : "lower";
+
+    if (!is_obj_type(value, OBJ_STRING)) {
+        vm_runtime_error("'%s' expects a string, received %s", name, value_type_name(value));
         return NIL_VAL;
     }
-    ObjString *string = AS_STRING(args[0]);
+    ObjString *string = AS_STRING(value);
     buf_t buffer;
 
     buf_init(&buffer);
     for (int i = 0; i < string->length; i++) {
         char c = string->chars[i];
 
-        if (c >= 'a' && c <= 'z') {
+        if (to_upper && c >= 'a' && c <= 'z') {
             c = (char)(c - ('a' - 'A'));
+        } else if (!to_upper && c >= 'A' && c <= 'Z') {
+            c = (char)(c + ('a' - 'A'));
         }
-        buf_append(&buffer, &c, 1);
+        if (!buf_append_checked(&buffer, &c, 1, name)) {
+            buf_free(&buffer);
+            return NIL_VAL;
+        }
     }
     ObjString *result = object_string(buffer.data ? buffer.data : "", (int)buffer.len);
 
@@ -1083,29 +1104,16 @@ static Value native_upper(int arg_count, Value *args)
     return OBJ_VAL(result);
 }
 
+static Value native_upper(int arg_count, Value *args)
+{
+    (void)arg_count;
+    return string_case_convert(args[0], true);
+}
+
 static Value native_lower(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error("'lower' expects a string, received %s", value_type_name(args[0]));
-        return NIL_VAL;
-    }
-    ObjString *string = AS_STRING(args[0]);
-    buf_t buffer;
-
-    buf_init(&buffer);
-    for (int i = 0; i < string->length; i++) {
-        char c = string->chars[i];
-
-        if (c >= 'A' && c <= 'Z') {
-            c = (char)(c + ('a' - 'A'));
-        }
-        buf_append(&buffer, &c, 1);
-    }
-    ObjString *result = object_string(buffer.data ? buffer.data : "", (int)buffer.len);
-
-    buf_free(&buffer);
-    return OBJ_VAL(result);
+    return string_case_convert(args[0], false);
 }
 
 static Value native_repeat(int arg_count, Value *args)
@@ -1170,10 +1178,17 @@ static Value native_replace(int arg_count, Value *args)
     while (i < text->length) {
         if (i + old->length <= text->length &&
             memcmp(text->chars + i, old->chars, (size_t)old->length) == 0) {
-            buf_append(&buffer, replacement->chars, (size_t)replacement->length);
+            if (!buf_append_checked(&buffer, replacement->chars,
+                                    (size_t)replacement->length, "replace")) {
+                buf_free(&buffer);
+                return NIL_VAL;
+            }
             i += old->length;
         } else {
-            buf_append(&buffer, text->chars + i, 1);
+            if (!buf_append_checked(&buffer, text->chars + i, 1, "replace")) {
+                buf_free(&buffer);
+                return NIL_VAL;
+            }
             i++;
         }
         if (buffer.len > (size_t)INT_MAX) {
@@ -1215,6 +1230,9 @@ static Value native_merge(int arg_count, Value *args)
     ObjMap *destination = AS_MAP(args[0]);
     ObjMap *source = AS_MAP(args[1]);
 
+    if (destination == source) {
+        return args[0];
+    }
     for (int i = 0; i < source->capacity; i++) {
         MapEntry *entry = &source->entries[i];
 
@@ -1286,6 +1304,7 @@ static Value native_filter(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *input = AS_ARRAY(args[0]);
+    Value callback = args[1];
     ObjArray *output = object_array();
 
     push(OBJ_VAL(output));
@@ -1293,7 +1312,7 @@ static Value native_filter(int arg_count, Value *args)
         Value keep;
 
         push(input->items[i]);
-        if (!call_callback(args[1], 1, &keep) || vm.had_error) {
+        if (!call_callback(callback, 1, &keep) || vm.had_error) {
             return NIL_VAL;
         }
         if (!value_is_falsey(keep)) {
@@ -1313,12 +1332,13 @@ static Value native_each(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *input = AS_ARRAY(args[0]);
+    Value callback = args[1];
 
     for (int i = 0; i < input->count; i++) {
         Value ignored;
 
         push(input->items[i]);
-        if (!call_callback(args[1], 1, &ignored) || vm.had_error) {
+        if (!call_callback(callback, 1, &ignored) || vm.had_error) {
             return NIL_VAL;
         }
     }
@@ -1337,6 +1357,7 @@ static Value native_reduce(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *input = AS_ARRAY(args[0]);
+    Value callback = args[1];
     Value accumulator;
     int start;
 
@@ -1360,7 +1381,7 @@ static Value native_reduce(int arg_count, Value *args)
 
         push(vm.stack_top[-1]);
         push(input->items[i]);
-        if (!call_callback(args[1], 2, &reduced) || vm.had_error) {
+        if (!call_callback(callback, 2, &reduced) || vm.had_error) {
             return NIL_VAL;
         }
         vm.stack_top[-1] = reduced;
@@ -1407,6 +1428,7 @@ static Value native_sort_by(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *array = AS_ARRAY(args[0]);
+    Value callback = args[1];
 
     for (int i = 1; i < array->count; i++) {
         Value key = array->items[i];
@@ -1417,7 +1439,7 @@ static Value native_sort_by(int arg_count, Value *args)
 
             push(key);
             push(array->items[j]);
-            if (!call_callback(args[1], 2, &before) || vm.had_error) {
+            if (!call_callback(callback, 2, &before) || vm.had_error) {
                 return NIL_VAL;
             }
             if (value_is_falsey(before)) {

@@ -1,0 +1,1 @@
+print(filter([1], fn(a, b) { return true; }));

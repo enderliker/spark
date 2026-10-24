@@ -268,7 +268,8 @@ print(upper("hola"), trim("  x  "));
   returns `""`.
 - `split`, `join`, `trim`, `upper`, `lower`, `repeat`, `replace`, `starts_with`,
   `ends_with`, `contains` and `index_of` are documented in section 10. `upper` and
-  `lower` only change ASCII letters; other characters are left untouched.
+  `lower` only change ASCII letters; `trim` only removes ASCII whitespace. Other
+  characters are left untouched.
 
 ## 10. Natives
 
@@ -299,7 +300,7 @@ print(upper("hola"), trim("  x  "));
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
 | `split(text, sep)` | Array of parts; an empty separator splits into characters. |
 | `join(array, sep)` | Text joining the stringified elements. |
-| `trim(text)` | Removes leading and trailing whitespace. |
+| `trim(text)` | Removes leading and trailing ASCII whitespace. |
 | `upper(text)` / `lower(text)` | ASCII upper/lower case. |
 | `repeat(text, n)` | `text` repeated `n` times. |
 | `replace(text, old, new)` | Replaces every occurrence of `old`. |

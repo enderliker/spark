@@ -22,3 +22,14 @@ fn make_adder(n) {
     return fn(x) { return x + n; };
 }
 print(map([10, 20], make_adder(5)));
+
+// Edge cases.
+print(map([], double), filter([], is_even), each([], double));
+print(reduce([7], fn(a, b) { return 1 / 0; }));
+print(reduce([], fn(a, b) { return a + b; }, 5));
+print(filter([0, 1, false, nil], fn(x) { return x; }));
+
+var source = [1, 2, 3];
+var transformed = map(source, double);
+print(source, transformed, source == transformed);
+print(reduce(map(source, double), fn(a, b) { return a + b; }));

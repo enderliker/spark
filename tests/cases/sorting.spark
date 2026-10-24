@@ -9,3 +9,11 @@ fn by_length(a, b) {
 }
 print(sort_by(["ccc", "a", "bb"], by_length));
 print(sort_by([3, 1, 2], fn(a, b) { return a > b; }));
+
+// Edge cases.
+var values = [2, 1];
+print(sort(values) == values, values);
+
+var pairs = [[1, "a"], [0, "b"], [1, "c"]];
+sort_by(pairs, fn(a, b) { return a[0] < b[0]; });
+print(map(pairs, fn(pair) { return pair[1]; }));

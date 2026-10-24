@@ -11,3 +11,9 @@ HELLO ñ hello Ñ
 ababab  |
 baNANA bbbbbb
 true 4
+["", "a", ""] [""] []
+[1, 2]|{"a": 1}
+abc 0
+true true
+true 0
+true
