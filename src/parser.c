@@ -568,12 +568,29 @@ static Stmt *var_declaration_after_name(Parser *parser, Token name, bool with_se
 
     stmt->as.var.name = text_from_token(parser, name);
     stmt->as.var.initializer = NULL;
+    stmt->as.var.is_const = false;
     if (match(parser, TOKEN_EQUAL)) {
         stmt->as.var.initializer = expression(parser);
     }
     if (with_semicolon) {
         consume(parser, TOKEN_SEMICOLON, "expected ';' after the declaration");
     }
+    return stmt;
+}
+
+static Stmt *parse_const_declaration(Parser *parser)
+{
+    Token name = consume(parser, TOKEN_IDENTIFIER, "expected the constant name");
+    Stmt *stmt = new_stmt(parser, STMT_VAR, name.line);
+
+    stmt->as.var.name = text_from_token(parser, name);
+    stmt->as.var.initializer = NULL;
+    stmt->as.var.is_const = true;
+    if (!match(parser, TOKEN_EQUAL)) {
+        fail(parser, "a constant must have an initializer");
+    }
+    stmt->as.var.initializer = expression(parser);
+    consume(parser, TOKEN_SEMICOLON, "expected ';' after the declaration");
     return stmt;
 }
 
@@ -726,6 +743,9 @@ static Stmt *declaration(Parser *parser)
 {
     if (match(parser, TOKEN_VAR)) {
         return parse_var_declaration(parser, true);
+    }
+    if (match(parser, TOKEN_CONST)) {
+        return parse_const_declaration(parser);
     }
     if (match(parser, TOKEN_FN)) {
         return function_declaration(parser);

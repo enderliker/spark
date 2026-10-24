@@ -1,0 +1,2 @@
+exit: 70
+stderr: cannot assign to constant 'x'

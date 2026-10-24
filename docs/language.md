@@ -36,7 +36,7 @@ They start with a letter (including `á`, `ñ`, etc.), `_` or a valid UTF-8
 continuation byte; they continue with letters, digits and `_`. The keywords are:
 
 ```
-var fn if else while for in return break continue
+var const fn if else while for in return break continue
 true false nil and or not
 ```
 
@@ -95,13 +95,16 @@ var global = 1;
 ```
 
 - `var name;` creates the variable with `nil`.
+- `const name = value;` creates an immutable binding. The initializer is required
+  and reassigning the name (directly or with a compound operator) is a compile
+  error. The value itself is not frozen: a `const` array or map can still be
+  mutated.
 - At the top level of a program, variables are global; inside a block or function they
   are local.
 - Blocks create a new scope; an outer variable can be shadowed by one with the same
   name.
 - Reading a local variable inside its own initializer is a compile error; a
   nonexistent global gives a runtime error.
-- There is no `const`: every variable can be reassigned.
 
 ### Assignments
 

@@ -143,6 +143,7 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("break")) return TOKEN_BREAK;
         break;
     case 'c':
+        if (IS("const")) return TOKEN_CONST;
         if (IS("continue")) return TOKEN_CONTINUE;
         break;
     case 'e':
@@ -403,6 +404,7 @@ const char *token_type_name(TokenType type)
     case TOKEN_STRING: return "a string";
     case TOKEN_NUMBER: return "a number";
     case TOKEN_VAR: return "'var'";
+    case TOKEN_CONST: return "'const'";
     case TOKEN_FN: return "'fn'";
     case TOKEN_IF: return "'if'";
     case TOKEN_ELSE: return "'else'";

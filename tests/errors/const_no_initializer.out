@@ -1,0 +1,2 @@
+exit: 65
+stderr: a constant must have an initializer

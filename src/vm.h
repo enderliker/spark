@@ -26,5 +26,7 @@ void vm_runtime_error(const char *fmt, ...) __attribute__((format(printf, 1, 2))
  * access instructions. */
 int vm_global_slot(ObjString *name);
 const char *vm_global_slot_name(int slot);
+bool vm_global_is_const(ObjString *name);
+void vm_mark_global_const(int slot);
 
 #endif

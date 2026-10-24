@@ -145,10 +145,10 @@ frame, plus a spike documenting the approach (nested loop vs frame push).
 **Description:** `const name = value;` - compile-time error on reassignment or missing
 initializer; `const` is not required to be a compile-time constant, just immutable.
 **Acceptance criteria:**
-- [ ] Reassigning a const (direct or compound) is a compile error with a clear message.
-- [ ] `const` works for locals and globals.
+- [x] Reassigning a const (direct or compound) is a compile error with a clear message.
+- [x] `const` works for locals and globals.
 **Verification:**
-- [ ] Valid fixture + error fixture; suite; docs.
+- [x] Valid fixture + error fixture; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** M.

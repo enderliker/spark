@@ -30,6 +30,7 @@ typedef struct {
     ObjString *name;
     Value value;
     bool defined;
+    bool is_const;
 } GlobalSlot;
 
 typedef struct {
@@ -1483,8 +1484,31 @@ int vm_global_slot(ObjString *name)
     vm.global_slots[index].name = name;
     vm.global_slots[index].value = NIL_VAL;
     vm.global_slots[index].defined = false;
+    vm.global_slots[index].is_const = false;
     table_set(&vm.global_names, name, NUMBER_VAL((double)index));
     return index;
+}
+
+bool vm_global_is_const(ObjString *name)
+{
+    Value existing;
+
+    if (!vm_ready) {
+        return false;
+    }
+    if (vm.global_names.count > 0 && table_get(&vm.global_names, name, &existing)) {
+        int slot = (int)AS_NUMBER(existing);
+
+        return slot >= 0 && slot < vm.global_count && vm.global_slots[slot].is_const;
+    }
+    return false;
+}
+
+void vm_mark_global_const(int slot)
+{
+    if (slot >= 0 && slot < vm.global_count) {
+        vm.global_slots[slot].is_const = true;
+    }
 }
 
 const char *vm_global_slot_name(int slot)
@@ -1795,6 +1819,10 @@ static InterpretResult run(int base_frame)
             uint16_t slot = READ_U16();
             GlobalSlot *global = &vm.global_slots[slot];
 
+            if (global->is_const && global->defined) {
+                vm_runtime_error("cannot redefine constant '%s'", global->name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
             global->value = pop();
             global->defined = true;
             break;
@@ -1806,6 +1834,10 @@ static InterpretResult run(int base_frame)
 
             if (!global->defined) {
                 vm_runtime_error("global variable '%s' not defined", global->name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            if (global->is_const) {
+                vm_runtime_error("cannot assign to constant '%s'", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             global->value = pop();

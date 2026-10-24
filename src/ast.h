@@ -123,6 +123,7 @@ struct Stmt {
         struct {
             Text name;
             Expr *initializer;
+            bool is_const;
         } var;
         struct {
             Expr *target;

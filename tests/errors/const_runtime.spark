@@ -1,0 +1,5 @@
+// The function is compiled before the constant exists, so the assignment is
+// rejected at runtime when the function is called.
+fn change() { x = 2; }
+const x = 1;
+change();

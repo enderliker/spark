@@ -17,11 +17,13 @@ typedef struct {
     Text name;
     int depth;
     bool captured;
+    bool is_const;
 } Local;
 
 typedef struct {
     uint8_t index;
     bool is_local;
+    bool is_const;
 } Upvalue;
 
 typedef enum {
@@ -41,11 +43,17 @@ typedef struct LoopCtx {
     int continue_capacity;
 } LoopCtx;
 
+typedef struct ConstGlobal {
+    ObjString *name;
+    struct ConstGlobal *next;
+} ConstGlobal;
+
 typedef struct {
     jmp_buf jump;
     char message[256];
     int line;
     bool repl_mode;
+    ConstGlobal *const_globals;
 } CompileContext;
 
 typedef struct Compiler {
@@ -199,6 +207,7 @@ static int add_local(Compiler *compiler, Text name, int line)
     local->name = name;
     local->depth = -1;
     local->captured = false;
+    local->is_const = false;
     return compiler->local_count++;
 }
 
@@ -219,7 +228,8 @@ static int resolve_local(Compiler *compiler, Text name, int line)
     return -1;
 }
 
-static int add_upvalue(Compiler *compiler, uint8_t index, bool is_local, int line)
+static int add_upvalue(Compiler *compiler, uint8_t index, bool is_local, bool is_const,
+                       int line)
 {
     for (int i = 0; i < compiler->upvalue_count; i++) {
         Upvalue *upvalue = &compiler->upvalues[i];
@@ -235,6 +245,7 @@ static int add_upvalue(Compiler *compiler, uint8_t index, bool is_local, int lin
 
     upvalue->index = index;
     upvalue->is_local = is_local;
+    upvalue->is_const = is_const;
     compiler->function->upvalue_count = compiler->upvalue_count + 1;
     return compiler->upvalue_count++;
 }
@@ -247,11 +258,13 @@ static int resolve_upvalue(Compiler *compiler, Text name, int line)
     int local = resolve_local(compiler->enclosing, name, line);
     if (local >= 0) {
         compiler->enclosing->locals[local].captured = true;
-        return add_upvalue(compiler, (uint8_t)local, true, line);
+        return add_upvalue(compiler, (uint8_t)local, true,
+                           compiler->enclosing->locals[local].is_const, line);
     }
     int upvalue = resolve_upvalue(compiler->enclosing, name, line);
     if (upvalue >= 0) {
-        return add_upvalue(compiler, (uint8_t)upvalue, false, line);
+        return add_upvalue(compiler, (uint8_t)upvalue, false,
+                           compiler->enclosing->upvalues[upvalue].is_const, line);
     }
     return -1;
 }
@@ -353,6 +366,48 @@ static void emit_set(Compiler *compiler, VarRef ref, int line)
     }
 }
 
+static bool global_is_const(Compiler *compiler, ObjString *name)
+{
+    for (ConstGlobal *entry = compiler->ctx->const_globals; entry; entry = entry->next) {
+        if (entry->name == name) {
+            return true;
+        }
+    }
+    return vm_global_is_const(name);
+}
+
+static void mark_global_const(Compiler *compiler, ObjString *name, int line)
+{
+    for (ConstGlobal *entry = compiler->ctx->const_globals; entry; entry = entry->next) {
+        if (entry->name == name) {
+            return;
+        }
+    }
+    ConstGlobal *entry = malloc(sizeof(ConstGlobal));
+
+    if (!entry) {
+        compile_error(compiler, line, "out of memory while compiling the constants");
+    }
+    entry->name = name;
+    entry->next = compiler->ctx->const_globals;
+    compiler->ctx->const_globals = entry;
+}
+
+static void check_mutable(Compiler *compiler, VarRef ref, Text name, int line)
+{
+    bool is_const = false;
+
+    switch (ref.kind) {
+    case VAR_LOCAL: is_const = compiler->locals[ref.index].is_const; break;
+    case VAR_UPVALUE: is_const = compiler->upvalues[ref.index].is_const; break;
+    case VAR_GLOBAL: is_const = global_is_const(compiler, ref.name); break;
+    }
+    if (is_const) {
+        compile_error(compiler, line, "cannot assign to constant '%.*s'", name.length,
+                      name.chars);
+    }
+}
+
 static void compile_function_value(Compiler *enclosing, Text name, ParamList *params,
                                    Stmt *body, int line)
 {
@@ -397,6 +452,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
     if (target->kind == EXPR_VARIABLE) {
         VarRef ref = resolve_variable(compiler, target->as.variable, line);
 
+        check_mutable(compiler, ref, target->as.variable, line);
         if (op != TOKEN_EQUAL) {
             emit_get(compiler, ref, line);
         }
@@ -703,17 +759,28 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         bool is_global = compiler->scope_depth == 0;
 
         if (is_global) {
+            ObjString *name = name_constant(stmt->as.var.name);
+
+            if (global_is_const(compiler, name)) {
+                compile_error(compiler, line, "cannot redefine constant '%.*s'",
+                              stmt->as.var.name.length, stmt->as.var.name.chars);
+            }
             if (stmt->as.var.initializer) {
                 compile_expression(compiler, stmt->as.var.initializer);
             } else {
                 emit_byte(compiler, OP_NIL, line);
             }
-            ObjString *name = name_constant(stmt->as.var.name);
-
+            if (stmt->as.var.is_const) {
+                mark_global_const(compiler, name, line);
+            }
             emit_byte(compiler, OP_DEFINE_GLOBAL, line);
             emit_global_name(compiler, name, line);
         } else {
-            add_local(compiler, stmt->as.var.name, line);
+            int slot = add_local(compiler, stmt->as.var.name, line);
+
+            if (stmt->as.var.is_const) {
+                compiler->locals[slot].is_const = true;
+            }
             if (stmt->as.var.initializer) {
                 compile_expression(compiler, stmt->as.var.initializer);
             } else {
@@ -967,6 +1034,30 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     }
 }
 
+static void apply_const_globals(CompileContext *ctx)
+{
+    for (ConstGlobal *entry = ctx->const_globals; entry; entry = entry->next) {
+        int slot = vm_global_slot(entry->name);
+
+        if (slot >= 0) {
+            vm_mark_global_const(slot);
+        }
+    }
+}
+
+static void free_const_globals(CompileContext *ctx)
+{
+    ConstGlobal *entry = ctx->const_globals;
+
+    while (entry) {
+        ConstGlobal *next = entry->next;
+
+        free(entry);
+        entry = next;
+    }
+    ctx->const_globals = NULL;
+}
+
 ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
                          char *error, size_t error_size, int *error_line)
 {
@@ -981,6 +1072,7 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
     mem_pause_gc();
     if (setjmp(ctx.jump) != 0) {
         mem_resume_gc();
+        free_const_globals(&ctx);
         if (error && error_size > 0) {
             snprintf(error, error_size, "%s", ctx.message);
         }
@@ -999,6 +1091,8 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
     emit_byte(&compiler, OP_NIL, program->line);
     emit_byte(&compiler, OP_RETURN, program->line);
 
+    apply_const_globals(&ctx);
+    free_const_globals(&ctx);
     function = compiler.function;
     mem_resume_gc();
     return function;

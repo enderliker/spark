@@ -1,0 +1,39 @@
+// `const` declares an immutable binding; the value itself stays mutable.
+const answer = 42;
+print(answer);
+
+{
+    const local = answer + 1;
+    print(local);
+    {
+        const local = 7; // shadowing is allowed
+        print(local);
+    }
+}
+
+const message = "sp" + "ark";
+print(message);
+
+// Constness propagates through closures.
+const base = 10;
+fn add_base(n) { return n + base; }
+print(add_base(5));
+
+// The binding is immutable, not the value.
+const items = [1, 2];
+items[0] = 9;
+print(items);
+
+const config = {"mode": "dev"};
+config["mode"] = "prod";
+print(config["mode"]);
+
+const doubled = add_base(1) * 2;
+print(doubled);
+
+fn make_counter() {
+    const step = 3;
+    return fn(n) { return n + step; };
+}
+var increment = make_counter();
+print(increment(4));

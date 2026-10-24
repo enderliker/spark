@@ -82,7 +82,7 @@ original numbering:
 - [x] Review with the user before Phase 2
 
 ### Phase 2 - Language syntax (area 1, no integers needed)
-- [ ] T11 `const` declarations
+- [x] T11 `const` declarations
 - [ ] T12 Ternary operator `?:`
 - [ ] T13 Null-coalescing `??`
 - [ ] T14 `do { } while`

@@ -1,0 +1,3 @@
+const x = 1;
+fn change() { x = 2; }
+change();
