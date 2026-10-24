@@ -186,14 +186,43 @@ static Text parse_string_literal(Parser *parser, Token token)
 
 static double parse_number_literal(Parser *parser, Token token)
 {
-    char buffer[64];
+    char *buffer = new_node(parser, (size_t)token.length + 1);
+    int length = 0;
 
-    if (token.length >= (int)sizeof(buffer)) {
-        fail_at(parser, token, "number too long");
+    for (int i = 0; i < token.length; i++) {
+        if (token.start[i] != '_') {
+            buffer[length++] = token.start[i];
+        }
     }
-    memcpy(buffer, token.start, (size_t)token.length);
-    buffer[token.length] = '\0';
-    return strtod(buffer, NULL);
+    buffer[length] = '\0';
+
+    int base = 10;
+    int start = 0;
+
+    if (length >= 2 && buffer[0] == '0') {
+        switch (buffer[1]) {
+        case 'x':
+        case 'X': base = 16; start = 2; break;
+        case 'b':
+        case 'B': base = 2; start = 2; break;
+        case 'o':
+        case 'O': base = 8; start = 2; break;
+        default: break;
+        }
+    }
+    if (base == 10) {
+        return strtod(buffer, NULL);
+    }
+
+    double value = 0.0;
+
+    for (int i = start; i < length; i++) {
+        char c = buffer[i];
+        int digit = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
+
+        value = value * (double)base + (double)digit;
+    }
+    return value;
 }
 
 static Expr *primary(Parser *parser)

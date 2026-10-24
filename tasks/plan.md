@@ -89,7 +89,7 @@ original numbering:
 - [ ] T15 Labelled loops + labelled `break`/`continue`
 - [ ] T16 `switch`/`case`/`default`
 - [ ] T17 String interpolation
-- [ ] T18 Numeric literal sugar (hex/bin/oct, `_` separators)
+- [x] T18 Numeric literal sugar (hex/bin/oct, `_` separators)
 
 ### Checkpoint: Phase 2
 - [ ] All tests pass, build clean, docs updated

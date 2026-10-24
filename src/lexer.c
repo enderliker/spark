@@ -191,16 +191,96 @@ static Token identifier(Lexer *lexer)
     return make_token(lexer, identifier_type(lexer));
 }
 
+static int digit_value(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return 99;
+}
+
+static bool consume_digits(Lexer *lexer, int base, int *digit_count)
+{
+    bool last_separator = *digit_count == 0;
+
+    while (!is_at_end(lexer)) {
+        char c = peek(lexer);
+
+        if (c == '_') {
+            if (last_separator) {
+                return false;
+            }
+            last_separator = true;
+            advance(lexer);
+        } else if (digit_value(c) < base) {
+            (*digit_count)++;
+            last_separator = false;
+            advance(lexer);
+        } else {
+            break;
+        }
+    }
+    return !last_separator;
+}
+
+static Token base_number(Lexer *lexer, int base, const char *prefix)
+{
+    int digits = 0;
+
+    advance(lexer); /* the base prefix */
+    if (!consume_digits(lexer, base, &digits) || digits == 0) {
+        char message[96];
+
+        if (is_identifier_part(peek(lexer))) {
+            snprintf(message, sizeof(message), "invalid digit '%c' in a base-%d literal",
+                     peek(lexer), base);
+        } else {
+            snprintf(message, sizeof(message), "expected digits after '%s'", prefix);
+        }
+        return error_token(lexer, message);
+    }
+    if (is_identifier_part(peek(lexer))) {
+        char message[96];
+
+        snprintf(message, sizeof(message), "invalid digit '%c' in a base-%d literal",
+                 peek(lexer), base);
+        return error_token(lexer, message);
+    }
+    return make_token(lexer, TOKEN_NUMBER);
+}
+
 static Token number(Lexer *lexer)
 {
-    while (isdigit((unsigned char)peek(lexer))) {
-        advance(lexer);
+    if (lexer->start[0] == '0') {
+        char prefix = peek(lexer);
+
+        if (prefix == 'x' || prefix == 'X') {
+            return base_number(lexer, 16, "0x");
+        }
+        if (prefix == 'b' || prefix == 'B') {
+            return base_number(lexer, 2, "0b");
+        }
+        if (prefix == 'o' || prefix == 'O') {
+            return base_number(lexer, 8, "0o");
+        }
+    }
+
+    int digits = 1;
+
+    if (!consume_digits(lexer, 10, &digits)) {
+        return error_token(lexer, "a digit separator must be between digits");
     }
     if (peek(lexer) == '.' && isdigit((unsigned char)peek_next(lexer))) {
+        int fraction = 0;
+
         advance(lexer);
-        while (isdigit((unsigned char)peek(lexer))) {
-            advance(lexer);
-        }
+        consume_digits(lexer, 10, &fraction);
     }
     if (peek(lexer) == 'e' || peek(lexer) == 'E') {
         const char *save = lexer->current;

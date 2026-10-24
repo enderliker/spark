@@ -1,0 +1,7 @@
+// Numeric literal sugar: hexadecimal, binary, octal and digit separators.
+print(0x10, 0XFF, 0xdead_beef);
+print(0b1010, 0B11, 0b1010_1010);
+print(0o17, 0O10, 0o7_7);
+print(1_000_000, 1_2_3, 1.5_0, 1_000.000_1);
+print(0x10 == 16, 0b1010 == 10, 0o17 == 15);
+print(0xff + 1);

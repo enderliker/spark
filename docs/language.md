@@ -52,9 +52,11 @@ true false nil and or not
 | `map` | `{"a": 1}` | always truthy |
 | `function` | `fn(x) { return x; }`, `print` | always truthy |
 
-Numbers are double-precision floating point. Arrays and maps can hold any value,
-including other arrays and functions. Functions, arrays and maps are compared by
-identity; strings by content.
+Numbers are double-precision floating point. Literals can be decimal (`42`, `3.5`,
+`1e3`), hexadecimal (`0xff`), binary (`0b1010`) or octal (`0o17`). Underscores may
+separate digits (`1_000_000`, `0xFF_FF`); a separator must sit between two digits.
+Arrays and maps can hold any value, including other arrays and functions. Functions,
+arrays and maps are compared by identity; strings by content.
 
 ## 3. Operators
 

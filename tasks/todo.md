@@ -221,9 +221,9 @@ auto-break (decide; propose auto-break for safety) .
 ### T18 - Numeric literal sugar
 **Description:** Hex (`0x`), binary (`0b`) and `_` digit separators.
 **Acceptance criteria:**
-- [ ] Values match the decimal equivalent; invalid forms are syntax errors.
+- [x] Values match the decimal equivalent; invalid forms are syntax errors.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
