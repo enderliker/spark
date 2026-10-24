@@ -1,2 +1,2 @@
 exit: 70
-stderr: cannot assign to constant 'x'
+stderr: ConstError at line 3: cannot assign to constant 'x'

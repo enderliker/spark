@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 
+#include "error.h"
 #include "value.h"
 
 typedef enum {
@@ -19,7 +20,8 @@ void vm_free(void);
  * expressions are printed and global variables are kept between calls. */
 InterpretResult vm_interpret(const char *source, const char *script_name, bool repl_mode);
 
-void vm_runtime_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void vm_runtime_error(ErrorType type, const char *fmt, ...)
+    __attribute__((format(printf, 2, 3)));
 
 /* Stable index of a global variable (created if it does not exist), or -1 if
  * there is no room. The compiler uses the index as the operand of the global

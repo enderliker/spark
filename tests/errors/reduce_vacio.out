@@ -1,2 +1,2 @@
 exit: 70
-stderr: 'reduce' cannot be applied to an empty array
+stderr: ValueError at line 1: 'reduce' cannot be applied to an empty array

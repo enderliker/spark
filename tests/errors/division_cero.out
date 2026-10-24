@@ -1,2 +1,2 @@
 exit: 70
-stderr: division by zero
+stderr: ZeroDivisionError at line 1: division by zero

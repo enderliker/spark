@@ -1,2 +1,2 @@
 exit: 70
-stderr: too much call depth
+stderr: RecursionError at line 1: too much call depth

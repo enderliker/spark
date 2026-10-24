@@ -1,2 +1,2 @@
 exit: 70
-stderr: the operands of '+' must be two numbers or two strings
+stderr: TypeError at line 1: the operands of '+' must be two numbers or two strings

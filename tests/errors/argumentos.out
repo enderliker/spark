@@ -1,2 +1,2 @@
 exit: 70
-stderr: expects 1 argument(s) but received 0
+stderr: ArityError at line 2: the function 'f' expects 1 argument(s) but received 0

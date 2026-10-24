@@ -333,7 +333,7 @@ static Value native_len(int arg_count, Value *args)
     if (is_obj_type(value, OBJ_MAP)) {
         return NUMBER_VAL((double)AS_MAP(value)->count);
     }
-    vm_runtime_error("'len' expects a string, an array or a map, received %s",
+    vm_runtime_error(ERROR_TYPE, "'len' expects a string, an array or a map, received %s",
                      value_type_name(value));
     return NIL_VAL;
 }
@@ -342,7 +342,7 @@ static Value native_push(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'push' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'push' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -358,13 +358,13 @@ static Value native_pop(int arg_count, Value *args)
 
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'pop' expects an array, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'pop' expects an array, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjArray *array = (ObjArray *)AS_OBJ(args[0]);
 
     if (!array_pop(array, &popped)) {
-        vm_runtime_error("'pop' cannot be applied to an empty array");
+        vm_runtime_error(ERROR_VALUE, "'pop' cannot be applied to an empty array");
         return NIL_VAL;
     }
     return popped;
@@ -388,19 +388,19 @@ static Value native_num(int arg_count, Value *args)
         double result = strtod(string->chars, &end);
 
         if (end == string->chars) {
-            vm_runtime_error("'num' could not convert \"%s\" to a number", string->chars);
+            vm_runtime_error(ERROR_VALUE, "'num' could not convert \"%s\" to a number", string->chars);
             return NIL_VAL;
         }
         while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
             end++;
         }
         if (*end != '\0') {
-            vm_runtime_error("'num' could not convert \"%s\" to a number", string->chars);
+            vm_runtime_error(ERROR_VALUE, "'num' could not convert \"%s\" to a number", string->chars);
             return NIL_VAL;
         }
         return NUMBER_VAL(result);
     }
-    vm_runtime_error("'num' expects a number or a string, received %s", value_type_name(args[0]));
+    vm_runtime_error(ERROR_TYPE, "'num' expects a number or a string, received %s", value_type_name(args[0]));
     return NIL_VAL;
 }
 
@@ -432,7 +432,7 @@ static Value native_clock(int arg_count, Value *args)
 static Value native_assert(int arg_count, Value *args)
 {
     if (arg_count < 1 || arg_count > 2) {
-        vm_runtime_error("'assert' expects 1 or 2 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'assert' expects 1 or 2 arguments, received %d", arg_count);
         return NIL_VAL;
     }
     if (value_is_falsey(args[0])) {
@@ -440,9 +440,9 @@ static Value native_assert(int arg_count, Value *args)
             ObjString *message = is_obj_type(args[1], OBJ_STRING) ? AS_STRING(args[1])
                                                                  : value_to_string(args[1]);
 
-            vm_runtime_error("%s", message->chars);
+            vm_runtime_error(ERROR_ASSERT, "%s", message->chars);
         } else {
-            vm_runtime_error("assert failed");
+            vm_runtime_error(ERROR_ASSERT, "assert failed");
         }
     }
     return NIL_VAL;
@@ -454,7 +454,7 @@ static Value native_has(int arg_count, Value *args)
 
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'has' expects a map as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'has' expects a map as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -465,7 +465,7 @@ static Value native_del(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'del' expects a map as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'del' expects a map as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -476,7 +476,7 @@ static Value native_keys(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'keys' expects a map, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'keys' expects a map, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjMap *map = AS_MAP(args[0]);
@@ -496,7 +496,7 @@ static Value native_values(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'values' expects a map, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'values' expects a map, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjMap *map = AS_MAP(args[0]);
@@ -515,14 +515,14 @@ static Value native_values(int arg_count, Value *args)
 static bool integer_argument(Value value, const char *name, const char *function, int *out)
 {
     if (!is_number(value)) {
-        vm_runtime_error("'%s' expects an integer as %s, received %s", function, name,
+        vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %s", function, name,
                          value_type_name(value));
         return false;
     }
     double raw = AS_NUMBER(value);
 
     if (raw != floor(raw) || raw < -2147483648.0 || raw > 2147483647.0) {
-        vm_runtime_error("'%s' expects an integer as %s, received %g", function, name, raw);
+        vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %g", function, name, raw);
         return false;
     }
     *out = (int)raw;
@@ -544,7 +544,7 @@ static Value native_range(int arg_count, Value *args)
             return NIL_VAL;
         }
     } else {
-        vm_runtime_error("'range' expects 1 or 2 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'range' expects 1 or 2 arguments, received %d", arg_count);
         return NIL_VAL;
     }
 
@@ -552,7 +552,7 @@ static Value native_range(int arg_count, Value *args)
         end = start;
     }
     if ((long long)end - start > 10000000LL) {
-        vm_runtime_error("'range' cannot generate more than 10 million elements");
+        vm_runtime_error(ERROR_VALUE, "'range' cannot generate more than 10 million elements");
         return NIL_VAL;
     }
 
@@ -569,11 +569,11 @@ static Value native_range(int arg_count, Value *args)
 static Value native_substr(int arg_count, Value *args)
 {
     if (arg_count < 2 || arg_count > 3) {
-        vm_runtime_error("'substr' expects 2 or 3 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'substr' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
     if (!is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error("'substr' expects a string as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'substr' expects a string as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -585,7 +585,7 @@ static Value native_substr(int arg_count, Value *args)
         return NIL_VAL;
     }
     if (start < 0) {
-        vm_runtime_error("'substr' does not accept a negative start (%d)", start);
+        vm_runtime_error(ERROR_VALUE, "'substr' does not accept a negative start (%d)", start);
         return NIL_VAL;
     }
     if (arg_count == 3) {
@@ -593,7 +593,7 @@ static Value native_substr(int arg_count, Value *args)
             return NIL_VAL;
         }
         if (count < 0) {
-            vm_runtime_error("'substr' does not accept a negative count (%d)", count);
+            vm_runtime_error(ERROR_VALUE, "'substr' does not accept a negative count (%d)", count);
             return NIL_VAL;
         }
     } else {
@@ -622,7 +622,7 @@ static Value numeric_unary(int arg_count, Value *args, const char *name, double 
 {
     (void)arg_count;
     if (!is_number(args[0])) {
-        vm_runtime_error("'%s' expects a number, received %s", name, value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'%s' expects a number, received %s", name, value_type_name(args[0]));
         return NIL_VAL;
     }
     return NUMBER_VAL(fn(AS_NUMBER(args[0])));
@@ -652,11 +652,11 @@ static Value native_sqrt(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_number(args[0])) {
-        vm_runtime_error("'sqrt' expects a number, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'sqrt' expects a number, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     if (AS_NUMBER(args[0]) < 0) {
-        vm_runtime_error("'sqrt' does not accept negative numbers");
+        vm_runtime_error(ERROR_VALUE, "'sqrt' does not accept negative numbers");
         return NIL_VAL;
     }
     return NUMBER_VAL(sqrt(AS_NUMBER(args[0])));
@@ -666,7 +666,7 @@ static Value native_pow(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_number(args[0]) || !is_number(args[1])) {
-        vm_runtime_error("'pow' expects two numbers");
+        vm_runtime_error(ERROR_TYPE, "'pow' expects two numbers");
         return NIL_VAL;
     }
     return NUMBER_VAL(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
@@ -676,7 +676,7 @@ static Value native_min(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_number(args[0]) || !is_number(args[1])) {
-        vm_runtime_error("'min' expects two numbers");
+        vm_runtime_error(ERROR_TYPE, "'min' expects two numbers");
         return NIL_VAL;
     }
     return AS_NUMBER(args[0]) <= AS_NUMBER(args[1]) ? args[0] : args[1];
@@ -686,7 +686,7 @@ static Value native_max(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_number(args[0]) || !is_number(args[1])) {
-        vm_runtime_error("'max' expects two numbers");
+        vm_runtime_error(ERROR_TYPE, "'max' expects two numbers");
         return NIL_VAL;
     }
     return AS_NUMBER(args[0]) >= AS_NUMBER(args[1]) ? args[0] : args[1];
@@ -739,7 +739,7 @@ static Value native_contains(int arg_count, Value *args)
     }
     if (is_obj_type(container, OBJ_STRING)) {
         if (!is_obj_type(needle, OBJ_STRING)) {
-            vm_runtime_error("'contains' expects a string as the value to look up when the "
+            vm_runtime_error(ERROR_TYPE, "'contains' expects a string as the value to look up when the "
                              "container is a string, received %s", value_type_name(needle));
             return NIL_VAL;
         }
@@ -750,7 +750,7 @@ static Value native_contains(int arg_count, Value *args)
 
         return BOOL_VAL(map_get(AS_MAP(container), needle, &ignored));
     }
-    vm_runtime_error("'contains' expects an array, a string or a map as first argument, "
+    vm_runtime_error(ERROR_TYPE, "'contains' expects an array, a string or a map as first argument, "
                      "received %s", value_type_name(container));
     return NIL_VAL;
 }
@@ -773,7 +773,7 @@ static Value native_index_of(int arg_count, Value *args)
     }
     if (is_obj_type(container, OBJ_STRING)) {
         if (!is_obj_type(needle, OBJ_STRING)) {
-            vm_runtime_error("'index_of' expects a string as the value to look up when the "
+            vm_runtime_error(ERROR_TYPE, "'index_of' expects a string as the value to look up when the "
                              "container is a string, received %s", value_type_name(needle));
             return NIL_VAL;
         }
@@ -785,7 +785,7 @@ static Value native_index_of(int arg_count, Value *args)
         }
         return NUMBER_VAL((double)utf8_length(haystack->chars, byte_index));
     }
-    vm_runtime_error("'index_of' expects an array or a string as first argument, "
+    vm_runtime_error(ERROR_TYPE, "'index_of' expects an array or a string as first argument, "
                      "received %s", value_type_name(container));
     return NIL_VAL;
 }
@@ -794,7 +794,7 @@ static Value native_insert(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'insert' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'insert' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -805,7 +805,7 @@ static Value native_insert(int arg_count, Value *args)
         return NIL_VAL;
     }
     if (index < 0 || index > array->count) {
-        vm_runtime_error("'insert' index out of range: %d (size %d)", index, array->count);
+        vm_runtime_error(ERROR_INDEX, "'insert' index out of range: %d (size %d)", index, array->count);
         return NIL_VAL;
     }
     array_push(array, NIL_VAL);
@@ -819,7 +819,7 @@ static Value native_remove(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'remove' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'remove' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -830,7 +830,7 @@ static Value native_remove(int arg_count, Value *args)
         return NIL_VAL;
     }
     if (index < 0 || index >= array->count) {
-        vm_runtime_error("'remove' index out of range: %d (size %d)", index, array->count);
+        vm_runtime_error(ERROR_INDEX, "'remove' index out of range: %d (size %d)", index, array->count);
         return NIL_VAL;
     }
     Value removed = array->items[index];
@@ -845,7 +845,7 @@ static Value native_reverse(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'reverse' expects an array, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'reverse' expects an array, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjArray *array = AS_ARRAY(args[0]);
@@ -863,7 +863,7 @@ static Value native_fill(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'fill' expects an array, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'fill' expects an array, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjArray *array = AS_ARRAY(args[0]);
@@ -877,11 +877,11 @@ static Value native_fill(int arg_count, Value *args)
 static Value native_slice(int arg_count, Value *args)
 {
     if (arg_count < 2 || arg_count > 3) {
-        vm_runtime_error("'slice' expects 2 or 3 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'slice' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'slice' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'slice' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -900,7 +900,7 @@ static Value native_slice(int arg_count, Value *args)
         end = array->count;
     }
     if (start < 0 || end < 0) {
-        vm_runtime_error("'slice' does not accept negative indexes (start %d, end %d)",
+        vm_runtime_error(ERROR_VALUE, "'slice' does not accept negative indexes (start %d, end %d)",
                          start, end);
         return NIL_VAL;
     }
@@ -928,7 +928,7 @@ static Value native_starts_with(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
-        vm_runtime_error("'starts_with' expects two strings");
+        vm_runtime_error(ERROR_TYPE, "'starts_with' expects two strings");
         return NIL_VAL;
     }
     ObjString *text = AS_STRING(args[0]);
@@ -944,7 +944,7 @@ static Value native_ends_with(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
-        vm_runtime_error("'ends_with' expects two strings");
+        vm_runtime_error(ERROR_TYPE, "'ends_with' expects two strings");
         return NIL_VAL;
     }
     ObjString *text = AS_STRING(args[0]);
@@ -961,7 +961,7 @@ static Value native_split(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
-        vm_runtime_error("'split' expects two strings");
+        vm_runtime_error(ERROR_TYPE, "'split' expects two strings");
         return NIL_VAL;
     }
     ObjString *text = AS_STRING(args[0]);
@@ -1001,7 +1001,7 @@ static bool buf_append_checked(buf_t *buffer, const void *data, size_t length,
                                const char *function)
 {
     if (buf_append(buffer, data, length) != 0) {
-        vm_runtime_error("could not allocate memory for '%s'", function);
+        vm_runtime_error(ERROR_MEMORY, "could not allocate memory for '%s'", function);
         return false;
     }
     return true;
@@ -1011,12 +1011,12 @@ static Value native_join(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'join' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'join' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
     if (!is_obj_type(args[1], OBJ_STRING)) {
-        vm_runtime_error("'join' expects a string as separator, received %s",
+        vm_runtime_error(ERROR_TYPE, "'join' expects a string as separator, received %s",
                          value_type_name(args[1]));
         return NIL_VAL;
     }
@@ -1039,7 +1039,7 @@ static Value native_join(int arg_count, Value *args)
         }
         if (buffer.len > (size_t)INT_MAX) {
             buf_free(&buffer);
-            vm_runtime_error("'join' would create a string that is too long");
+            vm_runtime_error(ERROR_MEMORY, "'join' would create a string that is too long");
             return NIL_VAL;
         }
     }
@@ -1058,7 +1058,7 @@ static Value native_trim(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error("'trim' expects a string, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'trim' expects a string, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjString *string = AS_STRING(args[0]);
@@ -1079,7 +1079,7 @@ static Value string_case_convert(Value value, bool to_upper)
     const char *name = to_upper ? "upper" : "lower";
 
     if (!is_obj_type(value, OBJ_STRING)) {
-        vm_runtime_error("'%s' expects a string, received %s", name, value_type_name(value));
+        vm_runtime_error(ERROR_TYPE, "'%s' expects a string, received %s", name, value_type_name(value));
         return NIL_VAL;
     }
     ObjString *string = AS_STRING(value);
@@ -1121,7 +1121,7 @@ static Value native_repeat(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error("'repeat' expects a string, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'repeat' expects a string, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjString *string = AS_STRING(args[0]);
@@ -1131,11 +1131,11 @@ static Value native_repeat(int arg_count, Value *args)
         return NIL_VAL;
     }
     if (times < 0) {
-        vm_runtime_error("'repeat' does not accept a negative count (%d)", times);
+        vm_runtime_error(ERROR_VALUE, "'repeat' does not accept a negative count (%d)", times);
         return NIL_VAL;
     }
     if (string->length > 0 && times > INT_MAX / string->length) {
-        vm_runtime_error("'repeat' would create a string that is too long");
+        vm_runtime_error(ERROR_MEMORY, "'repeat' would create a string that is too long");
         return NIL_VAL;
     }
     int length = string->length * times;
@@ -1146,7 +1146,7 @@ static Value native_repeat(int arg_count, Value *args)
     char *buffer = malloc((size_t)length + 1);
 
     if (!buffer) {
-        vm_runtime_error("could not allocate memory for 'repeat'");
+        vm_runtime_error(ERROR_MEMORY, "could not allocate memory for 'repeat'");
         return NIL_VAL;
     }
     for (int i = 0; i < times; i++) {
@@ -1165,7 +1165,7 @@ static Value native_replace(int arg_count, Value *args)
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING) ||
         !is_obj_type(args[2], OBJ_STRING)) {
-        vm_runtime_error("'replace' expects three strings");
+        vm_runtime_error(ERROR_TYPE, "'replace' expects three strings");
         return NIL_VAL;
     }
     ObjString *text = AS_STRING(args[0]);
@@ -1198,7 +1198,7 @@ static Value native_replace(int arg_count, Value *args)
         }
         if (buffer.len > (size_t)INT_MAX) {
             buf_free(&buffer);
-            vm_runtime_error("'replace' would create a string that is too long");
+            vm_runtime_error(ERROR_MEMORY, "'replace' would create a string that is too long");
             return NIL_VAL;
         }
     }
@@ -1212,7 +1212,7 @@ static Value native_clear(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'clear' expects a map, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'clear' expects a map, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjMap *map = AS_MAP(args[0]);
@@ -1229,7 +1229,7 @@ static Value native_merge(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_MAP) || !is_obj_type(args[1], OBJ_MAP)) {
-        vm_runtime_error("'merge' expects two maps");
+        vm_runtime_error(ERROR_TYPE, "'merge' expects two maps");
         return NIL_VAL;
     }
     ObjMap *destination = AS_MAP(args[0]);
@@ -1251,11 +1251,11 @@ static Value native_merge(int arg_count, Value *args)
 static Value native_get(int arg_count, Value *args)
 {
     if (arg_count < 2 || arg_count > 3) {
-        vm_runtime_error("'get' expects 2 or 3 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'get' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
     if (!is_obj_type(args[0], OBJ_MAP)) {
-        vm_runtime_error("'get' expects a map as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'get' expects a map as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1275,7 +1275,7 @@ static Value native_map(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'map' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'map' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1304,7 +1304,7 @@ static Value native_filter(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'filter' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'filter' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1332,7 +1332,7 @@ static Value native_each(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'each' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'each' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1353,11 +1353,11 @@ static Value native_each(int arg_count, Value *args)
 static Value native_reduce(int arg_count, Value *args)
 {
     if (arg_count < 2 || arg_count > 3) {
-        vm_runtime_error("'reduce' expects 2 or 3 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'reduce' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'reduce' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'reduce' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1371,7 +1371,7 @@ static Value native_reduce(int arg_count, Value *args)
         start = 0;
     } else {
         if (input->count == 0) {
-            vm_runtime_error("'reduce' cannot be applied to an empty array without an "
+            vm_runtime_error(ERROR_VALUE, "'reduce' cannot be applied to an empty array without an "
                              "initial value");
             return NIL_VAL;
         }
@@ -1398,7 +1398,7 @@ static Value native_sort(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'sort' expects an array, received %s", value_type_name(args[0]));
+        vm_runtime_error(ERROR_TYPE, "'sort' expects an array, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     ObjArray *array = AS_ARRAY(args[0]);
@@ -1428,7 +1428,7 @@ static Value native_sort_by(int arg_count, Value *args)
 {
     (void)arg_count;
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error("'sort_by' expects an array as first argument, received %s",
+        vm_runtime_error(ERROR_TYPE, "'sort_by' expects an array as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
@@ -1528,7 +1528,7 @@ static void define_native(const char *name, NativeFn function, int arity)
     pop();
 }
 
-void vm_runtime_error(const char *fmt, ...)
+void vm_runtime_error(ErrorType type, const char *fmt, ...)
 {
     va_list ap;
     char message[512];
@@ -1551,7 +1551,7 @@ void vm_runtime_error(const char *fmt, ...)
         }
     }
 
-    fprintf(stderr, "runtime error at line %d: %s\n", line, message);
+    fprintf(stderr, "%s at line %d: %s\n", error_type_name(type), line, message);
     for (int i = vm.frame_count - 1; i >= 0; i--) {
         CallFrame *frame = &vm.frames[i];
         ObjFunction *function = frame->closure->function;
@@ -1615,13 +1615,13 @@ static bool call_closure(ObjClosure *closure, int arg_count)
     ObjFunction *function = closure->function;
 
     if (arg_count != function->arity) {
-        vm_runtime_error("the function '%s' expects %d argument(s) but received %d",
+        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
                          function->name ? function->name->chars : "anonymous", function->arity,
                          arg_count);
         return false;
     }
     if (vm.frame_count == FRAMES_MAX) {
-        vm_runtime_error("too much call depth (possible infinite recursion)");
+        vm_runtime_error(ERROR_RECURSION, "too much call depth (possible infinite recursion)");
         return false;
     }
 
@@ -1643,7 +1643,7 @@ static bool call_value(Value callee, int arg_count)
             ObjNative *native = (ObjNative *)AS_OBJ(callee);
 
             if (native->arity >= 0 && arg_count != native->arity) {
-                vm_runtime_error("the function '%s' expects %d argument(s) but received %d",
+                vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
                                  native->name->chars, native->arity, arg_count);
                 return false;
             }
@@ -1660,7 +1660,7 @@ static bool call_value(Value callee, int arg_count)
             break;
         }
     }
-    vm_runtime_error("can only call functions, tried to call a %s",
+    vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
                      value_type_name(callee));
     return false;
 }
@@ -1687,7 +1687,7 @@ static inline bool compare_values(bool greater, Value a, Value b, bool *out)
         *out = greater ? comparison > 0 : comparison < 0;
         return true;
     }
-    vm_runtime_error("comparison operators expect two numbers or two strings "
+    vm_runtime_error(ERROR_TYPE, "comparison operators expect two numbers or two strings "
                      "(received %s and %s)",
                      value_type_name(a), value_type_name(b));
     return false;
@@ -1696,7 +1696,7 @@ static inline bool compare_values(bool greater, Value a, Value b, bool *out)
 static inline bool arithmetic_values(uint8_t op, Value a, Value b, double *out)
 {
     if (!is_number(a) || !is_number(b)) {
-        vm_runtime_error("arithmetic operators expect numbers (received %s and %s)",
+        vm_runtime_error(ERROR_TYPE, "arithmetic operators expect numbers (received %s and %s)",
                          value_type_name(a), value_type_name(b));
         return false;
     }
@@ -1704,7 +1704,7 @@ static inline bool arithmetic_values(uint8_t op, Value a, Value b, double *out)
     double right = AS_NUMBER(b);
 
     if ((op == OP_DIVIDE || op == OP_MODULO) && right == 0) {
-        vm_runtime_error("division by zero");
+        vm_runtime_error(ERROR_ZERO_DIVISION, "division by zero");
         return false;
     }
     switch (op) {
@@ -1726,13 +1726,13 @@ static inline bool add_values(Value a, Value b, Value *out)
         ObjString *result = object_string_concat(AS_STRING(a), AS_STRING(b));
 
         if (!result) {
-            vm_runtime_error("could not concatenate the strings");
+            vm_runtime_error(ERROR_MEMORY, "could not concatenate the strings");
             return false;
         }
         *out = OBJ_VAL(result);
         return true;
     }
-    vm_runtime_error("the operands of '+' must be two numbers or two strings "
+    vm_runtime_error(ERROR_TYPE, "the operands of '+' must be two numbers or two strings "
                      "(received %s and %s)",
                      value_type_name(a), value_type_name(b));
     return false;
@@ -2112,7 +2112,7 @@ static InterpretResult run(int base_frame)
             GlobalSlot *global = &vm.global_slots[slot];
 
             if (!global->defined) {
-                vm_runtime_error("global variable '%s' not defined", global->name->chars);
+                vm_runtime_error(ERROR_NAME, "global variable '%s' not defined", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             push(global->value);
@@ -2124,7 +2124,7 @@ static InterpretResult run(int base_frame)
             GlobalSlot *global = &vm.global_slots[slot];
 
             if (global->is_const && global->defined) {
-                vm_runtime_error("cannot redefine constant '%s'", global->name->chars);
+                vm_runtime_error(ERROR_CONST, "cannot redefine constant '%s'", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             global->value = pop();
@@ -2137,7 +2137,7 @@ static InterpretResult run(int base_frame)
             GlobalSlot *global = &vm.global_slots[slot];
 
             if (global->defined) {
-                vm_runtime_error("cannot redefine constant '%s'", global->name->chars);
+                vm_runtime_error(ERROR_CONST, "cannot redefine constant '%s'", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             global->value = pop();
@@ -2151,11 +2151,11 @@ static InterpretResult run(int base_frame)
             GlobalSlot *global = &vm.global_slots[slot];
 
             if (!global->defined) {
-                vm_runtime_error("global variable '%s' not defined", global->name->chars);
+                vm_runtime_error(ERROR_NAME, "global variable '%s' not defined", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             if (global->is_const) {
-                vm_runtime_error("cannot assign to constant '%s'", global->name->chars);
+                vm_runtime_error(ERROR_CONST, "cannot assign to constant '%s'", global->name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
             global->value = pop();
@@ -2183,21 +2183,21 @@ static InterpretResult run(int base_frame)
 
             if (is_obj_type(object, OBJ_ARRAY)) {
                 if (!is_number(index)) {
-                    vm_runtime_error("the index must be a number, received a %s",
+                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
                                      value_type_name(index));
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 double raw = AS_NUMBER(index);
 
                 if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error("the index must be a non-negative integer, received %g", raw);
+                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 ObjArray *array = AS_ARRAY(object);
                 int position = (int)raw;
 
                 if (position >= array->count) {
-                    vm_runtime_error("index out of range: %d (size %d)", position,
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
                     return INTERPRET_RUNTIME_ERROR;
                 }
@@ -2210,14 +2210,14 @@ static InterpretResult run(int base_frame)
                 }
             } else if (is_obj_type(object, OBJ_STRING)) {
                 if (!is_number(index)) {
-                    vm_runtime_error("the index must be a number, received a %s",
+                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
                                      value_type_name(index));
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 double raw = AS_NUMBER(index);
 
                 if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error("the index must be a non-negative integer, received %g", raw);
+                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 ObjString *string = AS_STRING(object);
@@ -2225,7 +2225,7 @@ static InterpretResult run(int base_frame)
                 int byte_index = utf8_byte_offset(string, position);
 
                 if (byte_index < 0) {
-                    vm_runtime_error("index out of range: %d (string of %d characters)",
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (string of %d characters)",
                                      position, utf8_length(string->chars, string->length));
                     return INTERPRET_RUNTIME_ERROR;
                 }
@@ -2233,7 +2233,7 @@ static InterpretResult run(int base_frame)
 
                 result = OBJ_VAL(object_string(string->chars + byte_index, char_length));
             } else {
-                vm_runtime_error("only an array, a map or a string can be indexed, "
+                vm_runtime_error(ERROR_TYPE, "only an array, a map or a string can be indexed, "
                                  "indexed a %s",
                                  value_type_name(object));
                 return INTERPRET_RUNTIME_ERROR;
@@ -2251,21 +2251,21 @@ static InterpretResult run(int base_frame)
 
             if (is_obj_type(object, OBJ_ARRAY)) {
                 if (!is_number(index)) {
-                    vm_runtime_error("the index must be a number, received a %s",
+                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
                                      value_type_name(index));
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 double raw = AS_NUMBER(index);
 
                 if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error("the index must be a non-negative integer, received %g", raw);
+                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
                     return INTERPRET_RUNTIME_ERROR;
                 }
                 ObjArray *array = AS_ARRAY(object);
                 int position = (int)raw;
 
                 if (position >= array->count) {
-                    vm_runtime_error("index out of range: %d (size %d)", position,
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
                     return INTERPRET_RUNTIME_ERROR;
                 }
@@ -2273,7 +2273,7 @@ static InterpretResult run(int base_frame)
             } else if (is_obj_type(object, OBJ_MAP)) {
                 map_set(AS_MAP(object), index, value);
             } else {
-                vm_runtime_error("can only assign to an array or a map, tried to assign to a %s",
+                vm_runtime_error(ERROR_TYPE, "can only assign to an array or a map, tried to assign to a %s",
                                  value_type_name(object));
                 return INTERPRET_RUNTIME_ERROR;
             }
@@ -2344,7 +2344,7 @@ static InterpretResult run(int base_frame)
                 vm.stack_top--;
                 break;
             }
-            vm_runtime_error("cannot iterate over a %s", value_type_name(iterable));
+            vm_runtime_error(ERROR_TYPE, "cannot iterate over a %s", value_type_name(iterable));
             return INTERPRET_RUNTIME_ERROR;
         }
 
@@ -2359,7 +2359,7 @@ static InterpretResult run(int base_frame)
             } else if (is_obj_type(value, OBJ_STRING)) {
                 length = (double)utf8_length(AS_STRING(value)->chars, AS_STRING(value)->length);
             } else {
-                vm_runtime_error("'len' expects an array, a map or a string, received %s",
+                vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map or a string, received %s",
                                  value_type_name(value));
                 return INTERPRET_RUNTIME_ERROR;
             }
@@ -2472,7 +2472,7 @@ static InterpretResult run(int base_frame)
             Value value = pop();
 
             if (!is_number(value)) {
-                vm_runtime_error("negation expects a number, received %s",
+                vm_runtime_error(ERROR_TYPE, "negation expects a number, received %s",
                                  value_type_name(value));
                 return INTERPRET_RUNTIME_ERROR;
             }
@@ -2614,7 +2614,7 @@ static InterpretResult run(int base_frame)
         }
 
         default:
-            vm_runtime_error("unknown instruction (%d)", instruction);
+            vm_runtime_error(ERROR_RUNTIME, "unknown instruction (%d)", instruction);
             return INTERPRET_RUNTIME_ERROR;
         }
 
@@ -2634,7 +2634,7 @@ static bool call_callback(Value callee, int arg_count, Value *result)
         ObjNative *native = (ObjNative *)AS_OBJ(callee);
 
         if (native->arity >= 0 && arg_count != native->arity) {
-            vm_runtime_error("the function '%s' expects %d argument(s) but received %d",
+            vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
                              native->name->chars, native->arity, arg_count);
             return false;
         }
@@ -2643,11 +2643,11 @@ static bool call_callback(Value callee, int arg_count, Value *result)
         return true;
     }
     if (!is_obj_type(callee, OBJ_CLOSURE)) {
-        vm_runtime_error("a callback must be a function, received %s", value_type_name(callee));
+        vm_runtime_error(ERROR_TYPE, "a callback must be a function, received %s", value_type_name(callee));
         return false;
     }
     if (vm.frame_count == FRAMES_MAX) {
-        vm_runtime_error("too much call depth (possible infinite recursion)");
+        vm_runtime_error(ERROR_RECURSION, "too much call depth (possible infinite recursion)");
         return false;
     }
 
@@ -2776,7 +2776,8 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
 
     arena_init(&arena);
     if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line)) {
-        fprintf(stderr, "syntax error at line %d: %s\n", error_line, error);
+        fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_SYNTAX), error_line,
+                error);
         arena_free(&arena);
         return INTERPRET_COMPILE_ERROR;
     }
@@ -2786,7 +2787,8 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
 
     arena_free(&arena);
     if (!function) {
-        fprintf(stderr, "compilation error at line %d: %s\n", error_line, error);
+        fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_COMPILE), error_line,
+                error);
         return INTERPRET_COMPILE_ERROR;
     }
 

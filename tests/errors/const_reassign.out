@@ -1,2 +1,2 @@
 exit: 65
-stderr: cannot assign to constant 'x'
+stderr: CompileError at line 2: cannot assign to constant 'x'

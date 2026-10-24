@@ -1,2 +1,2 @@
 exit: 65
-stderr: expected ';' after the declaration
+stderr: SyntaxError at line 2: expected ';' after the declaration

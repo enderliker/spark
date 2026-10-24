@@ -1,2 +1,2 @@
 exit: 70
-stderr: something failed
+stderr: AssertionError at line 1: something failed

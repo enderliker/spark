@@ -1,2 +1,2 @@
 exit: 70
-stderr: global variable 'noexiste' not defined
+stderr: NameError at line 1: global variable 'noexiste' not defined

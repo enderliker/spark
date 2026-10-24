@@ -1,2 +1,2 @@
 exit: 70
-stderr: index out of range
+stderr: IndexError at line 2: index out of range: 5 (size 2)

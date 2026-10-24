@@ -131,14 +131,16 @@ static int run_file(const char *path, bool dump)
 
         arena_init(&arena);
         if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line)) {
-            fprintf(stderr, "syntax error on line %d: %s\n", error_line, error);
+            fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_SYNTAX),
+                    error_line, error);
             status = 65;
         } else {
             ObjFunction *function = compile_ast(program, path, false, error, sizeof(error),
                                                 &error_line);
 
             if (!function) {
-                fprintf(stderr, "compilation error on line %d: %s\n", error_line, error);
+                fprintf(stderr, "%s at line %d: %s\n", error_type_name(ERROR_COMPILE),
+                        error_line, error);
                 status = 65;
             } else {
                 chunk_disassemble_function(function);

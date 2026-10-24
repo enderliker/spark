@@ -404,20 +404,39 @@ truthy value when `x` must come before `y`.
 
 ## 11. Errors
 
-Syntax and compilation errors are reported before anything runs:
+Every diagnostic starts with a category name. Syntax and compilation errors are
+reported before anything runs:
 
 ```
-syntax error at line 3: expected ';' after the declaration
-compilation error at line 2: 'break' can only be used inside a loop
+SyntaxError at line 3: expected ';' after the declaration
+CompileError at line 2: cannot assign to constant 'x'
 ```
 
 Runtime errors show the line and the call trace:
 
 ```
-runtime error at line 4: division by zero
+ZeroDivisionError at line 4: division by zero
   in divide (line 4)
   in program.spark (line 7)
 ```
+
+The categories are:
+
+| Category | Raised when |
+| --- | --- |
+| `SyntaxError` | the source is malformed |
+| `CompileError` | the program is valid syntax but semantically wrong |
+| `TypeError` | an operation receives a value of the wrong type |
+| `NameError` | a global name is not defined |
+| `ConstError` | assigning to or redefining a constant at runtime |
+| `ZeroDivisionError` | division or modulo by zero |
+| `IndexError` | an array or string index is out of range |
+| `ValueError` | a value is outside the accepted domain (negative sizes, bad conversion) |
+| `ArityError` | a function is called with the wrong number of arguments |
+| `AssertionError` | `assert` fails |
+| `RecursionError` | the call-depth limit is reached |
+| `MemoryError` | an allocation fails or a result would be too large |
+| `RuntimeError` | any other runtime failure |
 
 Interpreter exit codes:
 
