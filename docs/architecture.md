@@ -149,36 +149,43 @@ one is a numeric constant:
   `JUMP_IF_NOT_LESS_LOCAL_CONST` / `JUMP_IF_NOT_GREATER_LOCAL_CONST`, which compares
   and branches without pushing a boolean.
 - `return local;` compiles to `RETURN_LOCAL`.
+- `return a + b;` compiles to `RETURN_ADD`, fusing addition and return.
+- `self(local - const)` compiles to `CALL_SELF_SUB_LOCAL_CONST`, avoiding stack moves and global lookups during self-recursive calls.
 
 All of them reuse the same helpers (`compare_values`, `arithmetic_values`,
 `add_values`) as the general operations, so error messages and semantics are identical.
 The `fib(27)` benchmark went from ~22 ms to ~13 ms with these fusions alone.
 
-### Hot/cold dispatch
+### Hot/cold dispatch and direct threading
 
 The execution loop keeps `ip`, the stack top, the current frame's slots and its
 constant pool in local variables. A hot path handles the error-free,
 allocation-free instructions that dominate numeric loops and recursion:
 constants, locals, globals, numeric arithmetic/comparisons, fused
-superinstructions, jumps, closure calls and returns. Anything else (natives,
+superinstructions, jumps, closure calls and returns. Direct threading (computed goto)
+is used on compilers that support labels-as-values (GCC/Clang) to eliminate centralized
+indirect jump prediction bottlenecks. Anything else (natives,
 allocations, string operations, type errors, undefined globals) jumps to the
 general path after writing `ip` and `sp` back into the VM, so the GC and error
 reporting always see a consistent state. `CALL` uses the hot path only for a
 closure with matching arity and an available frame; `RETURN` does the same
 unless it would leave the current `run()` (frame 0 or `base_frame`). The fast
-return also skips `close_upvalues` when no upvalue is open. This brought the
-`fib(27)` benchmark to ~9.5 ms minimum on the development machine.
+return also skips `close_upvalues` when no upvalue is open. Call frames cache
+the constant pool pointer directly to eliminate indirection upon return.
+Together with call/return fusions, this brought the `fib(27)` benchmark to
+~4.6 ms minimum on the development machine.
 
 ## Stack and frames
 
 The value stack is a fixed array of `STACK_MAX` (131072) `Value`. A frame stores the
-closure, the instruction pointer and the base slot:
+closure, the instruction pointer, the base slot and the cached constant pool:
 
 ```c
 typedef struct {
     ObjClosure *closure;
     uint8_t *ip;
     Value *slots;
+    Value *constants;
 } CallFrame;
 ```
 

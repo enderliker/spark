@@ -43,3 +43,9 @@ var negative = -4;
 if (negative < 0) {
     print("negative");
 }
+
+fn add_return(a, b) {
+    return a + b;
+}
+print(add_return(10, 20));
+print(add_return(1.5, 2.5));

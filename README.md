@@ -224,7 +224,7 @@ the exit code and a `stderr` fragment, REPL sessions and the CLI options. There 
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) several times and reports
 the minimum and median. The VM uses fused superinstructions and hot/cold dispatch to
-keep the minimum around 9.5 ms on the development machine.
+keep the minimum around 4.6 ms on the development machine.
 
 ## Known limits of this version
 

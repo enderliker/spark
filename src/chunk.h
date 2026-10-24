@@ -65,7 +65,9 @@ typedef enum {
     OP_CALL,          /* u8: arguments */
     OP_CLOSURE,       /* u16 constant + (is_local, index) pairs */
     OP_CLOSE_UPVALUE,
-    OP_RETURN
+    OP_RETURN,
+    OP_RETURN_ADD,
+    OP_CALL_SELF_SUB_LOCAL_CONST /* u8: slot, u16: constant */
 } OpCode;
 
 typedef struct {

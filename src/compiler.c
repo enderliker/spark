@@ -434,6 +434,8 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
     init_compiler(&fn, enclosing, FUNC_FUNCTION, enclosing->ctx);
     if (name.length > 0) {
         fn.function->name = object_string(name.chars, name.length);
+        fn.locals[0].name = name;
+        fn.locals[0].is_const = true;
     }
 
     for (ParamList *param = params; param; param = param->next) {
@@ -1007,6 +1009,14 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         if (compiler->type == FUNC_SCRIPT) {
             compile_error(compiler, line, "'return' can only be used inside a function");
         }
+        if (stmt->as.ret.value && stmt->as.ret.value->kind == EXPR_BINARY &&
+            stmt->as.ret.value->as.binary.op == TOKEN_PLUS) {
+            compile_expression(compiler, stmt->as.ret.value->as.binary.left);
+            compile_expression(compiler, stmt->as.ret.value->as.binary.right);
+            compiler->column = stmt->column;
+            emit_byte(compiler, OP_RETURN_ADD, line);
+            break;
+        }
         if (stmt->as.ret.value && stmt->as.ret.value->kind == EXPR_VARIABLE) {
             int slot = resolve_local(compiler, stmt->as.ret.value->as.variable, line);
 
@@ -1208,7 +1218,27 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         break;
     }
 
-    case EXPR_CALL:
+    case EXPR_CALL: {
+        /* Superinstruction: self-recursive call with (local - constant) argument */
+        if (compiler->type == FUNC_FUNCTION &&
+            expr->as.call.argument_count == 1 &&
+            expr->as.call.callee->kind == EXPR_VARIABLE &&
+            resolve_local(compiler, expr->as.call.callee->as.variable, line) == 0) {
+            Expr *arg = expr->as.call.arguments->expr;
+            if (arg->kind == EXPR_BINARY && arg->as.binary.op == TOKEN_MINUS &&
+                arg->as.binary.left->kind == EXPR_VARIABLE &&
+                arg->as.binary.right->kind == EXPR_NUMBER) {
+                int slot = resolve_local(compiler, arg->as.binary.left->as.variable, line);
+                if (slot >= 0) {
+                    int index = add_constant(compiler, expr_number_value(arg->as.binary.right), line);
+                    compiler->column = expr->column;
+                    emit_byte(compiler, OP_CALL_SELF_SUB_LOCAL_CONST, line);
+                    emit_byte(compiler, (uint8_t)slot, line);
+                    emit_u16(compiler, (uint16_t)index, line);
+                    break;
+                }
+            }
+        }
         compile_expression(compiler, expr->as.call.callee);
         for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
             compile_expression(compiler, arg->expr);
@@ -1217,6 +1247,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         emit_byte(compiler, OP_CALL, line);
         emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
         break;
+    }
 
     case EXPR_INDEX:
         compile_expression(compiler, expr->as.index.object);

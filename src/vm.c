@@ -25,6 +25,7 @@ typedef struct {
     ObjClosure *closure;
     uint8_t *ip;
     Value *slots;
+    Value *constants;
 } CallFrame;
 
 typedef struct {
@@ -1761,6 +1762,7 @@ static bool call_closure(ObjClosure *closure, int arg_count)
     frame->closure = closure;
     frame->ip = function->chunk.code;
     frame->slots = vm.stack_top - arg_count - 1;
+    frame->constants = function->chunk.constants;
     return true;
 }
 
@@ -2015,8 +2017,23 @@ static bool index_to_position(Value index, int *out)
     do {                                                                  \
         ip = frame->ip;                                                   \
         slots = frame->slots;                                             \
-        constants = frame->closure->function->chunk.constants;           \
+        constants = frame->constants;                                     \
     } while (0)
+
+#if defined(__GNUC__) || defined(__clang__)
+#define SPARK_COMPUTED_GOTO 1
+#endif
+
+#ifdef SPARK_COMPUTED_GOTO
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+#pragma GCC diagnostic ignored "-Woverride-init"
+#define DISPATCH() goto *dispatch_table[*ip]
+#define TARGET(op) op_##op
+#else
+#define DISPATCH() continue
+#define TARGET(op) case op
+#endif
 
 /* The loop has two paths. The hot path below keeps `ip` and `sp` in local
  * variables (so the compiler can keep them in registers) and only handles the
@@ -2031,49 +2048,84 @@ static InterpretResult run(int base_frame)
     Value *slots;
     Value *constants;
     Value *sp = vm.stack_top;
+    uint8_t instruction;
 
     LOAD_FRAME();
 
+#ifdef SPARK_COMPUTED_GOTO
+    static const void *const dispatch_table[256] = {
+        [0 ... 255] = &&cold_dispatch,
+        [OP_CONSTANT] = &&op_OP_CONSTANT,
+        [OP_NIL] = &&op_OP_NIL,
+        [OP_TRUE] = &&op_OP_TRUE,
+        [OP_FALSE] = &&op_OP_FALSE,
+        [OP_POP] = &&op_OP_POP,
+        [OP_GET_LOCAL] = &&op_OP_GET_LOCAL,
+        [OP_SET_LOCAL] = &&op_OP_SET_LOCAL,
+        [OP_GET_GLOBAL] = &&op_OP_GET_GLOBAL,
+        [OP_ADD] = &&op_OP_ADD,
+        [OP_SUBTRACT] = &&op_OP_SUBTRACT,
+        [OP_MULTIPLY] = &&op_OP_MULTIPLY,
+        [OP_LESS] = &&op_OP_LESS,
+        [OP_GREATER] = &&op_OP_GREATER,
+        [OP_ADD_LOCAL_CONST] = &&op_OP_ADD_LOCAL_CONST,
+        [OP_SUBTRACT_LOCAL_CONST] = &&op_OP_SUBTRACT_LOCAL_CONST,
+        [OP_MULTIPLY_LOCAL_CONST] = &&op_OP_MULTIPLY_LOCAL_CONST,
+        [OP_LESS_LOCAL_CONST] = &&op_OP_LESS_LOCAL_CONST,
+        [OP_GREATER_LOCAL_CONST] = &&op_OP_GREATER_LOCAL_CONST,
+        [OP_JUMP] = &&op_OP_JUMP,
+        [OP_JUMP_IF_FALSE] = &&op_OP_JUMP_IF_FALSE,
+        [OP_JUMP_IF_FALSE_POP] = &&op_OP_JUMP_IF_FALSE_POP,
+        [OP_JUMP_IF_NOT_LESS_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_LESS_LOCAL_CONST,
+        [OP_JUMP_IF_NOT_GREATER_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_GREATER_LOCAL_CONST,
+        [OP_LOOP] = &&op_OP_LOOP,
+        [OP_CALL] = &&op_OP_CALL,
+        [OP_RETURN_LOCAL] = &&op_OP_RETURN_LOCAL,
+        [OP_RETURN] = &&op_OP_RETURN,
+        [OP_RETURN_ADD] = &&op_OP_RETURN_ADD,
+        [OP_CALL_SELF_SUB_LOCAL_CONST] = &&op_OP_CALL_SELF_SUB_LOCAL_CONST,
+    };
+    DISPATCH();
+#else
     for (;;) {
-        uint8_t instruction;
-
         switch (*ip) {
-        case OP_CONSTANT:
+#endif
+        TARGET(OP_CONSTANT):
             *sp++ = constants[U16_AT(ip + 1)];
             ip += 3;
-            continue;
+            DISPATCH();
 
-        case OP_NIL:
+        TARGET(OP_NIL):
             *sp++ = NIL_VAL;
             ip += 1;
-            continue;
+            DISPATCH();
 
-        case OP_TRUE:
+        TARGET(OP_TRUE):
             *sp++ = BOOL_VAL(true);
             ip += 1;
-            continue;
+            DISPATCH();
 
-        case OP_FALSE:
+        TARGET(OP_FALSE):
             *sp++ = BOOL_VAL(false);
             ip += 1;
-            continue;
+            DISPATCH();
 
-        case OP_POP:
+        TARGET(OP_POP):
             sp--;
             ip += 1;
-            continue;
+            DISPATCH();
 
-        case OP_GET_LOCAL:
+        TARGET(OP_GET_LOCAL):
             *sp++ = slots[ip[1]];
             ip += 2;
-            continue;
+            DISPATCH();
 
-        case OP_SET_LOCAL:
+        TARGET(OP_SET_LOCAL):
             slots[ip[1]] = *--sp;
             ip += 2;
-            continue;
+            DISPATCH();
 
-        case OP_GET_GLOBAL: {
+        TARGET(OP_GET_GLOBAL): {
             GlobalSlot *global = &vm.global_slots[U16_AT(ip + 1)];
 
             if (!global->defined) {
@@ -2081,10 +2133,10 @@ static InterpretResult run(int base_frame)
             }
             *sp++ = global->value;
             ip += 3;
-            continue;
+            DISPATCH();
         }
 
-        case OP_ADD: {
+        TARGET(OP_ADD): {
             Value a = sp[-2];
             Value b = sp[-1];
 
@@ -2095,7 +2147,7 @@ static InterpretResult run(int base_frame)
                     sp--;
                     sp[-1] = INT_VAL(result);
                     ip += 1;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold; /* overflow promotes to a double */
             }
@@ -2105,10 +2157,10 @@ static InterpretResult run(int base_frame)
             sp--;
             sp[-1] = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
             ip += 1;
-            continue;
+            DISPATCH();
         }
 
-        case OP_SUBTRACT: {
+        TARGET(OP_SUBTRACT): {
             Value a = sp[-2];
             Value b = sp[-1];
 
@@ -2119,7 +2171,7 @@ static InterpretResult run(int base_frame)
                     sp--;
                     sp[-1] = INT_VAL(result);
                     ip += 1;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold;
             }
@@ -2129,10 +2181,10 @@ static InterpretResult run(int base_frame)
             sp--;
             sp[-1] = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
             ip += 1;
-            continue;
+            DISPATCH();
         }
 
-        case OP_MULTIPLY: {
+        TARGET(OP_MULTIPLY): {
             Value a = sp[-2];
             Value b = sp[-1];
 
@@ -2143,7 +2195,7 @@ static InterpretResult run(int base_frame)
                     sp--;
                     sp[-1] = INT_VAL(result);
                     ip += 1;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold;
             }
@@ -2153,10 +2205,10 @@ static InterpretResult run(int base_frame)
             sp--;
             sp[-1] = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
             ip += 1;
-            continue;
+            DISPATCH();
         }
 
-        case OP_LESS: {
+        TARGET(OP_LESS): {
             Value a = sp[-2];
             Value b = sp[-1];
 
@@ -2164,7 +2216,7 @@ static InterpretResult run(int base_frame)
                 sp--;
                 sp[-1] = BOOL_VAL(AS_INT(a) < AS_INT(b));
                 ip += 1;
-                continue;
+                DISPATCH();
             }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
@@ -2172,10 +2224,10 @@ static InterpretResult run(int base_frame)
             sp--;
             sp[-1] = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
             ip += 1;
-            continue;
+            DISPATCH();
         }
 
-        case OP_GREATER: {
+        TARGET(OP_GREATER): {
             Value a = sp[-2];
             Value b = sp[-1];
 
@@ -2183,7 +2235,7 @@ static InterpretResult run(int base_frame)
                 sp--;
                 sp[-1] = BOOL_VAL(AS_INT(a) > AS_INT(b));
                 ip += 1;
-                continue;
+                DISPATCH();
             }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
@@ -2191,10 +2243,10 @@ static InterpretResult run(int base_frame)
             sp--;
             sp[-1] = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
             ip += 1;
-            continue;
+            DISPATCH();
         }
 
-        case OP_ADD_LOCAL_CONST: {
+        TARGET(OP_ADD_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
@@ -2204,7 +2256,7 @@ static InterpretResult run(int base_frame)
                 if (!int_add_overflow(AS_INT(a), AS_INT(b), &result)) {
                     *sp++ = INT_VAL(result);
                     ip += 4;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold;
             }
@@ -2213,10 +2265,10 @@ static InterpretResult run(int base_frame)
             }
             *sp++ = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
             ip += 4;
-            continue;
+            DISPATCH();
         }
 
-        case OP_SUBTRACT_LOCAL_CONST: {
+        TARGET(OP_SUBTRACT_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
@@ -2226,7 +2278,7 @@ static InterpretResult run(int base_frame)
                 if (!int_sub_overflow(AS_INT(a), AS_INT(b), &result)) {
                     *sp++ = INT_VAL(result);
                     ip += 4;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold;
             }
@@ -2235,10 +2287,10 @@ static InterpretResult run(int base_frame)
             }
             *sp++ = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
             ip += 4;
-            continue;
+            DISPATCH();
         }
 
-        case OP_MULTIPLY_LOCAL_CONST: {
+        TARGET(OP_MULTIPLY_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
@@ -2248,7 +2300,7 @@ static InterpretResult run(int base_frame)
                 if (!int_mul_overflow(AS_INT(a), AS_INT(b), &result)) {
                     *sp++ = INT_VAL(result);
                     ip += 4;
-                    continue;
+                    DISPATCH();
                 }
                 goto cold;
             }
@@ -2257,64 +2309,64 @@ static InterpretResult run(int base_frame)
             }
             *sp++ = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
             ip += 4;
-            continue;
+            DISPATCH();
         }
 
-        case OP_LESS_LOCAL_CONST: {
+        TARGET(OP_LESS_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 *sp++ = BOOL_VAL(AS_INT(a) < AS_INT(b));
                 ip += 4;
-                continue;
+                DISPATCH();
             }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
             *sp++ = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
             ip += 4;
-            continue;
+            DISPATCH();
         }
 
-        case OP_GREATER_LOCAL_CONST: {
+        TARGET(OP_GREATER_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 *sp++ = BOOL_VAL(AS_INT(a) > AS_INT(b));
                 ip += 4;
-                continue;
+                DISPATCH();
             }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
             *sp++ = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
             ip += 4;
-            continue;
+            DISPATCH();
         }
 
-        case OP_JUMP:
+        TARGET(OP_JUMP):
             ip += 3 + U16_AT(ip + 1);
-            continue;
+            DISPATCH();
 
-        case OP_JUMP_IF_FALSE:
+        TARGET(OP_JUMP_IF_FALSE):
             if (value_is_falsey(sp[-1])) {
                 ip += 3 + U16_AT(ip + 1);
             } else {
                 ip += 3;
             }
-            continue;
+            DISPATCH();
 
-        case OP_JUMP_IF_FALSE_POP:
+        TARGET(OP_JUMP_IF_FALSE_POP):
             if (value_is_falsey(*--sp)) {
                 ip += 3 + U16_AT(ip + 1);
             } else {
                 ip += 3;
             }
-            continue;
+            DISPATCH();
 
-        case OP_JUMP_IF_NOT_LESS_LOCAL_CONST: {
+        TARGET(OP_JUMP_IF_NOT_LESS_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
             bool less;
@@ -2331,10 +2383,10 @@ static InterpretResult run(int base_frame)
             } else {
                 ip += 6 + U16_AT(ip + 4);
             }
-            continue;
+            DISPATCH();
         }
 
-        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: {
+        TARGET(OP_JUMP_IF_NOT_GREATER_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
             bool greater;
@@ -2351,14 +2403,14 @@ static InterpretResult run(int base_frame)
             } else {
                 ip += 6 + U16_AT(ip + 4);
             }
-            continue;
+            DISPATCH();
         }
 
-        case OP_LOOP:
+        TARGET(OP_LOOP):
             ip += 3 - U16_AT(ip + 1);
-            continue;
+            DISPATCH();
 
-        case OP_CALL: {
+        TARGET(OP_CALL): {
             int arg_count = ip[1];
             Value callee = sp[-1 - arg_count];
 
@@ -2369,48 +2421,123 @@ static InterpretResult run(int base_frame)
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
 
-                if (arg_count == function->arity && vm.frame_count < FRAMES_MAX) {
-                    CallFrame *callee_frame = &vm.frames[vm.frame_count++];
-
+                if (arg_count == function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
                     frame->ip = ip + 2;
-                    callee_frame->closure = closure;
-                    callee_frame->ip = function->chunk.code;
-                    callee_frame->slots = sp - arg_count - 1;
-                    frame = callee_frame;
-                    LOAD_FRAME();
-                    continue;
+                    frame++;
+                    frame->closure = closure;
+                    frame->ip = function->chunk.code;
+                    frame->slots = sp - arg_count - 1;
+                    frame->constants = function->chunk.constants;
+                    ip = function->chunk.code;
+                    slots = frame->slots;
+                    constants = frame->constants;
+                    DISPATCH();
                 }
             }
             goto cold;
         }
 
-        case OP_RETURN_LOCAL:
-        case OP_RETURN: {
-            int remaining = vm.frame_count - 1;
+        TARGET(OP_RETURN_LOCAL):
+        TARGET(OP_RETURN): {
             Value result;
 
             /* Returning from the outermost frame of this run() (or of the
              * program) is handled by the general path. */
-            if (remaining == 0 || remaining == base_frame) {
+            if (frame == &vm.frames[base_frame]) {
                 goto cold;
             }
             result = *ip == OP_RETURN ? sp[-1] : slots[ip[1]];
             if (vm.open_upvalues) {
                 close_upvalues(slots);
             }
-            vm.frame_count = remaining;
             sp = slots;
             *sp++ = result;
-            frame = &vm.frames[remaining - 1];
-            LOAD_FRAME();
-            continue;
+            frame--;
+            ip = frame->ip;
+            slots = frame->slots;
+            constants = frame->constants;
+            DISPATCH();
         }
 
+        TARGET(OP_CALL_SELF_SUB_LOCAL_CONST): {
+            Value a = slots[ip[1]];
+            Value b = constants[U16_AT(ip + 2)];
+            Value arg;
+
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+                if (!int_sub_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    arg = INT_VAL(result);
+                    goto do_call_self;
+                }
+            } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                arg = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+                goto do_call_self;
+            }
+            goto cold;
+
+        do_call_self:
+            if (frame >= &vm.frames[FRAMES_MAX - 1]) {
+                goto cold;
+            }
+            frame->ip = ip + 4;
+            frame++;
+            frame->closure = frame[-1].closure;
+            frame->ip = frame->closure->function->chunk.code;
+            frame->slots = sp;
+            frame->constants = constants;
+            sp[0] = frame[-1].slots[0];
+            sp[1] = arg;
+            sp += 2;
+            ip = frame->ip;
+            slots = frame->slots;
+            DISPATCH();
+        }
+
+        TARGET(OP_RETURN_ADD): {
+            Value a = sp[-2];
+            Value b = sp[-1];
+            Value result;
+
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t sum;
+                if (!int_add_overflow(AS_INT(a), AS_INT(b), &sum)) {
+                    result = INT_VAL(sum);
+                    goto do_ret_add;
+                }
+            } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                result = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+                goto do_ret_add;
+            }
+            goto cold;
+
+        do_ret_add:
+            if (frame == &vm.frames[base_frame]) {
+                goto cold;
+            }
+            if (vm.open_upvalues) {
+                close_upvalues(slots);
+            }
+            sp = slots;
+            *sp++ = result;
+            frame--;
+            ip = frame->ip;
+            slots = frame->slots;
+            constants = frame->constants;
+            DISPATCH();
+        }
+
+#ifdef SPARK_COMPUTED_GOTO
+cold_dispatch:
+        goto cold;
+#else
         default:
             break;
         }
+#endif
 
     cold:
+        vm.frame_count = (int)(frame - vm.frames) + 1;
         frame->ip = ip;
         vm.stack_top = sp;
         instruction = READ_BYTE();
@@ -2991,16 +3118,66 @@ static InterpretResult run(int base_frame)
             break;
         }
 
+        case OP_CALL_SELF_SUB_LOCAL_CONST: {
+            uint8_t slot = READ_BYTE();
+            Value b = READ_CONSTANT();
+            Value a = frame->slots[slot];
+            Value arg;
+            if (!arithmetic_values(TOKEN_MINUS, a, b, &arg)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(frame->slots[0]);
+            push(arg);
+            if (!call_closure(frame->closure, 1)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_RETURN_ADD: {
+            Value b = pop();
+            Value a = pop();
+            Value result;
+            if (!add_values(a, b, &result)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            close_upvalues(frame->slots);
+            vm.frame_count--;
+            if (vm.frame_count == 0) {
+                vm.stack_top = vm.stack;
+                return INTERPRET_OK;
+            }
+            if (vm.frame_count == base_frame) {
+                vm.stack_top = vm.frames[vm.frame_count].slots;
+                push(result);
+                return INTERPRET_OK;
+            }
+            vm.stack_top = vm.frames[vm.frame_count].slots;
+            push(result);
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+
         default:
             vm_runtime_error(ERROR_RUNTIME, "unknown instruction (%d)", instruction);
             return INTERPRET_RUNTIME_ERROR;
         }
 
         /* The general path may have changed the frame, the stack or the ip. */
+        frame = &vm.frames[vm.frame_count - 1];
         sp = vm.stack_top;
         LOAD_FRAME();
+#ifdef SPARK_COMPUTED_GOTO
+        DISPATCH();
+#else
     }
+#endif
 }
+#ifdef SPARK_COMPUTED_GOTO
+#pragma GCC diagnostic pop
+#endif
 
 /* Calls `callee` with `arg_count` arguments already pushed on the stack and
  * stores its return value in *result. Used by higher-order natives. */

@@ -95,6 +95,15 @@ static inline bool int_equals_number(int64_t integer, double number)
 
 /* Overflow-checked int64 arithmetic. Each returns true when the operation
  * does not fit and the caller must promote the result to a double. */
+#if defined(__GNUC__) && (__GNUC__ >= 5 || defined(__clang__))
+#define SPARK_OVERFLOW_BUILTINS 1
+#endif
+
+#ifdef SPARK_OVERFLOW_BUILTINS
+static inline bool int_add_overflow(int64_t a, int64_t b, int64_t *out) { return __builtin_add_overflow(a, b, out); }
+static inline bool int_sub_overflow(int64_t a, int64_t b, int64_t *out) { return __builtin_sub_overflow(a, b, out); }
+static inline bool int_mul_overflow(int64_t a, int64_t b, int64_t *out) { return __builtin_mul_overflow(a, b, out); }
+#else
 static inline bool int_add_overflow(int64_t a, int64_t b, int64_t *out)
 {
     if ((b > 0 && a > INT64_MAX - b) || (b < 0 && a < INT64_MIN - b)) {
@@ -142,6 +151,7 @@ static inline bool int_mul_overflow(int64_t a, int64_t b, int64_t *out)
     }
     return false;
 }
+#endif /* SPARK_OVERFLOW_BUILTINS */
 
 bool values_equal(Value a, Value b);
 

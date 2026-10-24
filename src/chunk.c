@@ -119,6 +119,8 @@ const char *opcode_name(OpCode op)
     case OP_CLOSURE: return "CLOSURE";
     case OP_CLOSE_UPVALUE: return "CLOSE_UPVALUE";
     case OP_RETURN: return "RETURN";
+    case OP_RETURN_ADD: return "RETURN_ADD";
+    case OP_CALL_SELF_SUB_LOCAL_CONST: return "CALL_SELF_SUB_LC";
     }
     return "?";
 }
@@ -206,7 +208,8 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
     case OP_MULTIPLY_LOCAL_CONST:
     case OP_DIVIDE_LOCAL_CONST:
     case OP_LESS_LOCAL_CONST:
-    case OP_GREATER_LOCAL_CONST: {
+    case OP_GREATER_LOCAL_CONST:
+    case OP_CALL_SELF_SUB_LOCAL_CONST: {
         int slot = chunk->code[offset + 1];
         int index = (chunk->code[offset + 2] << 8) | chunk->code[offset + 3];
 
