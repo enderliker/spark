@@ -66,12 +66,14 @@ struct Obj {
 Concrete types:
 
 - `ObjString`: FNV-1a hash, length and a NUL-terminated string in a flexible array.
-  All strings are **interned** in a 1024-bucket hash table; two equal strings share the
-  same object.
+  All strings are **interned** in a dynamic, growable hash table (starts at 16k buckets
+  and doubles when load factor passes 0.75); two equal strings share the same object,
+  allowing O(1) pointer-identity equality checks across the VM and maps.
 - `ObjArray`: dynamic array of `Value`.
-- `ObjMap`: open-addressing hash table of `MapEntry` (key, value, state). The state is
-  `free`, `occupied` or `tombstone`; it doubles capacity when it fills up and counts
-  tombstones to decide when to compact.
+- `ObjMap`: open-addressing hash table of `MapEntry` (key, value, hash, state). The state is
+  `free`, `occupied` or `tombstone`; it caches the key hash to avoid recomputation,
+  uses specialized fast probing for object/string keys, and doubles capacity when it fills
+  up while counting tombstones to decide when to compact.
 - `ObjFunction`: code, arity, number of upvalues and name.
 - `ObjClosure`: reference to the function plus the array of captured upvalues.
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
@@ -160,20 +162,22 @@ The `fib(27)` benchmark went from ~22 ms to ~13 ms with these fusions alone.
 
 The execution loop keeps `ip`, the stack top, the current frame's slots and its
 constant pool in local variables. A hot path handles the error-free,
-allocation-free instructions that dominate numeric loops and recursion:
-constants, locals, globals, numeric arithmetic/comparisons, fused
-superinstructions, jumps, closure calls and returns. Direct threading (computed goto)
-is used on compilers that support labels-as-values (GCC/Clang) to eliminate centralized
-indirect jump prediction bottlenecks. Anything else (natives,
-allocations, string operations, type errors, undefined globals) jumps to the
-general path after writing `ip` and `sp` back into the VM, so the GC and error
-reporting always see a consistent state. `CALL` uses the hot path only for a
-closure with matching arity and an available frame; `RETURN` does the same
-unless it would leave the current `run()` (frame 0 or `base_frame`). The fast
-return also skips `close_upvalues` when no upvalue is open. Call frames cache
-the constant pool pointer directly to eliminate indirection upon return.
-Together with call/return fusions, this brought the `fib(27)` benchmark to
-~4.6 ms minimum on the development machine.
+allocation-free instructions that dominate loops and recursion:
+constants, locals, global reads and writes (`SET_GLOBAL`), upvalues (`GET_UPVALUE`,
+`SET_UPVALUE`), indexing (`INDEX`, `INDEX_SET` on arrays and maps),
+numeric arithmetic/comparisons (including pure-float and mixed int/float fast paths),
+fused superinstructions, jumps, calls (both matching closures and fixed-arity natives)
+and returns. Direct threading (computed goto) is used on compilers that support
+labels-as-values (GCC/Clang) to eliminate centralized indirect jump prediction bottlenecks.
+Anything else (unhandled natives, allocations, complex string operations, type errors,
+undefined globals) jumps to the general path after writing `ip` and `sp` back into the VM,
+so the GC and error reporting always see a consistent state. `CALL` uses the hot path for
+closures with matching arity and available frames, as well as native functions; `RETURN`
+does the same unless it would leave the current `run()` (frame 0 or `base_frame`). The fast
+return also skips `close_upvalues` when no upvalue is open. Call frames cache the constant
+pool pointer directly to eliminate indirection upon return.
+Together with call/return fusions and native fast-dispatch, this keeps both recursive and
+iterative loops within the register-threaded dispatch path.
 
 ## Stack and frames
 

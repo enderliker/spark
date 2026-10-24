@@ -479,6 +479,30 @@ static int compound_opcode(TokenType op)
     }
 }
 
+static int fused_local_const_opcode(TokenType op)
+{
+    switch (op) {
+    case TOKEN_PLUS: return OP_ADD_LOCAL_CONST;
+    case TOKEN_MINUS: return OP_SUBTRACT_LOCAL_CONST;
+    case TOKEN_STAR: return OP_MULTIPLY_LOCAL_CONST;
+    case TOKEN_SLASH: return OP_DIVIDE_LOCAL_CONST;
+    case TOKEN_LESS: return OP_LESS_LOCAL_CONST;
+    case TOKEN_GREATER: return OP_GREATER_LOCAL_CONST;
+    default: return -1;
+    }
+}
+
+static TokenType compound_to_binary(TokenType op)
+{
+    switch (op) {
+    case TOKEN_PLUS_EQUAL: return TOKEN_PLUS;
+    case TOKEN_MINUS_EQUAL: return TOKEN_MINUS;
+    case TOKEN_STAR_EQUAL: return TOKEN_STAR;
+    case TOKEN_SLASH_EQUAL: return TOKEN_SLASH;
+    default: return TOKEN_EOF;
+    }
+}
+
 static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType op,
                                        int line)
 {
@@ -489,6 +513,19 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
         VarRef ref = resolve_variable(compiler, target->as.variable, line);
 
         check_mutable(compiler, ref, target->as.variable, line);
+        if (op != TOKEN_EQUAL && ref.kind == VAR_LOCAL && stmt->as.assign.value->kind == EXPR_NUMBER) {
+            TokenType bin_op = compound_to_binary(op);
+            int fused = bin_op != TOKEN_EOF ? fused_local_const_opcode(bin_op) : -1;
+            if (fused >= 0) {
+                int index = add_constant(compiler, expr_number_value(stmt->as.assign.value), line);
+                emit_byte(compiler, (uint8_t)fused, line);
+                emit_byte(compiler, (uint8_t)ref.index, line);
+                emit_u16(compiler, (uint16_t)index, line);
+                compiler->column = stmt->column;
+                emit_set(compiler, ref, line);
+                return;
+            }
+        }
         if (op != TOKEN_EQUAL) {
             emit_get(compiler, ref, line);
         }
@@ -1045,19 +1082,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
     }
 }
 
-/* Returns the superinstruction for "local <op> constant", or -1 if it does not apply. */
-static int fused_local_const_opcode(TokenType op)
-{
-    switch (op) {
-    case TOKEN_PLUS: return OP_ADD_LOCAL_CONST;
-    case TOKEN_MINUS: return OP_SUBTRACT_LOCAL_CONST;
-    case TOKEN_STAR: return OP_MULTIPLY_LOCAL_CONST;
-    case TOKEN_SLASH: return OP_DIVIDE_LOCAL_CONST;
-    case TOKEN_LESS: return OP_LESS_LOCAL_CONST;
-    case TOKEN_GREATER: return OP_GREATER_LOCAL_CONST;
-    default: return -1;
-    }
-}
+
 
 
 

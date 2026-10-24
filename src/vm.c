@@ -382,8 +382,12 @@ static Value native_push(int arg_count, Value *args)
                          value_type_name(args[0]));
         return NIL_VAL;
     }
-    ObjArray *array = (ObjArray *)AS_OBJ(args[0]);
+    ObjArray *array = AS_ARRAY(args[0]);
 
+    if (array->count < array->capacity) {
+        array->items[array->count++] = args[1];
+        return args[0];
+    }
     array_push(array, args[1]);
     return args[0];
 }
@@ -2142,6 +2146,12 @@ static InterpretResult run(int base_frame)
         [OP_RETURN] = &&op_OP_RETURN,
         [OP_RETURN_ADD] = &&op_OP_RETURN_ADD,
         [OP_CALL_SELF_SUB_LOCAL_CONST] = &&op_OP_CALL_SELF_SUB_LOCAL_CONST,
+        [OP_SET_GLOBAL] = &&op_OP_SET_GLOBAL,
+        [OP_GET_UPVALUE] = &&op_OP_GET_UPVALUE,
+        [OP_SET_UPVALUE] = &&op_OP_SET_UPVALUE,
+        [OP_INDEX] = &&op_OP_INDEX,
+        [OP_INDEX_SET] = &&op_OP_INDEX_SET,
+        [OP_DUP] = &&op_OP_DUP,
     };
     DISPATCH();
 #else
@@ -2209,6 +2219,12 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold; /* overflow promotes to a double */
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2232,6 +2248,12 @@ static InterpretResult run(int base_frame)
                     DISPATCH();
                 }
                 goto cold;
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
             }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
@@ -2257,6 +2279,12 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2276,6 +2304,12 @@ static InterpretResult run(int base_frame)
                 ip += 1;
                 DISPATCH();
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2292,6 +2326,12 @@ static InterpretResult run(int base_frame)
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 sp--;
                 sp[-1] = BOOL_VAL(AS_INT(a) > AS_INT(b));
+                ip += 1;
+                DISPATCH();
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
                 ip += 1;
                 DISPATCH();
             }
@@ -2318,6 +2358,11 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                *sp++ = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+                ip += 4;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2339,6 +2384,11 @@ static InterpretResult run(int base_frame)
                     DISPATCH();
                 }
                 goto cold;
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                *sp++ = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+                ip += 4;
+                DISPATCH();
             }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
@@ -2362,6 +2412,11 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                *sp++ = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+                ip += 4;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2379,6 +2434,11 @@ static InterpretResult run(int base_frame)
                 ip += 4;
                 DISPATCH();
             }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                *sp++ = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+                ip += 4;
+                DISPATCH();
+            }
             if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
@@ -2393,6 +2453,11 @@ static InterpretResult run(int base_frame)
 
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 *sp++ = BOOL_VAL(AS_INT(a) > AS_INT(b));
+                ip += 4;
+                DISPATCH();
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                *sp++ = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
                 ip += 4;
                 DISPATCH();
             }
@@ -2432,6 +2497,8 @@ static InterpretResult run(int base_frame)
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 less = AS_INT(a) < AS_INT(b);
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                less = AS_NUMBER(a) < AS_NUMBER(b);
+            } else if (numeric_fast(a) && numeric_fast(b)) {
                 less = value_as_double(a) < value_as_double(b);
             } else {
                 goto cold;
@@ -2452,6 +2519,8 @@ static InterpretResult run(int base_frame)
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 greater = AS_INT(a) > AS_INT(b);
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                greater = AS_NUMBER(a) > AS_NUMBER(b);
+            } else if (numeric_fast(a) && numeric_fast(b)) {
                 greater = value_as_double(a) > value_as_double(b);
             } else {
                 goto cold;
@@ -2472,24 +2541,41 @@ static InterpretResult run(int base_frame)
             int arg_count = ip[1];
             Value callee = sp[-1 - arg_count];
 
-            /* Fast path: a closure called with the right number of arguments
-             * and room for another frame. Everything else (natives, errors)
-             * goes through the general path. */
-            if (callee.type == VAL_OBJ && AS_OBJ(callee)->type == OBJ_CLOSURE) {
-                ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
-                ObjFunction *function = closure->function;
+            /* Fast path: a closure or native called with the right number of arguments.
+             * Everything else (arity errors, non-callables) goes through the general path. */
+            if (callee.type == VAL_OBJ) {
+                Obj *obj = AS_OBJ(callee);
+                if (obj->type == OBJ_CLOSURE) {
+                    ObjClosure *closure = (ObjClosure *)obj;
+                    ObjFunction *function = closure->function;
 
-                if (arg_count == function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
-                    frame->ip = ip + 2;
-                    frame++;
-                    frame->closure = closure;
-                    frame->ip = function->chunk.code;
-                    frame->slots = sp - arg_count - 1;
-                    frame->constants = function->chunk.constants;
-                    ip = function->chunk.code;
-                    slots = frame->slots;
-                    constants = frame->constants;
-                    DISPATCH();
+                    if (arg_count == function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
+                        frame->ip = ip + 2;
+                        frame++;
+                        frame->closure = closure;
+                        frame->ip = function->chunk.code;
+                        frame->slots = sp - arg_count - 1;
+                        frame->constants = function->chunk.constants;
+                        ip = function->chunk.code;
+                        slots = frame->slots;
+                        constants = frame->constants;
+                        DISPATCH();
+                    }
+                } else if (obj->type == OBJ_NATIVE) {
+                    ObjNative *native = (ObjNative *)obj;
+                    if (native->arity >= 0 && arg_count == native->arity) {
+                        frame->ip = ip + 2;
+                        vm.frame_count = (int)(frame - vm.frames) + 1;
+                        Value *native_base = sp - arg_count - 1;
+                        vm.stack_top = sp;
+                        Value result = native->function(arg_count, native_base + 1);
+                        if (__builtin_expect(!vm.had_error, 1)) {
+                            *native_base = result;
+                            sp = native_base + 1;
+                            ip += 2;
+                            DISPATCH();
+                        }
+                    }
                 }
             }
             goto cold;
@@ -2501,11 +2587,11 @@ static InterpretResult run(int base_frame)
 
             /* Returning from the outermost frame of this run() (or of the
              * program) is handled by the general path. */
-            if (frame == &vm.frames[base_frame]) {
+            if (__builtin_expect(frame == &vm.frames[base_frame], 0)) {
                 goto cold;
             }
             result = *ip == OP_RETURN ? sp[-1] : slots[ip[1]];
-            if (vm.open_upvalues) {
+            if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
                 close_upvalues(slots);
             }
             sp = slots;
@@ -2522,33 +2608,37 @@ static InterpretResult run(int base_frame)
             Value b = constants[U16_AT(ip + 2)];
             Value arg;
 
-            if (a.type == VAL_INT && b.type == VAL_INT) {
+            if (__builtin_expect(a.type == VAL_INT && b.type == VAL_INT, 1)) {
                 int64_t result;
-                if (!int_sub_overflow(AS_INT(a), AS_INT(b), &result)) {
+                if (__builtin_expect(!int_sub_overflow(AS_INT(a), AS_INT(b), &result), 1)) {
                     arg = INT_VAL(result);
                     goto do_call_self;
                 }
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                arg = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+                goto do_call_self;
+            } else if (numeric_fast(a) && numeric_fast(b)) {
                 arg = NUMBER_VAL(value_as_double(a) - value_as_double(b));
                 goto do_call_self;
             }
             goto cold;
 
         do_call_self:
-            if (frame >= &vm.frames[FRAMES_MAX - 1]) {
+            if (__builtin_expect(frame >= &vm.frames[FRAMES_MAX - 1], 0)) {
                 goto cold;
             }
             frame->ip = ip + 4;
+            CallFrame *prev = frame;
             frame++;
-            frame->closure = frame[-1].closure;
+            frame->closure = prev->closure;
             frame->ip = frame->closure->function->chunk.code;
             frame->slots = sp;
             frame->constants = constants;
-            sp[0] = frame[-1].slots[0];
+            sp[0] = prev->slots[0];
             sp[1] = arg;
             sp += 2;
             ip = frame->ip;
-            slots = frame->slots;
+            slots = sp - 2;
             DISPATCH();
         }
 
@@ -2557,23 +2647,26 @@ static InterpretResult run(int base_frame)
             Value b = sp[-1];
             Value result;
 
-            if (a.type == VAL_INT && b.type == VAL_INT) {
+            if (__builtin_expect(a.type == VAL_INT && b.type == VAL_INT, 1)) {
                 int64_t sum;
-                if (!int_add_overflow(AS_INT(a), AS_INT(b), &sum)) {
+                if (__builtin_expect(!int_add_overflow(AS_INT(a), AS_INT(b), &sum), 1)) {
                     result = INT_VAL(sum);
                     goto do_ret_add;
                 }
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                result = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+                goto do_ret_add;
+            } else if (numeric_fast(a) && numeric_fast(b)) {
                 result = NUMBER_VAL(value_as_double(a) + value_as_double(b));
                 goto do_ret_add;
             }
             goto cold;
 
         do_ret_add:
-            if (frame == &vm.frames[base_frame]) {
+            if (__builtin_expect(frame == &vm.frames[base_frame], 0)) {
                 goto cold;
             }
-            if (vm.open_upvalues) {
+            if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
                 close_upvalues(slots);
             }
             sp = slots;
@@ -2584,6 +2677,83 @@ static InterpretResult run(int base_frame)
             constants = frame->constants;
             DISPATCH();
         }
+
+        TARGET(OP_SET_GLOBAL): {
+            GlobalSlot *global = &vm.global_slots[U16_AT(ip + 1)];
+
+            if (!global->defined || global->is_const) {
+                goto cold;
+            }
+            global->value = *--sp;
+            ip += 3;
+            DISPATCH();
+        }
+
+        TARGET(OP_GET_UPVALUE):
+            *sp++ = *frame->closure->upvalues[ip[1]]->location;
+            ip += 2;
+            DISPATCH();
+
+        TARGET(OP_SET_UPVALUE):
+            *frame->closure->upvalues[ip[1]]->location = *--sp;
+            ip += 2;
+            DISPATCH();
+
+        TARGET(OP_INDEX): {
+            Value index = sp[-1];
+            Value object = sp[-2];
+
+            if (is_obj_type(object, OBJ_ARRAY) && index.type == VAL_INT) {
+                ObjArray *array = AS_ARRAY(object);
+                int64_t pos = index.as.integer;
+                if (pos >= 0 && pos < array->count) {
+                    sp[-2] = array->items[pos];
+                    sp--;
+                    ip += 1;
+                    DISPATCH();
+                }
+            } else if (is_obj_type(object, OBJ_MAP)) {
+                Value stored;
+                if (map_get(AS_MAP(object), index, &stored)) {
+                    sp[-2] = stored;
+                } else {
+                    sp[-2] = NIL_VAL;
+                }
+                sp--;
+                ip += 1;
+                DISPATCH();
+            }
+            goto cold;
+        }
+
+        TARGET(OP_INDEX_SET): {
+            Value value = sp[-1];
+            Value index = sp[-2];
+            Value object = sp[-3];
+
+            if (is_obj_type(object, OBJ_ARRAY) && index.type == VAL_INT) {
+                ObjArray *array = AS_ARRAY(object);
+                int64_t pos = index.as.integer;
+                if (pos >= 0 && pos < array->count) {
+                    array->items[pos] = value;
+                    sp -= 3;
+                    ip += 1;
+                    DISPATCH();
+                }
+            } else if (is_obj_type(object, OBJ_MAP)) {
+                map_set(AS_MAP(object), index, value);
+                sp -= 3;
+                ip += 1;
+                DISPATCH();
+            }
+            goto cold;
+        }
+
+        TARGET(OP_DUP):
+            *sp = sp[-1];
+            sp++;
+            ip += 1;
+            DISPATCH();
 
 #ifdef SPARK_COMPUTED_GOTO
 cold_dispatch:
@@ -2804,11 +2974,13 @@ cold_dispatch:
             Value *items = vm.stack_top - count;
             ObjArray *array = object_array();
 
-            push(OBJ_VAL(array));
-            for (int i = 0; i < count; i++) {
-                array_push(array, items[i]);
+            if (count > 0) {
+                array->items = mem_realloc(NULL, 0, sizeof(Value) * (size_t)count);
+                array->capacity = count;
+                array->count = count;
+                memcpy(array->items, items, sizeof(Value) * (size_t)count);
             }
-            memmove(items, items + count, sizeof(Value));
+            *items = OBJ_VAL(array);
             vm.stack_top = items + 1;
             break;
         }

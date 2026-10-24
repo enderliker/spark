@@ -627,11 +627,11 @@ it and detect overflow safely).
 that reuses the same comparator contract (`sort_by`'s `fn(x, y)` returns whether `x`
 goes before `y`).
 **Acceptance criteria:**
-- [ ] `sort`/`sort_by` remain stable and keep the documented comparator contract.
-- [ ] Large arrays (e.g. 100k elements) sort in O(n log n); benchmark unaffected.
-- [ ] Callback errors still propagate and the stack stays balanced.
+- [x] `sort`/`sort_by` remain stable and keep the documented comparator contract.
+- [x] Large arrays (e.g. 100k elements) sort in O(n log n); benchmark unaffected.
+- [x] Callback errors still propagate and the stack stays balanced.
 **Verification:**
-- [ ] Fixtures with large arrays; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
+- [x] Fixtures with large arrays; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
 **Dependencies:** T9, T46 (growable stack, optional).
 **Files:** `src/vm.c`, `tests/cases/sorting.*`, `docs/language.md`.
 **Scope:** S.

@@ -25,6 +25,7 @@ typedef struct {
 typedef struct {
     Value key;
     Value value;
+    uint32_t hash;
     uint8_t state; /* 0 = free, 1 = occupied, 2 = tombstone */
 } MapEntry;
 

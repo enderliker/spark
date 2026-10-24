@@ -1,0 +1,10 @@
+var arr = [];
+for (var i = 0; i < 100000; i += 1) {
+    push(arr, 100000 - i);
+}
+var inicio = clock();
+sort_by(arr, fn(a, b) { return a < b; });
+var fin = clock();
+
+print(arr[0]);
+print((fin - inicio) * 1000);

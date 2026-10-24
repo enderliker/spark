@@ -1,0 +1,13 @@
+var arr = [];
+for (var i = 0; i < 300000; i += 1) {
+    push(arr, i);
+}
+
+var inicio = clock();
+var m = map(arr, fn(x) { return x * 2; });
+var f = filter(m, fn(x) { return x % 4 == 0; });
+var r = reduce(f, fn(a, b) { return a + b; }, 0);
+var fin = clock();
+
+print(r);
+print((fin - inicio) * 1000);

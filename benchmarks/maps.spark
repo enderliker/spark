@@ -1,0 +1,13 @@
+var m = {};
+var inicio = clock();
+for (var i = 0; i < 200000; i += 1) {
+    m[str(i)] = i;
+}
+var s = 0;
+for (var i = 0; i < 200000; i += 1) {
+    s += m[str(i)];
+}
+var fin = clock();
+
+print(s);
+print((fin - inicio) * 1000);

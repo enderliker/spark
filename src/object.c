@@ -9,7 +9,7 @@
 #include "buf.h"
 #include "memory.h"
 
-#define INTERN_INITIAL_BUCKETS 1024
+#define INTERN_INITIAL_BUCKETS 4096
 
 static Obj *object_list = NULL;
 /* Chained hash table of interned strings. It starts small and doubles (rehashing
@@ -53,7 +53,7 @@ static uint32_t hash_string(const char *chars, int length)
 
 static void intern_grow(void)
 {
-    uint32_t new_capacity = intern_capacity == 0 ? INTERN_INITIAL_BUCKETS : intern_capacity * 2;
+    uint32_t new_capacity = intern_capacity == 0 ? 16384 : intern_capacity * 2;
     ObjString **new_buckets = calloc(new_capacity, sizeof(ObjString *));
 
     if (!new_buckets) {
@@ -76,6 +76,19 @@ static void intern_grow(void)
     intern_capacity = new_capacity;
 }
 
+static inline bool string_chars_equal(const char *a, const char *b, int len)
+{
+    if (len <= 16) {
+        for (int i = 0; i < len; i++) {
+            if (a[i] != b[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return memcmp(a, b, (size_t)len) == 0;
+}
+
 static ObjString *intern_find(const char *chars, int length, uint32_t hash)
 {
     if (intern_capacity == 0) {
@@ -85,7 +98,7 @@ static ObjString *intern_find(const char *chars, int length, uint32_t hash)
 
     while (entry) {
         if (entry->hash == hash && entry->length == length &&
-            memcmp(entry->chars, chars, (size_t)length) == 0) {
+            string_chars_equal(entry->chars, chars, length)) {
             return entry;
         }
         entry = entry->intern_next;
@@ -93,9 +106,8 @@ static ObjString *intern_find(const char *chars, int length, uint32_t hash)
     return NULL;
 }
 
-ObjString *object_string(const char *chars, int length)
+static ObjString *object_string_with_hash(const char *chars, int length, uint32_t hash)
 {
-    uint32_t hash = hash_string(chars, length);
     ObjString *existing = intern_find(chars, length, hash);
 
     if (existing) {
@@ -120,13 +132,20 @@ ObjString *object_string(const char *chars, int length)
     return string;
 }
 
+ObjString *object_string(const char *chars, int length)
+{
+    uint32_t hash = hash_string(chars, length);
+    return object_string_with_hash(chars, length, hash);
+}
+
 ObjString *object_string_concat(ObjString *a, ObjString *b)
 {
     if (a->length > INT_MAX - b->length) {
         return NULL;
     }
     int length = a->length + b->length;
-    char *buffer = malloc((size_t)length + 1);
+    char stack_buf[512];
+    char *buffer = length < (int)sizeof(stack_buf) ? stack_buf : malloc((size_t)length + 1);
 
     if (!buffer) {
         return NULL;
@@ -135,8 +154,34 @@ ObjString *object_string_concat(ObjString *a, ObjString *b)
     memcpy(buffer + a->length, b->chars, (size_t)b->length);
     buffer[length] = '\0';
 
-    ObjString *result = object_string(buffer, length);
-    free(buffer);
+    uint32_t hash = a->hash;
+    for (int i = 0; i < b->length; i++) {
+        hash ^= (uint8_t)b->chars[i];
+        hash *= 16777619u;
+    }
+
+    ObjString *result = intern_find(buffer, length, hash);
+    if (!result) {
+        result = allocate_obj(sizeof(ObjString) + (size_t)length + 1, OBJ_STRING);
+        result->hash = hash;
+        result->length = length;
+        memcpy(result->chars, buffer, (size_t)length);
+        result->chars[length] = '\0';
+
+        if ((intern_count + 1) * 4 > (size_t)intern_capacity * 3) {
+            intern_grow();
+        }
+        if (intern_capacity != 0) {
+            uint32_t bucket = hash & (intern_capacity - 1);
+            result->intern_next = intern_buckets[bucket];
+            intern_buckets[bucket] = result;
+            intern_count++;
+        }
+    }
+
+    if (buffer != stack_buf) {
+        free(buffer);
+    }
     return result;
 }
 
@@ -196,9 +241,35 @@ static uint32_t hash_value(Value value)
     return 0;
 }
 
-static MapEntry *map_find_entry(MapEntry *entries, int capacity, Value key)
+static inline bool keys_equal(Value a, Value b)
 {
-    uint32_t index = hash_value(key) & (uint32_t)(capacity - 1);
+    if (a.type == b.type) {
+        if (a.type == VAL_OBJ) {
+            return a.as.obj == b.as.obj;
+        }
+        if (a.type == VAL_INT) {
+            return a.as.integer == b.as.integer;
+        }
+        if (a.type == VAL_NUMBER) {
+            return a.as.number == b.as.number;
+        }
+        if (a.type == VAL_BOOL) {
+            return a.as.boolean == b.as.boolean;
+        }
+        return true;
+    }
+    if (a.type == VAL_INT && b.type == VAL_NUMBER) {
+        return int_equals_number(a.as.integer, b.as.number);
+    }
+    if (a.type == VAL_NUMBER && b.type == VAL_INT) {
+        return int_equals_number(b.as.integer, a.as.number);
+    }
+    return false;
+}
+
+static MapEntry *map_find_entry(MapEntry *entries, int capacity, Value key, uint32_t hash)
+{
+    uint32_t index = hash & (uint32_t)(capacity - 1);
     MapEntry *tombstone = NULL;
 
     for (;;) {
@@ -211,7 +282,7 @@ static MapEntry *map_find_entry(MapEntry *entries, int capacity, Value key)
             if (!tombstone) {
                 tombstone = entry;
             }
-        } else if (values_equal(entry->key, key)) {
+        } else if (entry->hash == hash && keys_equal(entry->key, key)) {
             return entry;
         }
         index = (index + 1) & (uint32_t)(capacity - 1);
@@ -236,11 +307,11 @@ static void map_adjust_capacity(ObjMap *map, int capacity)
         if (old->state != 1) {
             continue;
         }
-        MapEntry *entry = map_find_entry(entries, capacity, old->key);
-
-        entry->key = old->key;
-        entry->value = old->value;
-        entry->state = 1;
+        uint32_t index = old->hash & (uint32_t)(capacity - 1);
+        while (entries[index].state != 0) {
+            index = (index + 1) & (uint32_t)(capacity - 1);
+        }
+        entries[index] = *old;
         map->count++;
     }
 
@@ -263,13 +334,44 @@ bool map_get(ObjMap *map, Value key, Value *out)
     if (map->capacity == 0 || map->count == 0) {
         return false;
     }
-    MapEntry *entry = map_find_entry(map->entries, map->capacity, key);
+    uint32_t mask = (uint32_t)(map->capacity - 1);
+    MapEntry *entries = map->entries;
 
-    if (entry->state != 1) {
-        return false;
+    if (key.type == VAL_OBJ) {
+        void *key_obj = key.as.obj;
+        uint32_t hash = key.as.obj->type == OBJ_STRING
+                            ? ((ObjString *)key_obj)->hash
+                            : (uint32_t)(((uintptr_t)key_obj >> 4) * 2654435761u);
+        uint32_t index = hash & mask;
+
+        for (;;) {
+            MapEntry *entry = &entries[index];
+            if (entry->state == 0) {
+                return false;
+            }
+            if (entry->state == 1 && entry->hash == hash && entry->key.type == VAL_OBJ &&
+                entry->key.as.obj == key_obj) {
+                *out = entry->value;
+                return true;
+            }
+            index = (index + 1) & mask;
+        }
     }
-    *out = entry->value;
-    return true;
+
+    uint32_t hash = hash_value(key);
+    uint32_t index = hash & mask;
+
+    for (;;) {
+        MapEntry *entry = &entries[index];
+        if (entry->state == 0) {
+            return false;
+        }
+        if (entry->state == 1 && entry->hash == hash && keys_equal(entry->key, key)) {
+            *out = entry->value;
+            return true;
+        }
+        index = (index + 1) & mask;
+    }
 }
 
 bool map_set(ObjMap *map, Value key, Value value)
@@ -283,7 +385,58 @@ bool map_set(ObjMap *map, Value key, Value value)
         map_adjust_capacity(map, capacity);
     }
 
-    MapEntry *entry = map_find_entry(map->entries, map->capacity, key);
+    uint32_t mask = (uint32_t)(map->capacity - 1);
+    MapEntry *entries = map->entries;
+    MapEntry *entry;
+
+    if (key.type == VAL_OBJ) {
+        void *key_obj = key.as.obj;
+        uint32_t hash = key.as.obj->type == OBJ_STRING
+                            ? ((ObjString *)key_obj)->hash
+                            : (uint32_t)(((uintptr_t)key_obj >> 4) * 2654435761u);
+        if (map->tombstones == 0) {
+            uint32_t index = hash & mask;
+            for (;;) {
+                entry = &entries[index];
+                if (entry->state == 0 || (entry->hash == hash && entry->key.type == VAL_OBJ &&
+                                          entry->key.as.obj == key_obj)) {
+                    break;
+                }
+                index = (index + 1) & mask;
+            }
+        } else {
+            entry = map_find_entry(entries, map->capacity, key, hash);
+        }
+
+        if (entry->state == 1) {
+            entry->value = value;
+            return false;
+        }
+        if (entry->state == 2) {
+            map->tombstones--;
+        }
+        entry->key = key;
+        entry->value = value;
+        entry->hash = hash;
+        entry->state = 1;
+        map->count++;
+        return true;
+    }
+
+    uint32_t hash = hash_value(key);
+    if (map->tombstones == 0) {
+        uint32_t index = hash & mask;
+        for (;;) {
+            entry = &entries[index];
+            if (entry->state == 0 || (entry->hash == hash && keys_equal(entry->key, key))) {
+                break;
+            }
+            index = (index + 1) & mask;
+        }
+    } else {
+        entry = map_find_entry(map->entries, map->capacity, key, hash);
+    }
+
     if (entry->state == 1) {
         entry->value = value;
         return false;
@@ -293,6 +446,7 @@ bool map_set(ObjMap *map, Value key, Value value)
     }
     entry->key = key;
     entry->value = value;
+    entry->hash = hash;
     entry->state = 1;
     map->count++;
     return true;
@@ -303,7 +457,8 @@ bool map_delete(ObjMap *map, Value key)
     if (map->capacity == 0 || map->count == 0) {
         return false;
     }
-    MapEntry *entry = map_find_entry(map->entries, map->capacity, key);
+    uint32_t hash = hash_value(key);
+    MapEntry *entry = map_find_entry(map->entries, map->capacity, key, hash);
 
     if (entry->state != 1) {
         return false;
@@ -499,19 +654,8 @@ bool values_equal(Value a, Value b)
         return a.as.integer == b.as.integer;
     case VAL_NUMBER:
         return a.as.number == b.as.number;
-    case VAL_OBJ: {
-        if (a.as.obj == b.as.obj) {
-            return true;
-        }
-        if (a.as.obj->type == OBJ_STRING && b.as.obj->type == OBJ_STRING) {
-            ObjString *sa = (ObjString *)a.as.obj;
-            ObjString *sb = (ObjString *)b.as.obj;
-
-            return sa->length == sb->length &&
-                   memcmp(sa->chars, sb->chars, (size_t)sa->length) == 0;
-        }
-        return false;
-    }
+    case VAL_OBJ:
+        return a.as.obj == b.as.obj;
     }
     return false;
 }
@@ -649,8 +793,71 @@ void value_print_repr(FILE *out, Value v)
     buf_free(&buffer);
 }
 
+static ObjString *int_to_string(int64_t val)
+{
+    char temp[24];
+    int tlen = 0;
+    bool neg = false;
+    uint64_t u;
+
+    if (val < 0) {
+        neg = true;
+        u = (uint64_t)(-(val + 1)) + 1;
+    } else {
+        u = (uint64_t)val;
+    }
+
+    do {
+        temp[tlen++] = (char)('0' + (u % 10));
+        u /= 10;
+    } while (u > 0);
+
+    char buf[32];
+    int pos = 0;
+    uint32_t hash = 2166136261u;
+
+    if (neg) {
+        buf[pos++] = '-';
+        hash ^= (uint8_t)'-';
+        hash *= 16777619u;
+    }
+    while (tlen > 0) {
+        char c = temp[--tlen];
+        buf[pos++] = c;
+        hash ^= (uint8_t)c;
+        hash *= 16777619u;
+    }
+    buf[pos] = '\0';
+    return object_string_with_hash(buf, pos, hash);
+}
+
 ObjString *value_to_string(Value v)
 {
+    if (is_obj_type(v, OBJ_STRING)) {
+        return AS_STRING(v);
+    }
+    if (v.type == VAL_INT) {
+        return int_to_string(v.as.integer);
+    }
+    if (v.type == VAL_BOOL) {
+        return AS_BOOL(v) ? object_string("true", 4) : object_string("false", 5);
+    }
+    if (v.type == VAL_NIL) {
+        return object_string("nil", 3);
+    }
+    if (v.type == VAL_NUMBER) {
+        char buffer[64];
+        double number = AS_NUMBER(v);
+        if (isnan(number)) {
+            return object_string("nan", 3);
+        }
+        if (isinf(number)) {
+            return object_string(number > 0 ? "inf" : "-inf", number > 0 ? 3 : 4);
+        }
+        int len = snprintf(buffer, sizeof(buffer), "%.15g", number);
+        return object_string(buffer, len);
+    }
+
     buf_t buffer;
     ObjString *result;
 
