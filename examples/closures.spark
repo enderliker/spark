@@ -1,0 +1,40 @@
+fn memoize(f) {
+    var cache = [];
+    return fn(n) {
+        if (n < len(cache)) {
+            var saved = cache[n];
+            if (saved != nil) {
+                return saved;
+            }
+        }
+        var value = f(n);
+        while (len(cache) <= n) {
+            push(cache, nil);
+        }
+        cache[n] = value;
+        return value;
+    };
+}
+
+var fib = nil;
+fib = memoize(fn(n) {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+});
+
+print("fib(1) =", fib(1));
+print("fib(10) =", fib(10));
+print("fib(50) =", fib(50));
+
+fn make_counter() {
+    var total = 0;
+    return fn(increment) {
+        total += increment;
+        return total;
+    };
+}
+
+var counter = make_counter();
+print(counter(5), counter(3), counter(2));

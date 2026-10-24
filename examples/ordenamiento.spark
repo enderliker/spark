@@ -1,0 +1,33 @@
+fn sort(values) {
+    var copy = [];
+    for (var i = 0; i < len(values); i += 1) {
+        push(copy, values[i]);
+    }
+
+    var n = len(copy);
+    for (var i = 0; i < n; i += 1) {
+        for (var j = 0; j < n - i - 1; j += 1) {
+            if (copy[j] > copy[j + 1]) {
+                var temporary = copy[j];
+                copy[j] = copy[j + 1];
+                copy[j + 1] = temporary;
+            }
+        }
+    }
+    return copy;
+}
+
+fn median(values) {
+    var sorted = sort(values);
+    var n = len(sorted);
+    if (n % 2 == 1) {
+        return sorted[(n - 1) / 2];
+    }
+    return (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+}
+
+var data = [5, 3, 9, 1, 7, 2, 8];
+print("original:", data);
+print("sorted:", sort(data));
+print("median:", median(data));
+assert(data[0] == 5, "sorting must not modify the original array");
