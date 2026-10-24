@@ -2974,13 +2974,14 @@ cold_dispatch:
             Value *items = vm.stack_top - count;
             ObjArray *array = object_array();
 
+            push(OBJ_VAL(array));
             if (count > 0) {
                 array->items = mem_realloc(NULL, 0, sizeof(Value) * (size_t)count);
                 array->capacity = count;
                 array->count = count;
                 memcpy(array->items, items, sizeof(Value) * (size_t)count);
             }
-            *items = OBJ_VAL(array);
+            memmove(items, items + count, sizeof(Value));
             vm.stack_top = items + 1;
             break;
         }
