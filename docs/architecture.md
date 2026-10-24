@@ -199,6 +199,13 @@ The GC is paused during compilation (freshly created objects have no root yet) a
 around the constructions that allocate several blocks before the object becomes
 visible. The stack does not move, so pointers to slots are stable.
 
+A fresh object is only protected while it is reachable from a root. Code that creates
+an object and then hands it to a container (`array_push`, `map_set`) must root it
+first, because growing the container can trigger a collection. Natives use
+`push`/`pop` around those values, and `array_push_new_string` centralizes the pattern
+for strings. The same rule applies to a callback result that is stored after
+`call_callback` returns.
+
 ## Errors
 
 - The parser and the compiler use `setjmp`/`longjmp`: they abort on the first error and

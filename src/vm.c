@@ -709,6 +709,17 @@ static int string_byte_find(ObjString *haystack, ObjString *needle)
     return -1;
 }
 
+/* Creates a string and appends it to `array`. The new string is rooted while
+ * the array grows, since that growth can trigger a collection. */
+static void array_push_new_string(ObjArray *array, const char *chars, int length)
+{
+    ObjString *string = object_string(chars, length);
+
+    push(OBJ_VAL(string));
+    array_push(array, OBJ_VAL(string));
+    pop();
+}
+
 static Value native_contains(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -963,7 +974,7 @@ static Value native_split(int arg_count, Value *args)
         while (byte_index < text->length) {
             int char_length = utf8_char_length(text, byte_index);
 
-            array_push(parts, OBJ_VAL(object_string(text->chars + byte_index, char_length)));
+            array_push_new_string(parts, text->chars + byte_index, char_length);
             byte_index += char_length;
         }
     } else {
@@ -972,14 +983,14 @@ static Value native_split(int arg_count, Value *args)
 
         while (i + separator->length <= text->length) {
             if (memcmp(text->chars + i, separator->chars, (size_t)separator->length) == 0) {
-                array_push(parts, OBJ_VAL(object_string(text->chars + start, i - start)));
+                array_push_new_string(parts, text->chars + start, i - start);
                 i += separator->length;
                 start = i;
             } else {
                 i++;
             }
         }
-        array_push(parts, OBJ_VAL(object_string(text->chars + start, text->length - start)));
+        array_push_new_string(parts, text->chars + start, text->length - start);
     }
     pop();
     return OBJ_VAL(parts);
@@ -1246,6 +1257,7 @@ static Value native_map(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *input = AS_ARRAY(args[0]);
+    Value callback = args[1];
     ObjArray *output = object_array();
 
     push(OBJ_VAL(output));
@@ -1253,10 +1265,13 @@ static Value native_map(int arg_count, Value *args)
         Value mapped;
 
         push(input->items[i]);
-        if (!call_callback(args[1], 1, &mapped) || vm.had_error) {
+        if (!call_callback(callback, 1, &mapped) || vm.had_error) {
             return NIL_VAL;
         }
+        /* Root the result while the output may grow and collect. */
+        push(mapped);
         array_push(output, mapped);
+        pop();
     }
     pop();
     return OBJ_VAL(output);
@@ -1946,7 +1961,7 @@ static InterpretResult run(int base_frame)
                 for (int i = 0; i < string->length;) {
                     int length = utf8_char_length(string, i);
 
-                    array_push(chars, OBJ_VAL(object_string(string->chars + i, length)));
+                    array_push_new_string(chars, string->chars + i, length);
                     i += length;
                 }
                 vm.stack_top[-2] = OBJ_VAL(chars);

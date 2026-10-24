@@ -1,0 +1,9 @@
+// Collections under GC pressure: temporary strings and callback results must
+// stay reachable while the arrays that hold them grow.
+var count = 50000;
+var text = join(range(count), ",");
+var parts = split(text, ",");
+print(len(parts), parts[0], parts[count - 1], len(join(parts, ",")) == len(text));
+
+var mapped = map(range(count), fn(x) { return [x]; });
+print(len(mapped), mapped[0][0], mapped[count - 1][0]);
