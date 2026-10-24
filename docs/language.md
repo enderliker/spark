@@ -36,7 +36,7 @@ They start with a letter (including `á`, `ñ`, etc.), `_` or a valid UTF-8
 continuation byte; they continue with letters, digits and `_`. The keywords are:
 
 ```
-var const fn if else while for in return break continue
+var const fn if else while for in return break continue do
 true false nil and or not
 ```
 
@@ -158,6 +158,10 @@ if (condition) {
 while (condition) {
     ...
 }
+
+do {
+    ...
+} while (condition);   // the body runs at least once
 
 for (var i = 0; i < 10; i += 1) {
     if (i == 3) { continue; }

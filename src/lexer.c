@@ -146,6 +146,9 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("const")) return TOKEN_CONST;
         if (IS("continue")) return TOKEN_CONTINUE;
         break;
+    case 'd':
+        if (IS("do")) return TOKEN_DO;
+        break;
     case 'e':
         if (IS("else")) return TOKEN_ELSE;
         break;
@@ -412,6 +415,7 @@ const char *token_type_name(TokenType type)
     case TOKEN_IF: return "'if'";
     case TOKEN_ELSE: return "'else'";
     case TOKEN_WHILE: return "'while'";
+    case TOKEN_DO: return "'do'";
     case TOKEN_FOR: return "'for'";
     case TOKEN_IN: return "'in'";
     case TOKEN_RETURN: return "'return'";

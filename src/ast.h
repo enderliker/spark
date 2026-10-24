@@ -118,6 +118,7 @@ typedef enum {
     STMT_BLOCK,
     STMT_IF,
     STMT_WHILE,
+    STMT_DO_WHILE,
     STMT_FOR,
     STMT_FOR_IN,
     STMT_FUNCTION,
@@ -153,6 +154,10 @@ struct Stmt {
             Expr *condition;
             Stmt *body;
         } while_stmt;
+        struct {
+            Stmt *body;
+            Expr *condition;
+        } do_while;
         struct {
             Stmt *initializer;
             Expr *condition;

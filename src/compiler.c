@@ -658,6 +658,39 @@ static void compile_while(Compiler *compiler, Stmt *stmt, int line)
     free(loop.continues);
 }
 
+static void compile_do_while(Compiler *compiler, Stmt *stmt, int line)
+{
+    int loop_start = compiler->function->chunk.count;
+    LoopCtx loop;
+
+    memset(&loop, 0, sizeof(loop));
+    loop.start = loop_start;
+    loop.continue_target = -1;
+    loop.local_count = compiler->local_count;
+
+    LoopCtx *previous_loop = compiler->loop;
+    compiler->loop = &loop;
+    compile_statement(compiler, stmt->as.do_while.body);
+    compiler->loop = previous_loop;
+
+    loop.continue_target = compiler->function->chunk.count;
+    for (int i = 0; i < loop.continue_count; i++) {
+        patch_offset(compiler, loop.continues[i]);
+    }
+
+    int exit_jump = emit_condition_jump(compiler, stmt->as.do_while.condition, line);
+
+    emit_loop(compiler, loop_start, line);
+    patch_jump(compiler, exit_jump);
+
+    for (int i = 0; i < loop.break_count; i++) {
+        patch_offset(compiler, loop.breaks[i]);
+    }
+
+    free(loop.breaks);
+    free(loop.continues);
+}
+
 static void compile_for(Compiler *compiler, Stmt *stmt, int line)
 {
     LoopCtx loop;
@@ -809,6 +842,10 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
 
     case STMT_WHILE:
         compile_while(compiler, stmt, line);
+        break;
+
+    case STMT_DO_WHILE:
+        compile_do_while(compiler, stmt, line);
         break;
 
     case STMT_FOR:

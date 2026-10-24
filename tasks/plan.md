@@ -85,7 +85,7 @@ original numbering:
 - [x] T11 `const` declarations
 - [x] T12 Ternary operator `?:`
 - [x] T13 Null-coalescing `??`
-- [ ] T14 `do { } while`
+- [x] T14 `do { } while`
 - [ ] T15 Labelled loops + labelled `break`/`continue`
 - [ ] T16 `switch`/`case`/`default`
 - [ ] T17 String interpolation

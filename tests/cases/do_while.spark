@@ -1,0 +1,35 @@
+// The body of a do/while runs at least once.
+var i = 0;
+do {
+    print(i);
+    i += 1;
+} while (i < 3);
+
+var once = 0;
+do {
+    once += 1;
+} while (false);
+print(once);
+
+// break and continue work as in while.
+var n = 0;
+var total = 0;
+do {
+    n += 1;
+    if (n == 2) { continue; }
+    if (n == 4) { break; }
+    total += n;
+} while (n < 10);
+print(n, total);
+
+// Nested do/while loops with their own scope.
+var out = "";
+do {
+    var x = 0;
+    do {
+        x += 1;
+        out = out + "x";
+    } while (x < 2);
+    out = out + "-";
+} while (false);
+print(out);

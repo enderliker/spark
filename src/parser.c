@@ -696,6 +696,19 @@ static Stmt *while_statement(Parser *parser, int line)
     return stmt;
 }
 
+static Stmt *do_while_statement(Parser *parser, int line)
+{
+    Stmt *stmt = new_stmt(parser, STMT_DO_WHILE, line);
+
+    stmt->as.do_while.body = statement(parser);
+    consume(parser, TOKEN_WHILE, "expected 'while' after the body of 'do'");
+    consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'while'");
+    stmt->as.do_while.condition = expression(parser);
+    consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the condition");
+    consume(parser, TOKEN_SEMICOLON, "expected ';' after the condition");
+    return stmt;
+}
+
 static Stmt *for_statement(Parser *parser, int line)
 {
     Stmt *stmt = new_stmt(parser, STMT_FOR, line);
@@ -742,6 +755,9 @@ static Stmt *statement(Parser *parser)
     }
     if (match(parser, TOKEN_WHILE)) {
         return while_statement(parser, line);
+    }
+    if (match(parser, TOKEN_DO)) {
+        return do_while_statement(parser, line);
     }
     if (match(parser, TOKEN_FOR)) {
         return for_statement(parser, line);

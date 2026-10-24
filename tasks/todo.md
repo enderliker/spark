@@ -177,9 +177,9 @@ initializer; `const` is not required to be a compile-time constant, just immutab
 ### T14 - `do { } while`
 **Description:** `do { body } while (cond);` runs the body at least once.
 **Acceptance criteria:**
-- [ ] `break`/`continue` work as in `while`.
+- [x] `break`/`continue` work as in `while`.
 **Verification:**
-- [ ] Fixture; suite; docs.
+- [x] Fixture; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
