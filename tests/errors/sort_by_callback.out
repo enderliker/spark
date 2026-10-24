@@ -1,0 +1,2 @@
+exit: 70
+stderr: a callback must be a function, received number

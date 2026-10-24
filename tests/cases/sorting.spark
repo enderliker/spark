@@ -1,0 +1,11 @@
+// Sorting.
+print(sort([3, 1, 2]));
+print(sort(["banana", "apple", "cherry"]));
+print(sort([]));
+print(sort([5]));
+
+fn by_length(a, b) {
+    return len(a) < len(b);
+}
+print(sort_by(["ccc", "a", "bb"], by_length));
+print(sort_by([3, 1, 2], fn(a, b) { return a > b; }));

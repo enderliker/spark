@@ -1,0 +1,49 @@
+var total = 0;
+for (var n in [1, 2, 3, 4]) {
+    if (n % 2 == 0) {
+        continue;
+    }
+    total += n;
+}
+print(total);
+
+var text = "";
+for (var c in "chispa") {
+    text += c + "-";
+}
+print(text);
+
+var fs = [];
+for (var i in range(3)) {
+    push(fs, fn() { return i; });
+}
+print(fs[0](), fs[1](), fs[2]());
+
+var doubled = [];
+for (var n in [1, 2, 3, 4, 5]) {
+    if (n == 4) {
+        break;
+    }
+    push(doubled, n * 2);
+}
+print(doubled);
+
+var nested = [];
+for (var a in [1, 2]) {
+    for (var b in [10, 20]) {
+        push(nested, a + b);
+    }
+}
+print(nested);
+
+var entries = 0;
+for (var key in {"x": 5, "y": 7}) {
+    entries += 1;
+}
+print(entries);
+
+var empty = [];
+for (var x in empty) {
+    print("should not appear");
+}
+print("end");

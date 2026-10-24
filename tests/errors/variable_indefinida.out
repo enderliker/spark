@@ -1,0 +1,2 @@
+exit: 70
+stderr: global variable 'noexiste' not defined

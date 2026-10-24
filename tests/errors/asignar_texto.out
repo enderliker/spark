@@ -1,0 +1,2 @@
+exit: 70
+stderr: can only assign to an array or a map

@@ -1,0 +1,10 @@
+print(abs(-3.5), abs(4));
+print(floor(2.9), ceil(2.1), round(2.5), round(-2.5));
+print(sqrt(81), pow(2, 10));
+print(min(3, 8), max(3, 8), min(-1, -2));
+print(range(4), range(2, 5), range(3, 3));
+print(substr("abcdef", 1, 3), "|", substr("ñandú", 2));
+print(type(range(0)), type({}));
+print("chispa"[0], "chispa"[5], "ñandú"[2]);
+print(substr("program", 0, 5), "|", substr("program", 5));
+print(len("hola"[0]), "hola"[1] + "hola"[2]);

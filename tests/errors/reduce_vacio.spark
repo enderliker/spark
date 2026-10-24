@@ -1,0 +1,1 @@
+print(reduce([], fn(a, b) { return a + b; }));

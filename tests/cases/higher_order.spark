@@ -1,0 +1,24 @@
+// Higher-order natives.
+fn double(x) {
+    return x * 2;
+}
+fn is_even(x) {
+    return x % 2 == 0;
+}
+
+print(map([1, 2, 3], double));
+print(filter([1, 2, 3, 4, 5], is_even));
+print(reduce([1, 2, 3, 4], fn(a, b) { return a + b; }));
+print(reduce([1, 2, 3], fn(a, b) { return a + b; }, 10));
+
+var total = 0;
+each([1, 2, 3], fn(x) { total += x; });
+print(total);
+
+print(map(["a", "b"], str));
+print(map([1.5, 2], floor));
+
+fn make_adder(n) {
+    return fn(x) { return x + n; };
+}
+print(map([10, 20], make_adder(5)));

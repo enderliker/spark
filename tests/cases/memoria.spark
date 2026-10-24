@@ -1,0 +1,17 @@
+// Forces several garbage collector passes.
+var saved = [];
+for (var i = 0; i < 5000; i += 1) {
+    var text = "string number " + str(i);
+    var array = [i, text, [i, i + 1]];
+    if (len(array) != 3) {
+        print("error in iteration", i);
+    }
+    if (i % 1000 == 0) {
+        push(saved, text);
+    }
+}
+print(len(saved));
+print(saved[0], saved[4]);
+assert(len(saved) == 5, "saved strings were lost");
+assert(saved[2] == "string number 2000", "a saved string was corrupted");
+print("memory ok");

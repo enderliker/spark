@@ -1,0 +1,30 @@
+fn contador() {
+    var n = 0;
+    return fn() {
+        n += 1;
+        return n;
+    };
+}
+var c1 = contador();
+var c2 = contador();
+print(c1(), c1(), c2(), c1());
+
+fn sumador(base) {
+    return fn(x) { return base + x; };
+}
+print(sumador(10)(5));
+
+fn creadores() {
+    var lista = [];
+    for (var i = 0; i < 3; i += 1) {
+        var valor = i * 10;
+        push(lista, fn() { return valor; });
+    }
+    return lista;
+}
+var fs = creadores();
+print(fs[0](), fs[1](), fs[2]());
+
+var saludo = "hola";
+fn saludar(nombre) { return saludo + ", " + nombre; }
+print(saludar("Chispa"));

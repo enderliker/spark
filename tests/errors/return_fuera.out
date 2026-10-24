@@ -1,0 +1,2 @@
+exit: 65
+stderr: 'return' can only be used inside a function

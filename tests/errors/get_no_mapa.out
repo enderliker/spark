@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'get' expects a map as first argument, received number

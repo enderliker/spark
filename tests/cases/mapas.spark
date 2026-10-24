@@ -1,0 +1,36 @@
+var persona = {"nombre": "Ada", "lenguaje": "C"};
+print(persona["nombre"], len(persona));
+persona["edad"] = 36;
+persona["edad"] += 1;
+print(persona["edad"], has(persona, "edad"), has(persona, "altura"));
+print(persona["noexiste"]);
+print(del(persona, "lenguaje"), len(persona), has(persona, "lenguaje"));
+
+var uno = {"solo": 1};
+print(uno, len(uno), keys(uno), values(uno));
+
+var claves = 0;
+for (var clave in persona) {
+    claves += 1;
+}
+print(claves);
+
+var precios = {"a": 10, "b": 20, "c": 30};
+var total = 0;
+for (var producto in precios) {
+    total += precios[producto];
+}
+print(total);
+
+var numeros = {1: "uno", 2: "dos"};
+print(numeros[2]);
+var llave = [1, 2];
+numeros[llave] = "array";
+print(numeros[llave], has(numeros, [1, 2]), len(numeros));
+
+var copia = {};
+for (var k in numeros) {
+    copia[k] = numeros[k];
+}
+print(len(copia));
+print(type(numeros), type({}));

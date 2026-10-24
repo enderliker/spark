@@ -1,0 +1,4 @@
+negative zero positive
+nil is falsey
+strings are truthy
+zero is truthy too

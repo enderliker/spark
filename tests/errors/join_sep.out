@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'join' expects a string as separator, received number

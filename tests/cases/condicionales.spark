@@ -1,0 +1,21 @@
+fn classify(n) {
+    if (n < 0) {
+        return "negative";
+    } else if (n == 0) {
+        return "zero";
+    } else {
+        return "positive";
+    }
+}
+print(classify(-4), classify(0), classify(9));
+if (nil) {
+    print("no");
+} else {
+    print("nil is falsey");
+}
+if ("text") {
+    print("strings are truthy");
+}
+if (0) {
+    print("zero is truthy too");
+}

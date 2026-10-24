@@ -1,0 +1,2 @@
+exit: 65
+stderr: can only assign to a variable or an array element

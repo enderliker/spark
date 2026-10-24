@@ -1,0 +1,45 @@
+// Exercises the superinstructions: local <op> constant, fused jumps
+// and returning a local directly.
+fn fib(n) {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+print(fib(10));
+
+var i = 0;
+var s = 0;
+while (i < 5) {
+    s = s + i * 2;
+    i += 1;
+}
+print(s);
+
+for (var j = 0; j < 4; j += 1) {
+    s = s - 1;
+}
+print(s);
+
+var k = 10;
+if (k > 5) {
+    print("greater");
+} else {
+    print("less");
+}
+
+fn capture() {
+    var x = 3;
+    return fn() { return x; };
+}
+print(capture()());
+
+var text = "medium";
+if (text > "apple") {
+    print("ordered");
+}
+
+var negative = -4;
+if (negative < 0) {
+    print("negative");
+}

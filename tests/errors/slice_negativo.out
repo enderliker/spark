@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'slice' does not accept negative indexes

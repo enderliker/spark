@@ -1,0 +1,27 @@
+fn fib(n) {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+print(fib(15));
+
+fn suma(a, b) {
+    return a + b;
+}
+print(suma(2, 3));
+
+fn sin_retorno() {
+    var x = 1;
+}
+print(sin_retorno());
+
+fn aplicar(f, x) {
+    return f(x);
+}
+print(aplicar(fn(v) { return v * v; }, 7));
+
+fn doble(x) {
+    return x * 2;
+}
+print(aplicar(doble, 21));

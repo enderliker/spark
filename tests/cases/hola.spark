@@ -1,0 +1,6 @@
+// Line comment
+/* Block
+   comment */
+print("Hello, world!");
+print("One line\nand another line");
+print("Quotes: \"Chispa\" and a backslash: \\");
