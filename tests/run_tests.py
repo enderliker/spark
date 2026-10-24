@@ -140,6 +140,15 @@ def test_repl() -> None:
         failure.stdout + failure.stderr,
     )
 
+    constants = run([], stdin="const x = 1;\nx = 2;\nprint(x);\nexit\n")
+    report(
+        "a const stays immutable across REPL inputs",
+        constants.returncode == 0
+        and "cannot assign to constant 'x'" in constants.stderr
+        and "spark> 1" in constants.stdout,
+        constants.stdout + constants.stderr,
+    )
+
 
 def test_cli() -> None:
     print("\nCommand-line interface")

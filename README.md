@@ -21,15 +21,18 @@ for (var i = 0; i < 10; i += 1) {
 ## Features
 
 - Types: `nil`, `bool`, `number`, `string`, `array`, `map` and `function`.
-- Global and local variables with block-lexical scope.
+- Global and local variables with block-lexical scope; `const` declares immutable
+  bindings.
 - First-class functions, recursion and **closures** captured by reference.
-- `if`/`else`, `while`, C-style `for`, `for-in` over arrays, maps and strings,
-  `break` and `continue`.
+- `if`/`else`, `while`, `do`/`while`, C-style `for`, `for-in` over arrays, maps and
+  strings, labelled `break`/`continue`, and `switch`/`case`/`default` with
+  auto-break.
 - Dynamic arrays with literals, indexing, `push`, `pop` and `len`; maps with
   literals, `map[key]`, `has`, `del`, `keys`, `values` and `len`.
-- Text indexing and `substr` by UTF-8 character.
-- Arithmetic operators, comparisons (also between strings) and short-circuited
-  logic (`and`, `or`, `not`).
+- Text indexing, `substr` by UTF-8 character and interpolation with `${...}`.
+- Arithmetic operators, comparisons (also between strings), short-circuited logic
+  (`and`, `or`, `not`), the ternary operator and `??`.
+- Decimal, hexadecimal, binary and octal literals with `_` digit separators.
 - Compilation to bytecode with already-resolved jumps, a line table and a
   disassembler (`--dump`).
 - Virtual machine with call frames, upvalues and error messages that include the
@@ -211,7 +214,7 @@ example, `print(1 + 2);` compiles to:
 
 `tests/run_tests.py` runs valid programs comparing exact output, error cases checking
 the exit code and a `stderr` fragment, REPL sessions and the CLI options. There are
-63 tests, plus the `-fsanitize=address,undefined` build used during development.
+88 tests, plus the `-fsanitize=address,undefined` build used during development.
 
 ## Benchmark
 
@@ -233,5 +236,5 @@ around 13 ms on the development machine.
 
 ## Ideas for the future
 
-`import`, 64-bit integers, `switch`, the `??` operator, native modules for
-files/networking, and a native code generator from the bytecode.
+`import`, 64-bit integers, native modules for files/networking, and a native code
+generator from the bytecode.

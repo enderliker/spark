@@ -89,3 +89,21 @@ switch (1) {
         }
         print("outer");
 }
+
+// A switch without a match does nothing.
+switch (5) {
+    case 1: print("one");
+}
+print("after");
+
+// An empty case body does nothing (there is no fall-through).
+switch (1) {
+    case 1:
+    case 2: print("two");
+}
+print("done");
+
+// nil can be a case value.
+switch (nil) {
+    case nil: print("nil match");
+}

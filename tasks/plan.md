@@ -92,7 +92,7 @@ original numbering:
 - [x] T18 Numeric literal sugar (hex/bin/oct, `_` separators)
 
 ### Checkpoint: Phase 2
-- [ ] All tests pass, build clean, docs updated
+- [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 3
 
 ### Phase 3 - 64-bit integers (area 2 core)

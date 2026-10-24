@@ -229,7 +229,7 @@ auto-break (decide; propose auto-break for safety) .
 **Scope:** S.
 
 ## Checkpoint: Phase 2
-- [ ] All tests pass, build clean, docs updated
+- [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 3
 
 ---
