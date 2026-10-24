@@ -988,6 +988,33 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         }
         break;
 
+    case EXPR_TERNARY: {
+        compile_expression(compiler, expr->as.ternary.condition);
+        int else_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+
+        compile_expression(compiler, expr->as.ternary.then_branch);
+        int end_jump = emit_jump(compiler, OP_JUMP, line);
+        patch_jump(compiler, else_jump);
+        compile_expression(compiler, expr->as.ternary.else_branch);
+        patch_jump(compiler, end_jump);
+        break;
+    }
+
+    case EXPR_COALESCE: {
+        compile_expression(compiler, expr->as.coalesce.left);
+        emit_byte(compiler, OP_DUP, line);
+        emit_byte(compiler, OP_NIL, line);
+        emit_byte(compiler, OP_EQUAL, line);
+        int not_nil_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+
+        emit_byte(compiler, OP_POP, line);
+        compile_expression(compiler, expr->as.coalesce.right);
+        int end_jump = emit_jump(compiler, OP_JUMP, line);
+        patch_jump(compiler, not_nil_jump);
+        patch_jump(compiler, end_jump);
+        break;
+    }
+
     case EXPR_VARIABLE: {
         VarRef ref = resolve_variable(compiler, expr->as.variable, line);
 

@@ -349,6 +349,7 @@ Token lexer_next(Lexer *lexer)
     case ',': return make_token(lexer, TOKEN_COMMA);
     case ';': return make_token(lexer, TOKEN_SEMICOLON);
     case ':': return make_token(lexer, TOKEN_COLON);
+    case '?': return make_token(lexer, match(lexer, '?') ? TOKEN_QUESTION_QUESTION : TOKEN_QUESTION);
     case '+': return make_token(lexer, match(lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
     case '-': return make_token(lexer, match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
     case '*': return make_token(lexer, match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
@@ -383,6 +384,8 @@ const char *token_type_name(TokenType type)
     case TOKEN_COMMA: return "','";
     case TOKEN_SEMICOLON: return "';'";
     case TOKEN_COLON: return "':'";
+    case TOKEN_QUESTION: return "'?'";
+    case TOKEN_QUESTION_QUESTION: return "\?\?'";
     case TOKEN_PLUS: return "'+'";
     case TOKEN_MINUS: return "'-'";
     case TOKEN_STAR: return "'*'";

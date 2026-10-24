@@ -26,6 +26,8 @@ source -> lexer.c -> parser.c (AST) -> compiler.c (bytecode) -> vm.c (stack VM +
 
 Everything lives in `src/`.
 
+read `tasks/todo.md` and `tasks/plan.md` for more context of the status
+
 ## Build and test
 
 On Windows there is no C compiler: build and test from WSL (Ubuntu).

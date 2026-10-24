@@ -1780,6 +1780,10 @@ static InterpretResult run(int base_frame)
             pop();
             break;
 
+        case OP_DUP:
+            push(peek(0));
+            break;
+
         case OP_DUP2: {
             Value a = peek(1);
             Value b = peek(0);

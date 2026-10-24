@@ -1,0 +1,18 @@
+// The ternary operator evaluates only the taken branch.
+var calls = "";
+fn note(tag, value) {
+    calls = calls + tag;
+    return value;
+}
+
+print(true ? note("T", 1) : note("E", 2));
+print(false ? note("T", 3) : note("E", 4));
+print(calls);
+
+// It is right-associative.
+print(false ? 1 : false ? 2 : 3);
+print(true ? false ? 10 : 20 : 30);
+
+// `or`/`and` bind tighter than `?:`.
+print(false or true ? "a" : "b");
+print(true and false ? "a" : "b");

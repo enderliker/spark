@@ -62,6 +62,7 @@ const char *opcode_name(OpCode op)
     case OP_TRUE: return "TRUE";
     case OP_FALSE: return "FALSE";
     case OP_POP: return "POP";
+    case OP_DUP: return "DUP";
     case OP_DUP2: return "DUP2";
     case OP_GET_LOCAL: return "GET_LOCAL";
     case OP_SET_LOCAL: return "SET_LOCAL";

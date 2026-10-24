@@ -511,9 +511,41 @@ static Expr *logic_or(Parser *parser)
     return expr;
 }
 
+static Expr *coalesce(Parser *parser)
+{
+    Expr *expr = logic_or(parser);
+
+    if (match(parser, TOKEN_QUESTION_QUESTION)) {
+        Token op = parser->previous;
+        Expr *coalesce_expr = new_expr(parser, EXPR_COALESCE, op.line);
+
+        coalesce_expr->as.coalesce.left = expr;
+        coalesce_expr->as.coalesce.right = coalesce(parser);
+        expr = coalesce_expr;
+    }
+    return expr;
+}
+
+static Expr *ternary(Parser *parser)
+{
+    Expr *expr = coalesce(parser);
+
+    if (match(parser, TOKEN_QUESTION)) {
+        Token op = parser->previous;
+        Expr *conditional = new_expr(parser, EXPR_TERNARY, op.line);
+
+        conditional->as.ternary.condition = expr;
+        conditional->as.ternary.then_branch = expression(parser);
+        consume(parser, TOKEN_COLON, "expected ':' in the conditional expression");
+        conditional->as.ternary.else_branch = ternary(parser);
+        expr = conditional;
+    }
+    return expr;
+}
+
 static Expr *expression(Parser *parser)
 {
-    return logic_or(parser);
+    return ternary(parser);
 }
 
 static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)

@@ -156,10 +156,10 @@ initializer; `const` is not required to be a compile-time constant, just immutab
 ### T12 - Ternary operator `?:`
 **Description:** Right-associative `cond ? a : b`, lazily evaluating only one branch.
 **Acceptance criteria:**
-- [ ] Only the taken branch is evaluated (observable via side effects).
-- [ ] Precedence documented between `or`/`and` and assignment.
+- [x] Only the taken branch is evaluated (observable via side effects).
+- [x] Precedence documented between `or`/`and` and assignment.
 **Verification:**
-- [ ] Fixture with side effects; suite; docs.
+- [x] Fixture with side effects; suite; docs.
 **Dependencies:** None.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -167,9 +167,9 @@ initializer; `const` is not required to be a compile-time constant, just immutab
 ### T13 - Null-coalescing `??`
 **Description:** `a ?? b` returns `a` unless it is `nil`, in which case `b`.
 **Acceptance criteria:**
-- [ ] Right operand is only evaluated when the left is `nil`.
+- [x] Right operand is only evaluated when the left is `nil`.
 **Verification:**
-- [ ] Fixture; suite; docs.
+- [x] Fixture; suite; docs.
 **Dependencies:** T12 (shares lexer/parser edits).
 **Files:** same as T12.
 **Scope:** S.

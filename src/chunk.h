@@ -12,6 +12,7 @@ typedef enum {
     OP_TRUE,
     OP_FALSE,
     OP_POP,
+    OP_DUP,           /* duplicates the top value */
     OP_DUP2,          /* duplicates the two top values */
     OP_GET_LOCAL,     /* u8: slot */
     OP_SET_LOCAL,     /* u8: slot */

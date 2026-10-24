@@ -83,8 +83,8 @@ original numbering:
 
 ### Phase 2 - Language syntax (area 1, no integers needed)
 - [x] T11 `const` declarations
-- [ ] T12 Ternary operator `?:`
-- [ ] T13 Null-coalescing `??`
+- [x] T12 Ternary operator `?:`
+- [x] T13 Null-coalescing `??`
 - [ ] T14 `do { } while`
 - [ ] T15 Labelled loops + labelled `break`/`continue`
 - [ ] T16 `switch`/`case`/`default`

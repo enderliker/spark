@@ -72,6 +72,8 @@ From highest to lowest precedence:
 | `==` `!=` | left | equality |
 | `and` | left | short-circuited conjunction |
 | `or` | left | short-circuited disjunction |
+| `??` | right | null-coalescing |
+| `?:` | right | conditional expression |
 
 `+` adds two numbers or concatenates two strings; it does not mix types. `/` and `%`
 with a zero divisor produce a runtime error. `and` and `or` return one of their
@@ -81,6 +83,23 @@ operands:
 print(nil or "default");   // default
 print(1 and 2);            // 2
 print(false and 1);        // false
+```
+
+The conditional operator evaluates only the selected branch and is
+right-associative:
+
+```spark
+print(age >= 18 ? "adult" : "minor");
+print(a ? b : c ? d : e);   // a ? b : (c ? d : e)
+```
+
+`??` returns its left operand unless it is `nil`, in which case it evaluates and
+returns the right one. Only `nil` triggers the fallback; `false`, `0` and `""` are
+returned unchanged. It is right-associative and binds tighter than `?:`:
+
+```spark
+print(value ?? "default");
+print(nil ?? nil ?? "third");   // third
 ```
 
 ## 4. Variables and scope

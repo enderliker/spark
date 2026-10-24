@@ -1,0 +1,22 @@
+// `??` returns the left operand unless it is nil.
+print(nil ?? "default");
+print("value" ?? "default");
+print(false ?? "default");
+print(0 ?? 99);
+
+// The right operand is only evaluated when the left one is nil.
+var calls = "";
+fn note(tag, value) {
+    calls = calls + tag;
+    return value;
+}
+
+print("left" ?? note("R1", 1));
+print(nil ?? note("R2", 2));
+print(nil ?? nil ?? "third");
+print("first" ?? nil ?? "third");
+print(calls);
+
+var map = {"a": 1};
+print(map["missing"] ?? "fallback");
+print((nil ?? 1) + 2);

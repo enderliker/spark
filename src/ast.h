@@ -44,6 +44,8 @@ typedef enum {
     EXPR_UNARY,
     EXPR_BINARY,
     EXPR_LOGICAL,
+    EXPR_TERNARY,
+    EXPR_COALESCE,
     EXPR_VARIABLE,
     EXPR_CALL,
     EXPR_INDEX,
@@ -73,6 +75,15 @@ struct Expr {
             TokenType op;
             Expr *right;
         } logical;
+        struct {
+            Expr *condition;
+            Expr *then_branch;
+            Expr *else_branch;
+        } ternary;
+        struct {
+            Expr *left;
+            Expr *right;
+        } coalesce;
         Text variable;
         struct {
             Expr *callee;
