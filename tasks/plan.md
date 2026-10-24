@@ -2,7 +2,7 @@
 
 ## Overview
 
-Spark today is a working bytecode interpreter (44 tests, fib(27) ~13 ms). The goal
+Spark today is a working bytecode interpreter (93 tests, fib(27) ~9.5 ms). The goal
 of this plan is to fill the seven gaps identified for the language: syntax, data
 types, functions, standard library / I/O, VM performance and limits, semantics, and
 tooling/ecosystem. This is a **multi-phase, multi-session roadmap**; it is planned in
@@ -214,6 +214,6 @@ Still open (answer at the start of the relevant phase):
 
 ## Baseline (for regression checks)
 
-- Tests: 44 passing (`python3 tests/run_tests.py`).
-- Benchmark: `fib(27)` minimum ~13 ms, median ~13.5 ms (`python3 benchmarks/run.py`).
+- Tests: 93 passing (`python3 tests/run_tests.py`).
+- Benchmark: `fib(27)` minimum ~9.5 ms, median ~10 ms (`python3 benchmarks/run.py`).
 - No warnings, sanitizers clean.

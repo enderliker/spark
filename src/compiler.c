@@ -897,8 +897,10 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
             }
             if (stmt->as.var.is_const) {
                 mark_global_const(compiler, name, line);
+                emit_byte(compiler, OP_DEFINE_GLOBAL_CONST, line);
+            } else {
+                emit_byte(compiler, OP_DEFINE_GLOBAL, line);
             }
-            emit_byte(compiler, OP_DEFINE_GLOBAL, line);
             emit_global_name(compiler, name, line);
         } else {
             int slot = add_local(compiler, stmt->as.var.name, line);
@@ -956,10 +958,14 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         bool is_global = compiler->scope_depth == 0;
 
         if (is_global) {
-            compile_function_value(compiler, stmt->as.function.name, stmt->as.function.params,
-                                   stmt->as.function.body, line);
             ObjString *name = name_constant(stmt->as.function.name);
 
+            if (global_is_const(compiler, name)) {
+                compile_error(compiler, line, "cannot redefine constant '%.*s'",
+                              stmt->as.function.name.length, stmt->as.function.name.chars);
+            }
+            compile_function_value(compiler, stmt->as.function.name, stmt->as.function.params,
+                                   stmt->as.function.body, line);
             emit_byte(compiler, OP_DEFINE_GLOBAL, line);
             emit_global_name(compiler, name, line);
         } else {
@@ -1219,17 +1225,6 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     }
 }
 
-static void apply_const_globals(CompileContext *ctx)
-{
-    for (ConstGlobal *entry = ctx->const_globals; entry; entry = entry->next) {
-        int slot = vm_global_slot(entry->name);
-
-        if (slot >= 0) {
-            vm_mark_global_const(slot);
-        }
-    }
-}
-
 static void free_const_globals(CompileContext *ctx)
 {
     ConstGlobal *entry = ctx->const_globals;
@@ -1276,7 +1271,6 @@ ObjFunction *compile_ast(Stmt *program, const char *name, bool repl_mode,
     emit_byte(&compiler, OP_NIL, program->line);
     emit_byte(&compiler, OP_RETURN, program->line);
 
-    apply_const_globals(&ctx);
     free_const_globals(&ctx);
     function = compiler.function;
     mem_resume_gc();

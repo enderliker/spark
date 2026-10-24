@@ -68,6 +68,7 @@ const char *opcode_name(OpCode op)
     case OP_SET_LOCAL: return "SET_LOCAL";
     case OP_GET_GLOBAL: return "GET_GLOBAL";
     case OP_DEFINE_GLOBAL: return "DEFINE_GLOBAL";
+    case OP_DEFINE_GLOBAL_CONST: return "DEFINE_GLOBAL_CONST";
     case OP_SET_GLOBAL: return "SET_GLOBAL";
     case OP_GET_UPVALUE: return "GET_UPVALUE";
     case OP_SET_UPVALUE: return "SET_UPVALUE";
@@ -163,6 +164,7 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         return constant_instruction(chunk, opcode_name(op), offset);
     case OP_GET_GLOBAL:
     case OP_DEFINE_GLOBAL:
+    case OP_DEFINE_GLOBAL_CONST:
     case OP_SET_GLOBAL:
         return global_instruction(chunk, opcode_name(op), offset);
     case OP_CLOSURE: {

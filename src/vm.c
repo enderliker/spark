@@ -1504,13 +1504,6 @@ bool vm_global_is_const(ObjString *name)
     return false;
 }
 
-void vm_mark_global_const(int slot)
-{
-    if (slot >= 0 && slot < vm.global_count) {
-        vm.global_slots[slot].is_const = true;
-    }
-}
-
 const char *vm_global_slot_name(int slot)
 {
     if (slot < 0 || slot >= vm.global_count) {
@@ -2136,6 +2129,20 @@ static InterpretResult run(int base_frame)
             }
             global->value = pop();
             global->defined = true;
+            break;
+        }
+
+        case OP_DEFINE_GLOBAL_CONST: {
+            uint16_t slot = READ_U16();
+            GlobalSlot *global = &vm.global_slots[slot];
+
+            if (global->defined) {
+                vm_runtime_error("cannot redefine constant '%s'", global->name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            global->value = pop();
+            global->defined = true;
+            global->is_const = true;
             break;
         }
 

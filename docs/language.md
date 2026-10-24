@@ -65,7 +65,8 @@ true false nil and or not
 
 Numbers are double-precision floating point. Literals can be decimal (`42`, `3.5`,
 `1e3`), hexadecimal (`0xff`), binary (`0b1010`) or octal (`0o17`). Underscores may
-separate digits (`1_000_000`, `0xFF_FF`); a separator must sit between two digits.
+separate digits (`1_000_000`, `0xFF_FF`, `1e1_0`); a separator must sit between two
+digits.
 Arrays and maps can hold any value, including other arrays and functions. Functions,
 arrays and maps are compared by identity; strings by content.
 
@@ -126,9 +127,10 @@ var global = 1;
 
 - `var name;` creates the variable with `nil`.
 - `const name = value;` creates an immutable binding. The initializer is required
-  and reassigning the name (directly or with a compound operator) is a compile
-  error. The value itself is not frozen: a `const` array or map can still be
-  mutated.
+  and redefining the name is an error. Reassignment (directly or with a compound
+  operator) is a compile error when the declaration is already visible; inside a
+  function compiled before the constant, it is a runtime error. The value itself is
+  not frozen: a `const` array or map can still be mutated.
 - At the top level of a program, variables are global; inside a block or function they
   are local.
 - Blocks create a new scope; an outer variable can be shadowed by one with the same
@@ -240,8 +242,8 @@ The label must be followed by a loop, and the loop it names must be enclosing th
 `break`/`continue`; otherwise it is a compile error.
 
 Any value can be used as a condition: `nil` and `false` are falsey; everything else is
-truthy. `break` and `continue` may only appear inside a loop; `return` only inside a
-function.
+truthy. `break` may appear inside a loop or a `switch`; `continue` only inside a loop;
+`return` only inside a function.
 
 ## 6. Functions and closures
 
@@ -440,4 +442,4 @@ multi-line functions can be defined.
 - 256 local variables per function.
 - 256 call frames (deeper recursion produces a controlled error).
 - 16-bit constant index per function.
-- No modules, `switch`, exceptions, threads or file I/O.
+- No modules, exceptions, threads or file I/O.

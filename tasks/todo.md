@@ -228,6 +228,22 @@ auto-break (decide; propose auto-break for safety) .
 **Files:** `src/lexer.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
+### Phase 2 review (T11-T18)
+**Description:** Post-phase review using the code-review-and-quality,
+code-simplification and performance-optimization skills.
+**Fixes:**
+- [x] `DEFINE_GLOBAL_CONST` marks a global constant only when its declaration
+  executes, so a failed initializer no longer reserves the name in the REPL.
+- [x] Numeric literals reject a separator at the end of the fractional part and
+  accept separators between exponent digits; base literals report misplaced
+  separators as such.
+- [x] `const` followed by a function declaration of the same name is a compile
+  error, matching the behavior of `var`.
+- [x] Docs corrected: `break` inside `switch`, `switch` is supported, and the
+  benchmark/test counts match the current state.
+**Verification:**
+- [x] `-Werror` build; full suite; ASan/UBSan suite; benchmark.
+
 ## Checkpoint: Phase 2
 - [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 3

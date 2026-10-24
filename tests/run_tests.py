@@ -149,6 +149,16 @@ def test_repl() -> None:
         constants.stdout + constants.stderr,
     )
 
+    failed_const = run([], stdin="const x = 1 / 0;\nconst x = 2;\nprint(x);\nexit\n")
+    report(
+        "a failed const declaration does not reserve the name",
+        failed_const.returncode == 0
+        and "division by zero" in failed_const.stderr
+        and "cannot redefine constant 'x'" not in failed_const.stderr
+        and "spark> 2" in failed_const.stdout,
+        failed_const.stdout + failed_const.stderr,
+    )
+
 
 def test_cli() -> None:
     print("\nCommand-line interface")

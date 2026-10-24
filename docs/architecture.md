@@ -80,7 +80,7 @@ The VM is a stack machine. The main instructions:
 | Group | Instructions |
 | --- | --- |
 | Constants and stack | `CONSTANT`, `NIL`, `TRUE`, `FALSE`, `POP`, `DUP`, `DUP2` |
-| Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
+| Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `DEFINE_GLOBAL_CONST`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
 | Collections | `ARRAY n`, `MAP n`, `INDEX`, `INDEX_SET`, `LEN`, `TO_STRING`, `ITER_KEYS` |
 | Arithmetic and logic | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `MODULO`, `EQUAL`, `GREATER`, `LESS`, `NOT`, `NEGATE` |
 | Superinstructions | `ADD_LOCAL_CONST`, `SUBTRACT_LOCAL_CONST`, `MULTIPLY_LOCAL_CONST`, `DIVIDE_LOCAL_CONST`, `LESS_LOCAL_CONST`, `GREATER_LOCAL_CONST`, `JUMP_IF_NOT_LESS_LOCAL_CONST`, `JUMP_IF_NOT_GREATER_LOCAL_CONST`, `RETURN_LOCAL` |
@@ -108,8 +108,9 @@ counter.
 - Non-local variables are resolved as globals by name at compile time:
   `vm_global_slot(name)` returns a stable 16-bit slot (creating it if needed). The
   `global_names` hash table only maps names to slots, and it persists across REPL
-  lines so globals can be reused. At runtime, `GET_GLOBAL`/`SET_GLOBAL`/`DEFINE_GLOBAL`
-  index `vm.global_slots` directly, with no hashing.
+  lines so globals can be reused. At runtime, `GET_GLOBAL`, `SET_GLOBAL`,
+  `DEFINE_GLOBAL` and `DEFINE_GLOBAL_CONST` index `vm.global_slots` directly, with no
+  hashing.
 - Loops keep a list of pending `break` and `continue` jumps to patch. Leaving a block
   with `break` emits the necessary stack cleanups. The loop context chain also holds
   labels, so `break outer`/`continue outer` can target an enclosing loop.
@@ -118,9 +119,11 @@ counter.
   labelled jumps leave the switch with a balanced stack.
 - String interpolation compiles each `${...}` expression, converts it with
   `TO_STRING` and concatenates the parts with `ADD`.
-- `const` is tracked per local/upvalue and in the compile context for globals; the VM
-  also marks global slots so a function compiled before a later `const` still fails
-  at runtime.
+- `const` is tracked per local/upvalue and in the compile context for globals. A
+  global constant is defined with `DEFINE_GLOBAL_CONST`, which marks the slot when the
+  declaration executes; a failed initializer therefore does not reserve the name. A
+  function compiled before a later `const` still fails at runtime through
+  `SET_GLOBAL`.
 - Compound assignments reuse `DUP2` + `INDEX` so the array and the index are not
   evaluated twice.
 
@@ -250,7 +253,7 @@ for strings. The same rule applies to a callback result that is stored after
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump` and a missing file.
 
-There are 88 tests. During development the project was also compiled with
+There are 93 tests. During development the project was also compiled with
 `-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the

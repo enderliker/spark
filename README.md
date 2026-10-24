@@ -214,13 +214,13 @@ example, `print(1 + 2);` compiles to:
 
 `tests/run_tests.py` runs valid programs comparing exact output, error cases checking
 the exit code and a `stderr` fragment, REPL sessions and the CLI options. There are
-88 tests, plus the `-fsanitize=address,undefined` build used during development.
+93 tests, plus the `-fsanitize=address,undefined` build used during development.
 
 ## Benchmark
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) several times and reports
-the minimum and median. The VM uses fused superinstructions to keep the minimum
-around 13 ms on the development machine.
+the minimum and median. The VM uses fused superinstructions and hot/cold dispatch to
+keep the minimum around 9.5 ms on the development machine.
 
 ## Known limits of this version
 

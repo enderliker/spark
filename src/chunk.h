@@ -18,6 +18,7 @@ typedef enum {
     OP_SET_LOCAL,     /* u8: slot */
     OP_GET_GLOBAL,    /* u16: constant with the name */
     OP_DEFINE_GLOBAL, /* u16 */
+    OP_DEFINE_GLOBAL_CONST, /* u16; defines the slot and marks it constant */
     OP_SET_GLOBAL,    /* u16 */
     OP_GET_UPVALUE,   /* u8 */
     OP_SET_UPVALUE,   /* u8 */

@@ -216,36 +216,53 @@ static int digit_value(char c)
     return 99;
 }
 
-static bool consume_digits(Lexer *lexer, int base, int *digit_count)
+typedef enum {
+    DIGITS_NONE,     /* no digits and no separator */
+    DIGITS_OK,
+    DIGITS_SEPARATOR /* a separator is not between two digits */
+} DigitScan;
+
+static DigitScan consume_digits(Lexer *lexer, int base, int *digit_count)
 {
     bool last_separator = *digit_count == 0;
+    bool consumed_any = false;
 
     while (!is_at_end(lexer)) {
         char c = peek(lexer);
 
         if (c == '_') {
             if (last_separator) {
-                return false;
+                return DIGITS_SEPARATOR;
             }
             last_separator = true;
+            consumed_any = true;
             advance(lexer);
         } else if (digit_value(c) < base) {
             (*digit_count)++;
             last_separator = false;
+            consumed_any = true;
             advance(lexer);
         } else {
             break;
         }
     }
-    return !last_separator;
+    if (last_separator) {
+        return consumed_any ? DIGITS_SEPARATOR : DIGITS_NONE;
+    }
+    return DIGITS_OK;
 }
 
 static Token base_number(Lexer *lexer, int base, const char *prefix)
 {
     int digits = 0;
+    DigitScan scan;
 
     advance(lexer); /* the base prefix */
-    if (!consume_digits(lexer, base, &digits) || digits == 0) {
+    scan = consume_digits(lexer, base, &digits);
+    if (scan == DIGITS_SEPARATOR) {
+        return error_token(lexer, "a digit separator must be between digits");
+    }
+    if (digits == 0) {
         char message[96];
 
         if (is_identifier_part(peek(lexer))) {
@@ -284,28 +301,34 @@ static Token number(Lexer *lexer)
 
     int digits = 1;
 
-    if (!consume_digits(lexer, 10, &digits)) {
+    if (consume_digits(lexer, 10, &digits) == DIGITS_SEPARATOR) {
         return error_token(lexer, "a digit separator must be between digits");
     }
-    if (peek(lexer) == '.' && isdigit((unsigned char)peek_next(lexer))) {
+    if (peek(lexer) == '.' &&
+        (isdigit((unsigned char)peek_next(lexer)) || peek_next(lexer) == '_')) {
         int fraction = 0;
 
         advance(lexer);
-        consume_digits(lexer, 10, &fraction);
+        if (consume_digits(lexer, 10, &fraction) == DIGITS_SEPARATOR) {
+            return error_token(lexer, "a digit separator must be between digits");
+        }
     }
     if (peek(lexer) == 'e' || peek(lexer) == 'E') {
         const char *save = lexer->current;
         int line_save = lexer->line;
+        int exponent = 0;
+        DigitScan scan;
 
         advance(lexer);
         if (peek(lexer) == '+' || peek(lexer) == '-') {
             advance(lexer);
         }
-        if (isdigit((unsigned char)peek(lexer))) {
-            while (isdigit((unsigned char)peek(lexer))) {
-                advance(lexer);
-            }
-        } else {
+        scan = consume_digits(lexer, 10, &exponent);
+        if (scan == DIGITS_SEPARATOR) {
+            return error_token(lexer, "a digit separator must be between digits");
+        }
+        if (scan == DIGITS_NONE) {
+            /* No digits: the 'e' starts an identifier, not an exponent. */
             lexer->current = save;
             lexer->line = line_save;
         }
