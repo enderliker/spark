@@ -72,6 +72,14 @@ static void mark_value(Value value);
 static void collect_garbage(void);
 static void define_native(const char *name, NativeFn function, int arity);
 static void close_upvalues(Value *last);
+/* Numbers the hot path can combine directly: integers and floats. A mixed
+ * pair is converted to double, which is the same promotion the general path
+ * applies, so mixed arithmetic does not have to leave the fast path. */
+static inline bool numeric_fast(Value v)
+{
+    return v.type == VAL_INT || v.type == VAL_NUMBER;
+}
+
 static InterpretResult run(int base_frame);
 static bool call_callback(Value callee, int arg_count, Value *result);
 static inline bool compare_values(bool greater, Value a, Value b, bool *out);
@@ -1522,6 +1530,89 @@ static Value native_reduce(int arg_count, Value *args)
     return pop();
 }
 
+/* Strict "right comes before left" test used by the stable merge sort. */
+typedef bool (*ValueLess)(Value callback, Value right, Value left, bool *out);
+
+static bool less_natural(Value callback, Value right, Value left, bool *out)
+{
+    (void)callback;
+    return compare_values(false, right, left, out);
+}
+
+static bool less_callback(Value callback, Value right, Value left, bool *out)
+{
+    Value before;
+
+    push(right);
+    push(left);
+    if (!call_callback(callback, 2, &before) || vm.had_error) {
+        return false;
+    }
+    *out = !value_is_falsey(before);
+    return true;
+}
+
+/* Bottom-up stable merge sort, O(n log n). Both work buffers are arrays rooted on
+ * the VM stack and the source is never modified while a pass reads it, so the
+ * collector always sees every value, even while a user callback runs. The array
+ * is written back only at the end. */
+static bool sort_array_with(ObjArray *array, ValueLess less, Value callback)
+{
+    int n = array->count;
+    bool ok = true;
+
+    /* Root each buffer as soon as it exists: creating the second one can collect. */
+    ObjArray *first = object_array();
+    push(OBJ_VAL(first));
+    ObjArray *second = object_array();
+    push(OBJ_VAL(second));
+    for (int i = 0; i < n; i++) {
+        array_push(first, array->items[i]);
+        array_push(second, NIL_VAL);
+    }
+
+    Value *src = first->items;
+    Value *dst = second->items;
+
+    for (int width = 1; ok && width < n; width *= 2) {
+        for (int lo = 0; ok && lo < n; lo += 2 * width) {
+            int mid = lo + width < n ? lo + width : n;
+            int hi = lo + 2 * width < n ? lo + 2 * width : n;
+            int i = lo;
+            int j = mid;
+            int k = lo;
+
+            while (i < mid && j < hi) {
+                bool right_first;
+
+                if (!less(callback, src[j], src[i], &right_first)) {
+                    ok = false;
+                    break;
+                }
+                dst[k++] = right_first ? src[j++] : src[i++];
+            }
+            while (ok && i < mid) {
+                dst[k++] = src[i++];
+            }
+            while (ok && j < hi) {
+                dst[k++] = src[j++];
+            }
+        }
+        Value *swap = src;
+        src = dst;
+        dst = swap;
+    }
+
+    if (ok) {
+        for (int i = 0; i < n && i < array->count; i++) {
+            array->items[i] = src[i];
+        }
+    }
+    pop();
+    pop();
+    return ok;
+}
+
 static Value native_sort(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -1531,25 +1622,10 @@ static Value native_sort(int arg_count, Value *args)
     }
     ObjArray *array = AS_ARRAY(args[0]);
 
-    for (int i = 1; i < array->count; i++) {
-        Value key = array->items[i];
-        int j = i - 1;
-
-        while (j >= 0) {
-            bool before;
-
-            if (!compare_values(false, key, array->items[j], &before)) {
-                return NIL_VAL;
-            }
-            if (!before) {
-                break;
-            }
-            array->items[j + 1] = array->items[j];
-            j--;
-        }
-        array->items[j + 1] = key;
+    if (array->count < 2) {
+        return args[0];
     }
-    return args[0];
+    return sort_array_with(array, less_natural, NIL_VAL) ? args[0] : NIL_VAL;
 }
 
 static Value native_sort_by(int arg_count, Value *args)
@@ -1561,29 +1637,11 @@ static Value native_sort_by(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjArray *array = AS_ARRAY(args[0]);
-    Value callback = args[1];
 
-    for (int i = 1; i < array->count; i++) {
-        Value key = array->items[i];
-        int j = i - 1;
-
-        while (j >= 0) {
-            Value before;
-
-            push(key);
-            push(array->items[j]);
-            if (!call_callback(callback, 2, &before) || vm.had_error) {
-                return NIL_VAL;
-            }
-            if (value_is_falsey(before)) {
-                break;
-            }
-            array->items[j + 1] = array->items[j];
-            j--;
-        }
-        array->items[j + 1] = key;
+    if (array->count < 2) {
+        return args[0];
     }
-    return args[0];
+    return sort_array_with(array, less_callback, args[1]) ? args[0] : NIL_VAL;
 }
 
 int vm_global_slot(ObjString *name)
@@ -2151,11 +2209,11 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold; /* overflow promotes to a double */
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
             sp--;
-            sp[-1] = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+            sp[-1] = NUMBER_VAL(value_as_double(a) + value_as_double(b));
             ip += 1;
             DISPATCH();
         }
@@ -2175,11 +2233,11 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
             sp--;
-            sp[-1] = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+            sp[-1] = NUMBER_VAL(value_as_double(a) - value_as_double(b));
             ip += 1;
             DISPATCH();
         }
@@ -2199,11 +2257,11 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
             sp--;
-            sp[-1] = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+            sp[-1] = NUMBER_VAL(value_as_double(a) * value_as_double(b));
             ip += 1;
             DISPATCH();
         }
@@ -2218,11 +2276,11 @@ static InterpretResult run(int base_frame)
                 ip += 1;
                 DISPATCH();
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
             sp--;
-            sp[-1] = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+            sp[-1] = BOOL_VAL(value_as_double(a) < value_as_double(b));
             ip += 1;
             DISPATCH();
         }
@@ -2237,11 +2295,11 @@ static InterpretResult run(int base_frame)
                 ip += 1;
                 DISPATCH();
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
             sp--;
-            sp[-1] = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
+            sp[-1] = BOOL_VAL(value_as_double(a) > value_as_double(b));
             ip += 1;
             DISPATCH();
         }
@@ -2260,10 +2318,10 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
-            *sp++ = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+            *sp++ = NUMBER_VAL(value_as_double(a) + value_as_double(b));
             ip += 4;
             DISPATCH();
         }
@@ -2282,10 +2340,10 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
-            *sp++ = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+            *sp++ = NUMBER_VAL(value_as_double(a) - value_as_double(b));
             ip += 4;
             DISPATCH();
         }
@@ -2304,10 +2362,10 @@ static InterpretResult run(int base_frame)
                 }
                 goto cold;
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
-            *sp++ = NUMBER_VAL(AS_NUMBER(a) * AS_NUMBER(b));
+            *sp++ = NUMBER_VAL(value_as_double(a) * value_as_double(b));
             ip += 4;
             DISPATCH();
         }
@@ -2321,10 +2379,10 @@ static InterpretResult run(int base_frame)
                 ip += 4;
                 DISPATCH();
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
-            *sp++ = BOOL_VAL(AS_NUMBER(a) < AS_NUMBER(b));
+            *sp++ = BOOL_VAL(value_as_double(a) < value_as_double(b));
             ip += 4;
             DISPATCH();
         }
@@ -2338,10 +2396,10 @@ static InterpretResult run(int base_frame)
                 ip += 4;
                 DISPATCH();
             }
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (!numeric_fast(a) || !numeric_fast(b)) {
                 goto cold;
             }
-            *sp++ = BOOL_VAL(AS_NUMBER(a) > AS_NUMBER(b));
+            *sp++ = BOOL_VAL(value_as_double(a) > value_as_double(b));
             ip += 4;
             DISPATCH();
         }
@@ -2374,7 +2432,7 @@ static InterpretResult run(int base_frame)
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 less = AS_INT(a) < AS_INT(b);
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
-                less = AS_NUMBER(a) < AS_NUMBER(b);
+                less = value_as_double(a) < value_as_double(b);
             } else {
                 goto cold;
             }
@@ -2394,7 +2452,7 @@ static InterpretResult run(int base_frame)
             if (a.type == VAL_INT && b.type == VAL_INT) {
                 greater = AS_INT(a) > AS_INT(b);
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
-                greater = AS_NUMBER(a) > AS_NUMBER(b);
+                greater = value_as_double(a) > value_as_double(b);
             } else {
                 goto cold;
             }
@@ -2471,7 +2529,7 @@ static InterpretResult run(int base_frame)
                     goto do_call_self;
                 }
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
-                arg = NUMBER_VAL(AS_NUMBER(a) - AS_NUMBER(b));
+                arg = NUMBER_VAL(value_as_double(a) - value_as_double(b));
                 goto do_call_self;
             }
             goto cold;
@@ -2506,7 +2564,7 @@ static InterpretResult run(int base_frame)
                     goto do_ret_add;
                 }
             } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
-                result = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+                result = NUMBER_VAL(value_as_double(a) + value_as_double(b));
                 goto do_ret_add;
             }
             goto cold;

@@ -9,10 +9,15 @@
 #include "buf.h"
 #include "memory.h"
 
-#define INTERN_BUCKET_COUNT 1024
+#define INTERN_INITIAL_BUCKETS 1024
 
 static Obj *object_list = NULL;
-static ObjString *intern_table[INTERN_BUCKET_COUNT];
+/* Chained hash table of interned strings. It starts small and doubles (rehashing
+ * every entry) once the load factor passes 3/4, so lookups stay O(1) on average
+ * no matter how many strings a program creates. */
+static ObjString **intern_buckets = NULL;
+static uint32_t intern_capacity = 0; /* always 0 or a power of two */
+static size_t intern_count = 0;
 
 Obj *objects_head(void)
 {
@@ -46,9 +51,37 @@ static uint32_t hash_string(const char *chars, int length)
     return hash;
 }
 
+static void intern_grow(void)
+{
+    uint32_t new_capacity = intern_capacity == 0 ? INTERN_INITIAL_BUCKETS : intern_capacity * 2;
+    ObjString **new_buckets = calloc(new_capacity, sizeof(ObjString *));
+
+    if (!new_buckets) {
+        return; /* keep the current table: correct, just slower */
+    }
+    for (uint32_t i = 0; i < intern_capacity; i++) {
+        ObjString *entry = intern_buckets[i];
+
+        while (entry) {
+            ObjString *next = entry->intern_next;
+            uint32_t bucket = entry->hash & (new_capacity - 1);
+
+            entry->intern_next = new_buckets[bucket];
+            new_buckets[bucket] = entry;
+            entry = next;
+        }
+    }
+    free(intern_buckets);
+    intern_buckets = new_buckets;
+    intern_capacity = new_capacity;
+}
+
 static ObjString *intern_find(const char *chars, int length, uint32_t hash)
 {
-    ObjString *entry = intern_table[hash % INTERN_BUCKET_COUNT];
+    if (intern_capacity == 0) {
+        return NULL;
+    }
+    ObjString *entry = intern_buckets[hash & (intern_capacity - 1)];
 
     while (entry) {
         if (entry->hash == hash && entry->length == length &&
@@ -75,9 +108,15 @@ ObjString *object_string(const char *chars, int length)
     memcpy(string->chars, chars, (size_t)length);
     string->chars[length] = '\0';
 
-    uint32_t bucket = hash % INTERN_BUCKET_COUNT;
-    string->intern_next = intern_table[bucket];
-    intern_table[bucket] = string;
+    if ((intern_count + 1) * 4 > (size_t)intern_capacity * 3) {
+        intern_grow();
+    }
+    if (intern_capacity != 0) {
+        uint32_t bucket = hash & (intern_capacity - 1);
+        string->intern_next = intern_buckets[bucket];
+        intern_buckets[bucket] = string;
+        intern_count++;
+    }
     return string;
 }
 
@@ -401,8 +440,8 @@ void object_free(Obj *obj)
 
 void intern_remove_unmarked(void)
 {
-    for (int i = 0; i < INTERN_BUCKET_COUNT; i++) {
-        ObjString **link = &intern_table[i];
+    for (uint32_t i = 0; i < intern_capacity; i++) {
+        ObjString **link = &intern_buckets[i];
 
         while (*link) {
             ObjString *string = *link;
@@ -410,6 +449,7 @@ void intern_remove_unmarked(void)
             if (!string->obj.marked) {
                 *link = string->intern_next;
                 string->intern_next = NULL;
+                intern_count--;
             } else {
                 link = &string->intern_next;
             }
@@ -419,7 +459,10 @@ void intern_remove_unmarked(void)
 
 void intern_free_table(void)
 {
-    memset(intern_table, 0, sizeof(intern_table));
+    free(intern_buckets);
+    intern_buckets = NULL;
+    intern_capacity = 0;
+    intern_count = 0;
 }
 
 const char *obj_type_name(ObjType type)
