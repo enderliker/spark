@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (warnings are errors)
+        run: make CFLAGS="-std=c11 -O3 -g -Wall -Wextra -Wpedantic -Werror"
+
+      - name: Run the test suite
+        run: python3 tests/run_tests.py
+
+  sanitizers:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with sanitizers
+        run: >-
+          make
+          CFLAGS="-std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror"
+          LDFLAGS="-fsanitize=address,undefined"
+
+      - name: Run the test suite
+        run: python3 tests/run_tests.py
+
+  benchmark:
+    name: Benchmark (fib 27)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      # Shared runners are slower and noisier than the development machine. The
+      # strict 10-15 ms budget is checked locally; this is a coarse regression guard.
+      - name: Measure fib(27)
+        run: python3 benchmarks/run.py --max-ms 100
