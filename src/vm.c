@@ -104,7 +104,7 @@ static void gray_push(Obj *object)
         gray.capacity = gray.capacity < 64 ? 64 : gray.capacity * 2;
         gray.items = realloc(gray.items, sizeof(Obj *) * (size_t)gray.capacity);
         if (!gray.items) {
-            fprintf(stderr, "chispa: out of memory in the GC\n");
+            fprintf(stderr, "spark: out of memory in the GC\n");
             exit(70);
         }
     }
@@ -1462,7 +1462,7 @@ static void define_native(const char *name, NativeFn function, int arity)
     int slot = vm_global_slot(native->name);
 
     if (slot < 0) {
-        fprintf(stderr, "chispa: too many global variables\n");
+        fprintf(stderr, "spark: too many global variables\n");
         exit(70);
     }
     vm.global_slots[slot].value = OBJ_VAL(native);

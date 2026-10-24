@@ -1,6 +1,6 @@
 /* value.h - value representation and object header. */
-#ifndef CHISPA_VALUE_H
-#define CHISPA_VALUE_H
+#ifndef SPARK_VALUE_H
+#define SPARK_VALUE_H
 
 #include <stdbool.h>
 #include <stdint.h>

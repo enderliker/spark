@@ -1,8 +1,8 @@
 // String helpers.
 print(contains("hello world", "world"), contains("hello", "xyz"));
 print(index_of("hello", "l"), index_of("hello", "z"));
-print(starts_with("chispa", "chi"), ends_with("chispa", "spa"));
-print(starts_with("chispa", "xyz"), ends_with("a", "abc"));
+print(starts_with("spark", "spa"), ends_with("spark", "ark"));
+print(starts_with("spark", "xyz"), ends_with("a", "abc"));
 
 print(split("a,b,c", ","));
 print(split("abc", ""));

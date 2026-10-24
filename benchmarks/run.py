@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "chispa"
+BINARY = ROOT / "spark"
 SCRIPT = ROOT / "benchmarks" / "fib.spark"
 RUNS = 7
 

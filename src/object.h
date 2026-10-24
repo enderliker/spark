@@ -1,6 +1,6 @@
 /* object.h - language objects: strings, arrays, functions, closures and natives. */
-#ifndef CHISPA_OBJECT_H
-#define CHISPA_OBJECT_H
+#ifndef SPARK_OBJECT_H
+#define SPARK_OBJECT_H
 
 #include <stdio.h>
 

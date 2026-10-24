@@ -10,13 +10,13 @@
 #include "parser.h"
 #include "vm.h"
 
-#define CHISPA_VERSION "0.1.0"
+#define SPARK_VERSION "0.1.0"
 
 static void print_help(void)
 {
-    printf("Chispa %s - an interpreted programming language with a virtual machine.\n\n",
-           CHISPA_VERSION);
-    printf("Usage: chispa [options] [file.spark]\n\n");
+    printf("Spark %s - an interpreted programming language with a virtual machine.\n\n",
+           SPARK_VERSION);
+    printf("Usage: spark [options] [file.spark]\n\n");
     printf("Options:\n");
     printf("  --dump      compile and show the bytecode without running\n");
     printf("  --help      show this help\n");
@@ -30,7 +30,7 @@ static char *read_file(const char *path, size_t *out_size)
     buf_t contents;
 
     if (!file) {
-        fprintf(stderr, "chispa: could not open '%s'\n", path);
+        fprintf(stderr, "spark: could not open '%s'\n", path);
         return NULL;
     }
 
@@ -42,12 +42,12 @@ static char *read_file(const char *path, size_t *out_size)
         if (buf_append(&contents, chunk, read_count) != 0) {
             buf_free(&contents);
             fclose(file);
-            fprintf(stderr, "chispa: file too large\n");
+            fprintf(stderr, "spark: file too large\n");
             return NULL;
         }
     }
     if (ferror(file)) {
-        fprintf(stderr, "chispa: error reading '%s'\n", path);
+        fprintf(stderr, "spark: error reading '%s'\n", path);
         buf_free(&contents);
         fclose(file);
         return NULL;
@@ -161,12 +161,12 @@ static void repl(void)
     size_t capacity = 0;
     buf_t pending;
 
-    printf("Chispa %s — type code and press Enter. 'salir' or Ctrl+D to exit.\n",
-           CHISPA_VERSION);
+    printf("Spark %s — type code and press Enter. 'salir' or Ctrl+D to exit.\n",
+           SPARK_VERSION);
     buf_init(&pending);
 
     for (;;) {
-        fputs(pending.len > 0 ? "... " : "chispa> ", stdout);
+        fputs(pending.len > 0 ? "... " : "spark> ", stdout);
         fflush(stdout);
 
         ssize_t length = getline(&line, &capacity, stdin);
@@ -222,7 +222,7 @@ int main(int argc, char **argv)
             return 0;
         }
         if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-v") == 0) {
-            printf("Chispa %s\n", CHISPA_VERSION);
+            printf("Spark %s\n", SPARK_VERSION);
             return 0;
         }
         if (strcmp(argv[i], "--dump") == 0) {
@@ -230,18 +230,18 @@ int main(int argc, char **argv)
             continue;
         }
         if (argv[i][0] == '-' && argv[i][1] != '\0') {
-            fprintf(stderr, "chispa: unknown option '%s' (try --help)\n", argv[i]);
+            fprintf(stderr, "spark: unknown option '%s' (try --help)\n", argv[i]);
             return 64;
         }
         if (file) {
-            fprintf(stderr, "chispa: only one file can be run at a time\n");
+            fprintf(stderr, "spark: only one file can be run at a time\n");
             return 64;
         }
         file = argv[i];
     }
 
     if (dump && !file) {
-        fprintf(stderr, "chispa: --dump needs a file\n");
+        fprintf(stderr, "spark: --dump needs a file\n");
         return 64;
     }
 

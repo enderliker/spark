@@ -1,6 +1,6 @@
 /* chunk.h - bytecode blocks with constants and line numbers. */
-#ifndef CHISPA_CHUNK_H
-#define CHISPA_CHUNK_H
+#ifndef SPARK_CHUNK_H
+#define SPARK_CHUNK_H
 
 #include "value.h"
 

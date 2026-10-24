@@ -1,6 +1,6 @@
-/* vm.h - stack virtual machine for Chispa. */
-#ifndef CHISPA_VM_H
-#define CHISPA_VM_H
+/* vm.h - stack virtual machine for Spark. */
+#ifndef SPARK_VM_H
+#define SPARK_VM_H
 
 #include <stdbool.h>
 

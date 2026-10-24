@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Automated test suite for the Chispa language."""
+"""Automated test suite for the Spark language."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "chispa"
+BINARY = ROOT / "spark"
 CASES = ROOT / "tests" / "cases"
 ERRORS = ROOT / "tests" / "errors"
 
@@ -124,9 +124,9 @@ def test_repl() -> None:
     )
     completed = run([], stdin=session)
     checks = {
-        "prints the result of an expression": "chispa> 3" in completed.stdout,
-        "keeps global variables": "chispa> 10" in completed.stdout,
-        "accepts multi-line blocks": "chispa> 42" in completed.stdout,
+        "prints the result of an expression": "spark> 3" in completed.stdout,
+        "keeps global variables": "spark> 10" in completed.stdout,
+        "accepts multi-line blocks": "spark> 42" in completed.stdout,
         "runs print": "done" in completed.stdout,
         "exits with code 0": completed.returncode == 0,
     }
@@ -144,11 +144,11 @@ def test_repl() -> None:
 def test_cli() -> None:
     print("\nCommand-line interface")
     version = run(["--version"])
-    report("--version", version.returncode == 0 and "Chispa" in version.stdout,
+    report("--version", version.returncode == 0 and "Spark" in version.stdout,
            version.stdout + version.stderr)
 
     help_run = run(["--help"])
-    report("--help", help_run.returncode == 0 and "Usage: chispa" in help_run.stdout,
+    report("--help", help_run.returncode == 0 and "Usage: spark" in help_run.stdout,
            help_run.stdout + help_run.stderr)
 
     dump = run(["--dump", str(CASES / "hola.spark")])

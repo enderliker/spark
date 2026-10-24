@@ -27,4 +27,4 @@ print(fs[0](), fs[1](), fs[2]());
 
 var saludo = "hola";
 fn saludar(nombre) { return saludo + ", " + nombre; }
-print(saludar("Chispa"));
+print(saludar("Spark"));

@@ -1,8 +1,8 @@
-# Implementation Plan: Chispa language roadmap (areas 1-7)
+# Implementation Plan: Spark language roadmap (areas 1-7)
 
 ## Overview
 
-Chispa today is a working bytecode interpreter (44 tests, fib(27) ~13 ms). The goal
+Spark today is a working bytecode interpreter (44 tests, fib(27) ~13 ms). The goal
 of this plan is to fill the seven gaps identified for the language: syntax, data
 types, functions, standard library / I/O, VM performance and limits, semantics, and
 tooling/ecosystem. This is a **multi-phase, multi-session roadmap**; it is planned in
@@ -48,7 +48,7 @@ original numbering:
   Add `//` (integer division) and keep `%` for the remainder. `/` will **not** become
   integer division when both operands are ints. (Was Q1.)
 - **A4 - Native callbacks.** Higher-order natives (`map`/`filter`/`reduce`/`sort_by`)
-  need to call a Chispa function from C. Implement a re-entrant call helper in `vm.c`
+  need to call a Spark function from C. Implement a re-entrant call helper in `vm.c`
   that pushes a frame and runs a nested interpreter loop, guarded so it does not
   corrupt the current frame (design spike first, T7).
 - **A5 - Exceptions.** Implement `try`/`catch`/`finally`/`throw` with an exception

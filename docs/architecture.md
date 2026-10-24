@@ -1,6 +1,6 @@
-# Chispa architecture
+# Spark architecture
 
-Chispa is a bytecode interpreter written in C11 with no external dependencies. The
+Spark is a bytecode interpreter written in C11 with no external dependencies. The
 path of an execution is:
 
 ```
@@ -159,7 +159,7 @@ frames.
 ### Re-entrant calls from natives
 
 Higher-order natives (`map`, `filter`, `reduce`, `each`, `sort_by`) need to call a
-Chispa function from C. The helper `call_callback(callee, arg_count, &result)` expects
+Spark function from C. The helper `call_callback(callee, arg_count, &result)` expects
 the arguments already pushed on the value stack and runs the callee to completion:
 
 - The interpreter loop takes the frame index it must stop at (`run(base_frame)`).

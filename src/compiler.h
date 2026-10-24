@@ -1,6 +1,6 @@
 /* compiler.h - compilation of the AST to bytecode. */
-#ifndef CHISPA_COMPILER_H
-#define CHISPA_COMPILER_H
+#ifndef SPARK_COMPILER_H
+#define SPARK_COMPILER_H
 
 #include <stdbool.h>
 #include <stddef.h>

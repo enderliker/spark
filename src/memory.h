@@ -1,6 +1,6 @@
 /* memory.h - counted allocation and garbage collector triggering. */
-#ifndef CHISPA_MEMORY_H
-#define CHISPA_MEMORY_H
+#ifndef SPARK_MEMORY_H
+#define SPARK_MEMORY_H
 
 #include <stdbool.h>
 #include <stddef.h>

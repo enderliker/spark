@@ -1,3 +1,3 @@
-// First program in Chispa.
-print("Hello, Chispa!");
+// First program in Spark.
+print("Hello, Spark!");
 print("This language compiles to bytecode and runs on a virtual machine written in C.");

@@ -1,6 +1,6 @@
-/* lexer.h - lexical analysis of the Chispa language. */
-#ifndef CHISPA_LEXER_H
-#define CHISPA_LEXER_H
+/* lexer.h - lexical analysis of the Spark language. */
+#ifndef SPARK_LEXER_H
+#define SPARK_LEXER_H
 
 typedef enum {
     TOKEN_LEFT_PAREN, TOKEN_RIGHT_PAREN,

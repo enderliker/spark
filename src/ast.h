@@ -1,6 +1,6 @@
 /* ast.h - abstract syntax tree and memory arena. */
-#ifndef CHISPA_AST_H
-#define CHISPA_AST_H
+#ifndef SPARK_AST_H
+#define SPARK_AST_H
 
 #include <stdbool.h>
 #include <stddef.h>

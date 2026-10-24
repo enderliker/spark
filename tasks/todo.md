@@ -1,4 +1,4 @@
-# Chispa task list
+# Spark task list
 
 Detailed, dependency-ordered task list for the roadmap in `tasks/plan.md`. Execute
 top to bottom; do not start a phase before its checkpoint is approved. Every task
@@ -85,7 +85,7 @@ strings.
 
 ### T7 - Native callback support (re-entrant call) - design + implementation
 **Description:** A `vm_call_value_for_native(Value callee, int argc)` helper that runs a
-Chispa function to completion from inside a native without corrupting the current
+Spark function to completion from inside a native without corrupting the current
 frame, plus a spike documenting the approach (nested loop vs frame push).
 **Acceptance criteria:**
 - [x] A test native (e.g. an internal one used by T8) can call a closure and get its
@@ -673,7 +673,7 @@ version/magic guard.
 **Scope:** M.
 
 ### T52 - Formatter
-**Description:** `chispa --format file` canonicalizes indentation/spacing.
+**Description:** `spark --format file` canonicalizes indentation/spacing.
 **Acceptance criteria:**
 - [ ] Idempotent (formatting twice is stable); does not change semantics.
 **Verification:**
@@ -683,7 +683,7 @@ version/magic guard.
 **Scope:** M.
 
 ### T53 - Linter
-**Description:** `chispa --lint file` reports unused variables, unreachable code and
+**Description:** `spark --lint file` reports unused variables, unreachable code and
 shadowing.
 **Acceptance criteria:**
 - [ ] Exit code signals findings; each rule documented.

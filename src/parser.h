@@ -1,6 +1,6 @@
-/* parser.h - Chispa syntax analysis. */
-#ifndef CHISPA_PARSER_H
-#define CHISPA_PARSER_H
+/* parser.h - Spark syntax analysis. */
+#ifndef SPARK_PARSER_H
+#define SPARK_PARSER_H
 
 #include <stdbool.h>
 #include <stddef.h>

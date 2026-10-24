@@ -21,7 +21,7 @@ void *arena_alloc(Arena *arena, size_t size)
         ArenaBlock *fresh = malloc(sizeof(ArenaBlock) + capacity);
 
         if (!fresh) {
-            fprintf(stderr, "chispa: out of memory while building the AST\n");
+            fprintf(stderr, "spark: out of memory while building the AST\n");
             exit(70);
         }
         fresh->next = arena->head;

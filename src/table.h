@@ -1,6 +1,6 @@
 /* table.h - hash table for global variables. */
-#ifndef CHISPA_TABLE_H
-#define CHISPA_TABLE_H
+#ifndef SPARK_TABLE_H
+#define SPARK_TABLE_H
 
 #include "value.h"
 

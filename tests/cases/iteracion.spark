@@ -8,7 +8,7 @@ for (var n in [1, 2, 3, 4]) {
 print(total);
 
 var text = "";
-for (var c in "chispa") {
+for (var c in "spark") {
     text += c + "-";
 }
 print(text);

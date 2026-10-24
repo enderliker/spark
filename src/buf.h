@@ -1,6 +1,6 @@
 /* buf.h - dynamic byte buffer, always NUL-terminated. */
-#ifndef CHISPA_BUF_H
-#define CHISPA_BUF_H
+#ifndef SPARK_BUF_H
+#define SPARK_BUF_H
 
 #include <stddef.h>
 

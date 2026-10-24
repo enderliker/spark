@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for AI agents working on the **Chispa** project.
+Guidance for AI agents working on the **Spark** project.
 
 ## Language policy
 
@@ -17,7 +17,7 @@ Guidance for AI agents working on the **Chispa** project.
 
 ## What this project is
 
-Chispa is an interpreted programming language written from scratch in C11 with **no
+Spark is an interpreted programming language written from scratch in C11 with **no
 external dependencies**. The pipeline is:
 
 ```
@@ -31,7 +31,7 @@ Everything lives in `src/`.
 On Windows there is no C compiler: build and test from WSL (Ubuntu).
 
 ```bash
-make                       # builds ./chispa
+make                       # builds ./spark
 make test                  # runs the test suite (needs python3)
 python3 benchmarks/run.py  # runs the fib(27) benchmark (reports min/median)
 ```

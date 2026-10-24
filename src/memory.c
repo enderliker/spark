@@ -33,7 +33,7 @@ void *mem_realloc(void *ptr, size_t old_size, size_t new_size)
 
     void *result = realloc(ptr, new_size);
     if (!result) {
-        fprintf(stderr, "chispa: out of memory\n");
+        fprintf(stderr, "spark: out of memory\n");
         exit(70);
     }
 

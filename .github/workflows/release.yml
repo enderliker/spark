@@ -25,6 +25,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
-          gh release create "$GITHUB_REF_NAME" chispa
+          gh release create "$GITHUB_REF_NAME" spark
           --title "$GITHUB_REF_NAME"
           --generate-notes

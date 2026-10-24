@@ -1,11 +1,11 @@
-# Chispa
+# Spark
 
-**Chispa** is a programming language created from scratch in C11. Source code is
+**Spark** is a programming language created from scratch in C11. Source code is
 parsed, compiled to its own **bytecode**, and executed on a **stack-based virtual
 machine** with a *mark & sweep* garbage collector. It uses no parser generators and
 no external libraries: the whole pipeline lives in `src/`.
 
-```chispa
+```spark
 fn fib(n) {
     if (n < 2) {
         return n;
@@ -45,21 +45,21 @@ All you need is a C11 compiler, `make` and the C math library. There are no
 third-party dependencies.
 
 ```bash
-make            # builds the ./chispa binary
+make            # builds the ./spark binary
 make test       # runs the test suite (needs python3)
 ```
 
 On **Windows** the recommended path is WSL (Ubuntu): open a WSL terminal, enter the
-project directory and run `make` and `./chispa`. On Linux and macOS it works natively.
+project directory and run `make` and `./spark`. On Linux and macOS it works natively.
 
 ## Usage
 
 ```bash
-./chispa                       # opens the REPL
-./chispa examples/fibonacci.spark
-./chispa --dump examples/hola.spark   # shows the bytecode without running
-./chispa --help
-./chispa --version
+./spark                       # opens the REPL
+./spark examples/fibonacci.spark
+./spark --dump examples/hola.spark   # shows the bytecode without running
+./spark --help
+./spark --version
 ```
 
 The interpreter returns `0` on success, `64` for incorrect CLI usage, `65` for a
@@ -70,17 +70,17 @@ In the REPL every standalone expression prints its value and global variables
 persist between lines:
 
 ```
-chispa> 1 + 2
+spark> 1 + 2
 3
-chispa> var greeting = "hello"
-chispa> greeting + ", world"
+spark> var greeting = "hello"
+spark> greeting + ", world"
 hello, world
-chispa> exit
+spark> exit
 ```
 
 ## Quick language guide
 
-```chispa
+```spark
 // Line comment
 /* Block
    comment */

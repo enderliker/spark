@@ -1,6 +1,6 @@
 var greeting = "hello";
 print(greeting + " world");
-print(len("chispa"), len("ñandú"), len(""));
+print(len("spark"), len("ñandú"), len(""));
 print("abc" < "abd", "b" > "a", "a" == "a");
 print(str(42), str(1.5), str(nil), str([1, "two"]));
 print(num("42") + 1, num(" 3.5 "));

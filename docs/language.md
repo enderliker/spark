@@ -1,13 +1,13 @@
-# Chispa language reference
+# Spark language reference
 
-This guide describes version 0.1.0. Chispa is an interpreted language: it is first
+This guide describes version 0.1.0. Spark is an interpreted language: it is first
 compiled to bytecode and then run on a stack-based virtual machine.
 
 ## 1. Lexicon
 
 ### Comments
 
-```chispa
+```spark
 // until the end of the line
 /* block
    nestable */
@@ -15,7 +15,7 @@ compiled to bytecode and then run on a stack-based virtual machine.
 
 ### Literals
 
-```chispa
+```spark
 nil
 true
 false
@@ -75,7 +75,7 @@ From highest to lowest precedence:
 with a zero divisor produce a runtime error. `and` and `or` return one of their
 operands:
 
-```chispa
+```spark
 print(nil or "default");   // default
 print(1 and 2);            // 2
 print(false and 1);        // false
@@ -83,7 +83,7 @@ print(false and 1);        // false
 
 ## 4. Variables and scope
 
-```chispa
+```spark
 var global = 1;
 
 {
@@ -105,7 +105,7 @@ var global = 1;
 
 Assignments are **statements**, not expressions:
 
-```chispa
+```spark
 x = 10;
 x += 1;      // x = x + 1
 x -= 2;
@@ -122,7 +122,7 @@ error.
 
 ## 5. Control flow
 
-```chispa
+```spark
 if (condition) {
     ...
 } else if (other) {
@@ -148,7 +148,7 @@ for (;;) {           // all three parts are optional
 `for-in` iterates over the elements of an array, the keys of a map or the characters
 of a string:
 
-```chispa
+```spark
 for (var value in [10, 20, 30]) {
     print(value);
 }
@@ -157,7 +157,7 @@ for (var key in {"a": 1, "b": 2}) {
     print(key);
 }
 
-for (var character in "chispa") {
+for (var character in "spark") {
     print(character);
 }
 ```
@@ -168,7 +168,7 @@ function.
 
 ## 6. Functions and closures
 
-```chispa
+```spark
 fn add(a, b) {
     return a + b;
 }
@@ -198,7 +198,7 @@ print(counter(5), counter(3));   // 5 8
 - The variable of a `for (var i = ...)` is a single one for the whole loop. Variables
   declared inside the body are new each iteration:
 
-```chispa
+```spark
 var fs = [];
 for (var i = 0; i < 3; i += 1) {
     var value = i;
@@ -209,7 +209,7 @@ print(fs[0](), fs[1](), fs[2]());   // 0 1 2
 
 ## 7. Arrays
 
-```chispa
+```spark
 var a = [1, 2, 3];
 print(len(a), a[0], a[2]);
 a[1] = 20;
@@ -227,7 +227,7 @@ print(a, pop(a));
 
 ## 8. Maps
 
-```chispa
+```spark
 var person = {"name": "Ada", "age": 36};
 print(person["name"], len(person));
 person["age"] += 1;
@@ -253,8 +253,8 @@ print(keys(person), values(person));
 Strings are UTF-8 and immutable. Indexing returns a one-character string; `substr`
 returns a substring. Positions are counted in characters, not bytes.
 
-```chispa
-print("chispa"[0], "chispa"[5]);   // c a
+```spark
+print("spark"[0], "spark"[5]);   // c a
 print(substr("abcdef", 1, 3));     // bcd
 print(substr("program", 5));       // am
 print(len("ñandú"));               // 5
@@ -351,7 +351,7 @@ Interpreter exit codes:
 
 ## 12. REPL
 
-With no arguments, `chispa` opens a REPL. Every expression statement prints its value,
+With no arguments, `spark` opens a REPL. Every expression statement prints its value,
 global variables persist and errors do not close the session. Type `salir`, `exit` or
 `quit` (or Ctrl+D) to finish. Lines accumulate while there are unclosed braces, so
 multi-line functions can be defined.
