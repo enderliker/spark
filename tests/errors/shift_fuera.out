@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: the shift count must be between 0 and 63, received 64

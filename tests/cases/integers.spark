@@ -1,0 +1,37 @@
+// Integers and floats: literals, promotion, comparison and conversion.
+print(42, -7, 0, 1000000);
+print(3.14, 1.5e3, 0.5);
+
+// Arithmetic stays integer when both operands are integers.
+print(1 + 2, 5 - 8, 6 * 7);
+print(10 / 4, 10 div 4, 10 % 3);
+
+// Integer division and modulo truncate toward zero.
+print(-7 div 2, -7 % 2, 7 div -2, 7 % -2);
+
+// Overflow promotes to a float.
+print(9223372036854775807 + 1);
+
+// Mixed arithmetic promotes to a float.
+print(1 + 1.5, 3 * 0.5, 5.0 - 2);
+
+// Comparisons work across integers and floats.
+print(1 == 1.0, 2 < 1.5, 2 > 1.5, 1 != 2.0);
+
+// type() still reports "number"; is_int distinguishes the two.
+print(type(1), type(1.0), is_int(1), is_int(1.0));
+
+// Conversions.
+print(int(3.9), int(-3.9), int("12"), float(3), float("2.5"));
+
+// Numeric natives preserve integers where it is sensible.
+print(abs(-3), abs(-3.5), floor(2.9), ceil(2.1), round(2.5), min(3, 8), max(3, 8));
+
+// Integers as map keys and array indexes.
+var m = {};
+m[1] = "one";
+print(len(m), m[1.0], has(m, 1.0));
+print([10, 20, 30][0], [10, 20, 30][1.0]);
+
+// String conversion keeps integers without a decimal point.
+print(str(42), str(42.5), str(-1));

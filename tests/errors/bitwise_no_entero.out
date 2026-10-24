@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: bitwise operators expect integers, received number and number

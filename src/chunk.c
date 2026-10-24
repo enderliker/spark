@@ -92,6 +92,12 @@ const char *opcode_name(OpCode op)
     case OP_MULTIPLY: return "MULTIPLY";
     case OP_DIVIDE: return "DIVIDE";
     case OP_MODULO: return "MODULO";
+    case OP_INT_DIVIDE: return "INT_DIVIDE";
+    case OP_BIT_AND: return "BIT_AND";
+    case OP_BIT_OR: return "BIT_OR";
+    case OP_BIT_XOR: return "BIT_XOR";
+    case OP_SHL: return "SHL";
+    case OP_SHR: return "SHR";
     case OP_ADD_LOCAL_CONST: return "ADD_LOCAL_CONST";
     case OP_SUBTRACT_LOCAL_CONST: return "SUBTRACT_LOCAL_CONST";
     case OP_MULTIPLY_LOCAL_CONST: return "MULTIPLY_LOCAL_CONST";
@@ -101,6 +107,7 @@ const char *opcode_name(OpCode op)
     case OP_RETURN_LOCAL: return "RETURN_LOCAL";
     case OP_NOT: return "NOT";
     case OP_NEGATE: return "NEGATE";
+    case OP_BIT_NOT: return "BIT_NOT";
     case OP_PRINT_REPL: return "PRINT_REPL";
     case OP_JUMP: return "JUMP";
     case OP_JUMP_IF_FALSE: return "JUMP_IF_FALSE";

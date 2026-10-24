@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: the bitwise complement expects an integer, received number

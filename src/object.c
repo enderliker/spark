@@ -118,11 +118,29 @@ static uint32_t hash_value(Value value)
         return 0x811c9dc5u;
     case VAL_BOOL:
         return 0x9e3779b9u ^ (AS_BOOL(value) ? 0x85ebca6bu : 0u);
+    case VAL_INT: {
+        uint64_t bits = (uint64_t)value.as.integer;
+
+        bits ^= bits >> 33;
+        bits *= 0xff51afd7ed558ccdULL;
+        bits ^= bits >> 33;
+        return (uint32_t)bits;
+    }
     case VAL_NUMBER: {
+        double number = value.as.number;
         uint64_t bits;
 
-        memcpy(&bits, &value.as.number, sizeof(bits));
-        if (value.as.number == 0) {
+        /* A whole number in the int64 range hashes exactly like the integer,
+         * so map[1] and map[1.0] share the same entry. */
+        if (number >= -TWO_POW_63 && number < TWO_POW_63) {
+            int64_t integer = (int64_t)number;
+
+            if ((double)integer == number) {
+                return hash_value(INT_VAL(integer));
+            }
+        }
+        memcpy(&bits, &number, sizeof(bits));
+        if (number == 0) {
             bits = 0;
         }
         bits ^= bits >> 33;
@@ -421,6 +439,12 @@ const char *obj_type_name(ObjType type)
 bool values_equal(Value a, Value b)
 {
     if (a.type != b.type) {
+        if (a.type == VAL_INT && b.type == VAL_NUMBER) {
+            return int_equals_number(a.as.integer, b.as.number);
+        }
+        if (a.type == VAL_NUMBER && b.type == VAL_INT) {
+            return int_equals_number(b.as.integer, a.as.number);
+        }
         return false;
     }
     switch (a.type) {
@@ -428,6 +452,8 @@ bool values_equal(Value a, Value b)
         return true;
     case VAL_BOOL:
         return a.as.boolean == b.as.boolean;
+    case VAL_INT:
+        return a.as.integer == b.as.integer;
     case VAL_NUMBER:
         return a.as.number == b.as.number;
     case VAL_OBJ: {
@@ -472,6 +498,13 @@ static void value_format(buf_t *b, Value v, bool repr)
     case VAL_BOOL:
         buf_append_str(b, AS_BOOL(v) ? "true" : "false");
         break;
+    case VAL_INT: {
+        char buffer[32];
+
+        snprintf(buffer, sizeof(buffer), "%lld", (long long)AS_INT(v));
+        buf_append_str(b, buffer);
+        break;
+    }
     case VAL_NUMBER:
         format_number(b, AS_NUMBER(v));
         break;

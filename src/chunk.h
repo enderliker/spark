@@ -37,6 +37,12 @@ typedef enum {
     OP_MULTIPLY,
     OP_DIVIDE,
     OP_MODULO,
+    OP_INT_DIVIDE,    /* integer division (the `div` operator) */
+    OP_BIT_AND,
+    OP_BIT_OR,
+    OP_BIT_XOR,
+    OP_SHL,
+    OP_SHR,
     /* Superinstructions: left operand in a local, right operand a numeric
      * constant. They avoid two dispatches per operation. */
     OP_ADD_LOCAL_CONST,      /* u8: slot, u16: constant */
@@ -48,6 +54,7 @@ typedef enum {
     OP_RETURN_LOCAL,         /* u8: slot; returns the local directly */
     OP_NOT,
     OP_NEGATE,
+    OP_BIT_NOT,      /* unary bitwise complement */
     OP_PRINT_REPL,    /* prints and discards (REPL mode only) */
     OP_JUMP,          /* u16: offset */
     OP_JUMP_IF_FALSE, /* u16; does not consume the condition (used in and/or) */

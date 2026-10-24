@@ -38,10 +38,20 @@ result / error
 
 ```c
 typedef struct {
-    ValueType type;              /* VAL_NIL, VAL_BOOL, VAL_NUMBER, VAL_OBJ */
-    union { bool boolean; double number; Obj *obj; } as;
+    ValueType type;              /* VAL_NIL, VAL_BOOL, VAL_NUMBER, VAL_INT, VAL_OBJ */
+    union { bool boolean; double number; int64_t integer; Obj *obj; } as;
 } Value;
 ```
+
+There are two numeric tags: `VAL_NUMBER` (`double`) and `VAL_INT` (`int64_t`).
+Arithmetic and comparisons accept both by promoting the integer to a double, but two
+integers stay exact. `value.h` has the overflow-checked `int_add_overflow`,
+`int_sub_overflow` and `int_mul_overflow` helpers: when a result does not fit in
+`int64_t` the operation falls back to a double, so C signed overflow never happens.
+Equality (`values_equal`) treats an integer and a whole double in range as equal
+(`1 == 1.0`), and `hash_value` canonicalizes a whole double to its integer so `map[1]`
+and `map[1.0]` are the same key. In the VM, `value_is_numeric`/`value_as_double` and the
+`numeric_less`/`numeric_greater` helpers keep the hot paths free of type branching.
 
 Every dynamic value shares the `Obj` header:
 
@@ -82,7 +92,7 @@ The VM is a stack machine. The main instructions:
 | Constants and stack | `CONSTANT`, `NIL`, `TRUE`, `FALSE`, `POP`, `DUP`, `DUP2` |
 | Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `DEFINE_GLOBAL_CONST`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
 | Collections | `ARRAY n`, `MAP n`, `INDEX`, `INDEX_SET`, `LEN`, `TO_STRING`, `ITER_KEYS` |
-| Arithmetic and logic | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `MODULO`, `EQUAL`, `GREATER`, `LESS`, `NOT`, `NEGATE` |
+| Arithmetic and logic | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `MODULO`, `INT_DIVIDE`, `BIT_AND`, `BIT_OR`, `BIT_XOR`, `SHL`, `SHR`, `EQUAL`, `GREATER`, `LESS`, `NOT`, `NEGATE`, `BIT_NOT` |
 | Superinstructions | `ADD_LOCAL_CONST`, `SUBTRACT_LOCAL_CONST`, `MULTIPLY_LOCAL_CONST`, `DIVIDE_LOCAL_CONST`, `LESS_LOCAL_CONST`, `GREATER_LOCAL_CONST`, `JUMP_IF_NOT_LESS_LOCAL_CONST`, `JUMP_IF_NOT_GREATER_LOCAL_CONST`, `RETURN_LOCAL` |
 | Control | `JUMP`, `JUMP_IF_FALSE` (peek), `JUMP_IF_FALSE_POP` (consume), `LOOP` (16-bit offsets) |
 | Functions | `CALL argc`, `CLOSURE const [upvalues]`, `CLOSE_UPVALUE`, `RETURN` |
@@ -258,7 +268,7 @@ for strings. The same rule applies to a callback result that is stored after
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump` and a missing file.
 
-There are 95 tests. During development the project was also compiled with
+There are 103 tests. During development the project was also compiled with
 `-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the

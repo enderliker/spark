@@ -20,7 +20,9 @@ for (var i = 0; i < 10; i += 1) {
 
 ## Features
 
-- Types: `nil`, `bool`, `number`, `string`, `array`, `map` and `function`.
+- Types: `nil`, `bool`, `int`, `number`, `string`, `array`, `map` and `function`.
+- 64-bit integers alongside doubles: literals, promotion, `div`, `%`, bitwise
+  operators (`&`, `|`, `^`, `~`, `<<`, `>>`) and `int`/`float`/`is_int`.
 - Global and local variables with block-lexical scope; `const` declares immutable
   bindings.
 - First-class functions, recursion and **closures** captured by reference.
@@ -134,7 +136,9 @@ The full reference is in [docs/language.md](docs/language.md) and the internals 
 | `push(array, value)` | Appends an element and returns the array. |
 | `pop(array)` | Removes and returns the last element. |
 | `str(x)` | Converts any value to text. |
-| `num(x)` | Converts a numeric string to a number. |
+| `num(x)` | Converts a numeric string to a number (always a float). |
+| `int(x)` / `float(x)` | Convert between integers and floats (or from a numeric string). |
+| `is_int(x)` | Whether the value is an integer. |
 | `type(x)` | Returns the type name (`nil`, `bool`, `number`, `string`, `array`, `map`, `function`). |
 | `clock()` | Seconds since an arbitrary instant (for measuring). |
 | `assert(cond, message?)` | Stops the program with an error if `cond` is false. |
@@ -214,7 +218,7 @@ example, `print(1 + 2);` compiles to:
 
 `tests/run_tests.py` runs valid programs comparing exact output, error cases checking
 the exit code and a `stderr` fragment, REPL sessions and the CLI options. There are
-95 tests, plus the `-fsanitize=address,undefined` build used during development.
+103 tests, plus the `-fsanitize=address,undefined` build used during development.
 
 ## Benchmark
 
@@ -225,7 +229,8 @@ keep the minimum around 9.5 ms on the development machine.
 ## Known limits of this version
 
 - No modules or `import`: each file is a complete program.
-- Numbers are `double` (there are no separate integers).
+- Integers are 64-bit and floats are IEEE doubles; mixed arithmetic and integer
+  overflow promote to a float.
 - At most 255 parameters and arguments per function, 256 local variables per
   function and 256 nested call frames.
 - Assignments are statements (`x = 1;`), not expressions.
@@ -236,5 +241,5 @@ keep the minimum around 9.5 ms on the development machine.
 
 ## Ideas for the future
 
-`import`, 64-bit integers, native modules for files/networking, and a native code
-generator from the bytecode.
+`import`, native modules for files/networking, and a native code generator from the
+bytecode.

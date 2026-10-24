@@ -174,6 +174,7 @@ static TokenType identifier_type(const Lexer *lexer)
         break;
     case 'd':
         if (IS("default")) return TOKEN_DEFAULT;
+        if (IS("div")) return TOKEN_DIV;
         if (IS("do")) return TOKEN_DO;
         break;
     case 'e':
@@ -464,10 +465,23 @@ Token lexer_next(Lexer *lexer)
     case '*': return make_token(lexer, match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
     case '/': return make_token(lexer, match(lexer, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
     case '%': return make_token(lexer, TOKEN_PERCENT);
+    case '&': return make_token(lexer, match(lexer, '=') ? TOKEN_AMPERSAND_EQUAL : TOKEN_AMPERSAND);
+    case '|': return make_token(lexer, match(lexer, '=') ? TOKEN_PIPE_EQUAL : TOKEN_PIPE);
+    case '^': return make_token(lexer, match(lexer, '=') ? TOKEN_CARET_EQUAL : TOKEN_CARET);
+    case '~': return make_token(lexer, TOKEN_TILDE);
     case '!': return make_token(lexer, match(lexer, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
     case '=': return make_token(lexer, match(lexer, '=') ? TOKEN_EQUAL_EQUAL : TOKEN_EQUAL);
-    case '<': return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_EQUAL : TOKEN_LESS);
-    case '>': return make_token(lexer, match(lexer, '=') ? TOKEN_GREATER_EQUAL : TOKEN_GREATER);
+    case '<':
+        if (match(lexer, '<')) {
+            return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_LESS_EQUAL : TOKEN_LESS_LESS);
+        }
+        return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_EQUAL : TOKEN_LESS);
+    case '>':
+        if (match(lexer, '>')) {
+            return make_token(lexer,
+                              match(lexer, '=') ? TOKEN_GREATER_GREATER_EQUAL : TOKEN_GREATER_GREATER);
+        }
+        return make_token(lexer, match(lexer, '=') ? TOKEN_GREATER_EQUAL : TOKEN_GREATER);
     case '"': return string_token(lexer);
     default:
         break;
@@ -500,6 +514,17 @@ const char *token_type_name(TokenType type)
     case TOKEN_STAR: return "'*'";
     case TOKEN_SLASH: return "'/'";
     case TOKEN_PERCENT: return "'%'";
+    case TOKEN_AMPERSAND: return "'&'";
+    case TOKEN_AMPERSAND_EQUAL: return "'&='";
+    case TOKEN_PIPE: return "'|'";
+    case TOKEN_PIPE_EQUAL: return "'|='";
+    case TOKEN_CARET: return "'^'";
+    case TOKEN_CARET_EQUAL: return "'^='";
+    case TOKEN_TILDE: return "'~'";
+    case TOKEN_LESS_LESS: return "'<<'";
+    case TOKEN_LESS_LESS_EQUAL: return "'<<='";
+    case TOKEN_GREATER_GREATER: return "'>>'";
+    case TOKEN_GREATER_GREATER_EQUAL: return "'>>='";
     case TOKEN_PLUS_EQUAL: return "'+='";
     case TOKEN_MINUS_EQUAL: return "'-='";
     case TOKEN_STAR_EQUAL: return "'*='";
@@ -528,6 +553,7 @@ const char *token_type_name(TokenType type)
     case TOKEN_SWITCH: return "'switch'";
     case TOKEN_CASE: return "'case'";
     case TOKEN_DEFAULT: return "'default'";
+    case TOKEN_DIV: return "'div'";
     case TOKEN_FOR: return "'for'";
     case TOKEN_IN: return "'in'";
     case TOKEN_RETURN: return "'return'";

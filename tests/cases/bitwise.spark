@@ -1,0 +1,19 @@
+// Bitwise operators work on integers only.
+print(5 & 3, 5 | 3, 5 ^ 3, ~5);
+print(1 << 4, 256 >> 4, -16 >> 2);
+print(0xF0 | 0x0F, 0b1100 & 0b1010);
+
+// Compound assignments.
+var x = 12;
+x &= 10; print(x);
+x |= 3; print(x);
+x ^= 1; print(x);
+x <<= 2; print(x);
+x >>= 1; print(x);
+
+// Precedence: shifts bind tighter than comparisons and bitwise operators
+// bind tighter than `and`/`or`.
+print(1 << 2 + 3);
+print(1 | 2 ^ 2);
+print(2 + 3 & 1);
+print((1 << 3) == 8);

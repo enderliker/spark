@@ -246,7 +246,7 @@ code-simplification and performance-optimization skills.
 
 ## Checkpoint: Phase 2
 - [x] All tests pass, build clean, docs updated
-- [ ] Review with the user before Phase 3
+- [x] Review with the user before Phase 3
 
 ---
 
@@ -256,10 +256,10 @@ code-simplification and performance-optimization skills.
 **Description:** Add `VAL_INT` + `int64_t`, `INT_VAL`, `AS_INT`, `is_int`; format with
 `%lld`; equality compares exactly and across int/number when values are equal.
 **Acceptance criteria:**
-- [ ] `values_equal` treats `1` and `1.0` as equal; hashing is consistent with equality.
-- [ ] `value_print`/`str` produce integers without a decimal point.
+- [x] `values_equal` treats `1` and `1.0` as equal; hashing is consistent with equality.
+- [x] `value_print`/`str` produce integers without a decimal point.
 **Verification:**
-- [ ] Unit-ish fixtures; suite; sanitizers.
+- [x] Unit-ish fixtures; suite; sanitizers.
 **Dependencies:** None (start of Phase 3).
 **Files:** `src/value.h`, `src/object.c`, `tests/`.
 **Scope:** M.
@@ -268,10 +268,10 @@ code-simplification and performance-optimization skills.
 **Description:** Integer literals without `.`/exponent become `VAL_INT`; keep `double`
 for `3.0`, `1e3`.
 **Acceptance criteria:**
-- [ ] Lexer no longer routes plain integers through `double`.
-- [ ] Existing numeric output unchanged (`str(42)` == `"42"`).
+- [x] Lexer no longer routes plain integers through `double`.
+- [x] Existing numeric output unchanged (`str(42)` == `"42"`).
 **Verification:**
-- [ ] Suite (existing tests must still pass); docs.
+- [x] Suite (existing tests must still pass); docs.
 **Dependencies:** T19.
 **Files:** `src/lexer.c`, `src/ast.h`, `src/parser.c`, `src/compiler.c`, `tests/`.
 **Scope:** M.
@@ -280,22 +280,23 @@ for `3.0`, `1e3`.
 **Description:** `+ - *` stay int when both are int and no overflow, else promote to
 `double`; `< <= > >=` compare across types by promoting.
 **Acceptance criteria:**
-- [ ] Overflow promotes deterministically to `double` (documented).
-- [ ] Mixed comparisons are correct (e.g. `1 < 1.5`).
+- [x] Overflow promotes deterministically to `double` (documented).
+- [x] Mixed comparisons are correct (e.g. `1 < 1.5`).
 **Verification:**
-- [ ] Fixtures incl. overflow cases; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
+- [x] Fixtures incl. overflow cases; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
 **Dependencies:** T19, T20.
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M (risky).
 
-### T22 - Integer division/modulo (`//`, `%`) per A3
-**Description:** Add `//` (truncating integer division) and define `%` for ints. `/`
-stays floating-point division (decision A3).
+### T22 - Integer division/modulo (`div`, `%`) per A3
+**Description:** Add `div` (truncating integer division) and define `%` for ints. `/`
+stays floating-point division (decision A3). `//` could not be the operator because it
+is the line-comment token, so the spelling is `div`.
 **Acceptance criteria:**
-- [ ] Semantics for negatives documented and tested (`-7 // 2`, `-7 % 2`).
-- [ ] Division by zero is still a runtime error.
+- [x] Semantics for negatives documented and tested (`-7 div 2`, `-7 % 2`).
+- [x] Division by zero is still a runtime error.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** T21.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -304,10 +305,10 @@ stays floating-point division (decision A3).
 **Description:** Hash `VAL_INT` consistently with `VAL_NUMBER` so `m[1]` and `m[1.0]`
 hit the same entry; array indexes accept int and integral floats.
 **Acceptance criteria:**
-- [ ] `map[1]` and `map[1.0]` resolve to the same key.
-- [ ] Index validation messages unchanged/updated and tested.
+- [x] `map[1]` and `map[1.0]` resolve to the same key.
+- [x] Index validation messages unchanged/updated and tested.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers.
+- [x] Fixtures; suite; sanitizers.
 **Dependencies:** T19.
 **Files:** `src/object.c`, `src/vm.c`, `tests/`.
 **Scope:** M.
@@ -316,10 +317,10 @@ hit the same entry; array indexes accept int and integral floats.
 **Description:** `int(x)`, `float(x)`, `is_int(x)`; make `abs`/`min`/`max`/`floor`/`ceil`/
 `round` int-preserving where sensible.
 **Acceptance criteria:**
-- [ ] Rounding/abs return ints for int inputs (documented).
-- [ ] `int("12")`/`int(3.9)` behavior documented.
+- [x] Rounding/abs return ints for int inputs (documented).
+- [x] `int("12")`/`int(3.9)` behavior documented.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** T19.
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -328,10 +329,10 @@ hit the same entry; array indexes accept int and integral floats.
 **Description:** `& | ^ ~ << >>` (and compound `&= |= ^= <<= >>=`); integer-only with a
 runtime error otherwise.
 **Acceptance criteria:**
-- [ ] Shift semantics for negative/oversized shifts documented; no UB.
-- [ ] Non-integer operands produce a clear runtime error.
+- [x] Shift semantics for negative/oversized shifts documented; no UB.
+- [x] Non-integer operands produce a clear runtime error.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers (UB is the main risk); docs.
+- [x] Fixtures; suite; sanitizers (UB is the main risk); docs.
 **Dependencies:** T19, T21.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/chunk.h`, `src/chunk.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** L (split into lexer/parser then VM if needed).
@@ -339,10 +340,10 @@ runtime error otherwise.
 ### T26 - Docs + tests for integers
 **Description:** Complete the integer documentation and edge-case fixtures.
 **Acceptance criteria:**
-- [ ] language.md documents promotion, overflow, division and bitwise rules.
-- [ ] architecture.md notes `VAL_INT` in the value model.
+- [x] language.md documents promotion, overflow, division and bitwise rules.
+- [x] architecture.md notes `VAL_INT` in the value model.
 **Verification:**
-- [ ] Suite; benchmark gate; sanitizers.
+- [x] Suite; benchmark gate; sanitizers.
 **Dependencies:** T19-T25.
 **Files:** `README.md`, `docs/language.md`, `docs/architecture.md`, `tests/`.
 **Scope:** S.

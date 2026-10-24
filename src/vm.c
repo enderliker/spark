@@ -1,5 +1,6 @@
 #include "vm.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <math.h>
 #include <stdarg.h>
@@ -95,9 +96,27 @@ static const char *value_type_name(Value value)
     case VAL_NIL: return "nil";
     case VAL_BOOL: return "bool";
     case VAL_NUMBER: return "number";
+    case VAL_INT: return "number";
     case VAL_OBJ: return obj_type_name(AS_OBJ(value)->type);
     }
     return "unknown";
+}
+
+/* Numeric comparison: exact for two integers, otherwise by promoting. */
+static inline bool numeric_less(Value a, Value b)
+{
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        return AS_INT(a) < AS_INT(b);
+    }
+    return value_as_double(a) < value_as_double(b);
+}
+
+static inline bool numeric_greater(Value a, Value b)
+{
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        return AS_INT(a) > AS_INT(b);
+    }
+    return value_as_double(a) > value_as_double(b);
 }
 
 /* ------------------------------------------------------------------ */
@@ -333,13 +352,13 @@ static Value native_len(int arg_count, Value *args)
     if (is_obj_type(value, OBJ_STRING)) {
         ObjString *string = AS_STRING(value);
 
-        return NUMBER_VAL((double)utf8_length(string->chars, string->length));
+        return INT_VAL(utf8_length(string->chars, string->length));
     }
     if (is_obj_type(value, OBJ_ARRAY)) {
-        return NUMBER_VAL((double)AS_ARRAY(value)->count);
+        return INT_VAL(AS_ARRAY(value)->count);
     }
     if (is_obj_type(value, OBJ_MAP)) {
-        return NUMBER_VAL((double)AS_MAP(value)->count);
+        return INT_VAL(AS_MAP(value)->count);
     }
     vm_runtime_error(ERROR_TYPE, "'len' expects a string, an array or a map, received %s",
                      value_type_name(value));
@@ -387,7 +406,7 @@ static Value native_str(int arg_count, Value *args)
 static Value native_num(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (is_number(args[0])) {
+    if (is_int(args[0]) || is_number(args[0])) {
         return args[0];
     }
     if (is_obj_type(args[0], OBJ_STRING)) {
@@ -522,6 +541,17 @@ static Value native_values(int arg_count, Value *args)
 
 static bool integer_argument(Value value, const char *name, const char *function, int *out)
 {
+    if (is_int(value)) {
+        int64_t integer = AS_INT(value);
+
+        if (integer < -2147483648LL || integer > 2147483647LL) {
+            vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %lld", function,
+                             name, (long long)integer);
+            return false;
+        }
+        *out = (int)integer;
+        return true;
+    }
     if (!is_number(value)) {
         vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %s", function, name,
                          value_type_name(value));
@@ -568,7 +598,7 @@ static Value native_range(int arg_count, Value *args)
 
     push(OBJ_VAL(array));
     for (int i = start; i < end; i++) {
-        array_push(array, NUMBER_VAL((double)i));
+        array_push(array, INT_VAL(i));
     }
     pop();
     return OBJ_VAL(array);
@@ -626,78 +656,167 @@ static Value native_substr(int arg_count, Value *args)
     return OBJ_VAL(object_string(string->chars + byte_start, byte_end - byte_start));
 }
 
-static Value numeric_unary(int arg_count, Value *args, const char *name, double (*fn)(double))
-{
-    (void)arg_count;
-    if (!is_number(args[0])) {
-        vm_runtime_error(ERROR_TYPE, "'%s' expects a number, received %s", name, value_type_name(args[0]));
-        return NIL_VAL;
-    }
-    return NUMBER_VAL(fn(AS_NUMBER(args[0])));
-}
-
 static Value native_abs(int arg_count, Value *args)
 {
-    return numeric_unary(arg_count, args, "abs", fabs);
+    (void)arg_count;
+    if (is_int(args[0])) {
+        int64_t value = AS_INT(args[0]);
+
+        if (value == INT64_MIN) {
+            return NUMBER_VAL(TWO_POW_63);
+        }
+        return INT_VAL(value < 0 ? -value : value);
+    }
+    if (is_number(args[0])) {
+        return NUMBER_VAL(fabs(AS_NUMBER(args[0])));
+    }
+    vm_runtime_error(ERROR_TYPE, "'abs' expects a number, received %s", value_type_name(args[0]));
+    return NIL_VAL;
+}
+
+static Value rounding_native(int arg_count, Value *args, const char *name, double (*fn)(double))
+{
+    (void)arg_count;
+    if (is_int(args[0])) {
+        return args[0];
+    }
+    if (is_number(args[0])) {
+        return NUMBER_VAL(fn(AS_NUMBER(args[0])));
+    }
+    vm_runtime_error(ERROR_TYPE, "'%s' expects a number, received %s", name, value_type_name(args[0]));
+    return NIL_VAL;
 }
 
 static Value native_floor(int arg_count, Value *args)
 {
-    return numeric_unary(arg_count, args, "floor", floor);
+    return rounding_native(arg_count, args, "floor", floor);
 }
 
 static Value native_ceil(int arg_count, Value *args)
 {
-    return numeric_unary(arg_count, args, "ceil", ceil);
+    return rounding_native(arg_count, args, "ceil", ceil);
 }
 
 static Value native_round(int arg_count, Value *args)
 {
-    return numeric_unary(arg_count, args, "round", round);
+    return rounding_native(arg_count, args, "round", round);
 }
 
 static Value native_sqrt(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!is_number(args[0])) {
+    if (!value_is_numeric(args[0])) {
         vm_runtime_error(ERROR_TYPE, "'sqrt' expects a number, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
-    if (AS_NUMBER(args[0]) < 0) {
+    if (value_as_double(args[0]) < 0) {
         vm_runtime_error(ERROR_VALUE, "'sqrt' does not accept negative numbers");
         return NIL_VAL;
     }
-    return NUMBER_VAL(sqrt(AS_NUMBER(args[0])));
+    return NUMBER_VAL(sqrt(value_as_double(args[0])));
 }
 
 static Value native_pow(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!is_number(args[0]) || !is_number(args[1])) {
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
         vm_runtime_error(ERROR_TYPE, "'pow' expects two numbers");
         return NIL_VAL;
     }
-    return NUMBER_VAL(pow(AS_NUMBER(args[0]), AS_NUMBER(args[1])));
+    return NUMBER_VAL(pow(value_as_double(args[0]), value_as_double(args[1])));
 }
 
 static Value native_min(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!is_number(args[0]) || !is_number(args[1])) {
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
         vm_runtime_error(ERROR_TYPE, "'min' expects two numbers");
         return NIL_VAL;
     }
-    return AS_NUMBER(args[0]) <= AS_NUMBER(args[1]) ? args[0] : args[1];
+    return numeric_less(args[1], args[0]) ? args[1] : args[0];
 }
 
 static Value native_max(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!is_number(args[0]) || !is_number(args[1])) {
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
         vm_runtime_error(ERROR_TYPE, "'max' expects two numbers");
         return NIL_VAL;
     }
-    return AS_NUMBER(args[0]) >= AS_NUMBER(args[1]) ? args[0] : args[1];
+    return numeric_greater(args[1], args[0]) ? args[1] : args[0];
+}
+
+/* ------------------------------------------------------------------ */
+/* Integer conversion natives                                          */
+/* ------------------------------------------------------------------ */
+
+static bool string_has_only_trailing_space(const char *end)
+{
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
+        end++;
+    }
+    return *end == '\0';
+}
+
+static Value native_int(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (is_int(args[0])) {
+        return args[0];
+    }
+    if (is_number(args[0])) {
+        double value = AS_NUMBER(args[0]);
+
+        if (!(value >= -TWO_POW_63 && value < TWO_POW_63)) {
+            vm_runtime_error(ERROR_VALUE, "'int' cannot convert %g to an integer", value);
+            return NIL_VAL;
+        }
+        return INT_VAL((int64_t)value);
+    }
+    if (is_obj_type(args[0], OBJ_STRING)) {
+        ObjString *string = AS_STRING(args[0]);
+        char *end = NULL;
+        long long result;
+
+        errno = 0;
+        result = strtoll(string->chars, &end, 10);
+        if (end == string->chars || errno != 0 || !string_has_only_trailing_space(end)) {
+            vm_runtime_error(ERROR_VALUE, "'int' could not convert \"%s\" to an integer", string->chars);
+            return NIL_VAL;
+        }
+        return INT_VAL((int64_t)result);
+    }
+    vm_runtime_error(ERROR_TYPE, "'int' expects a number or a string, received %s",
+                     value_type_name(args[0]));
+    return NIL_VAL;
+}
+
+static Value native_float(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (is_int(args[0]) || is_number(args[0])) {
+        return NUMBER_VAL(value_as_double(args[0]));
+    }
+    if (is_obj_type(args[0], OBJ_STRING)) {
+        ObjString *string = AS_STRING(args[0]);
+        char *end = NULL;
+        double result = strtod(string->chars, &end);
+
+        if (end == string->chars || !string_has_only_trailing_space(end)) {
+            vm_runtime_error(ERROR_VALUE, "'float' could not convert \"%s\" to a number", string->chars);
+            return NIL_VAL;
+        }
+        return NUMBER_VAL(result);
+    }
+    vm_runtime_error(ERROR_TYPE, "'float' expects a number or a string, received %s",
+                     value_type_name(args[0]));
+    return NIL_VAL;
+}
+
+static Value native_is_int(int arg_count, Value *args)
+{
+    (void)arg_count;
+    return BOOL_VAL(is_int(args[0]));
 }
 
 /* ------------------------------------------------------------------ */
@@ -774,10 +893,10 @@ static Value native_index_of(int arg_count, Value *args)
 
         for (int i = 0; i < array->count; i++) {
             if (values_equal(array->items[i], needle)) {
-                return NUMBER_VAL((double)i);
+                return INT_VAL(i);
             }
         }
-        return NUMBER_VAL(-1);
+        return INT_VAL(-1);
     }
     if (is_obj_type(container, OBJ_STRING)) {
         if (!is_obj_type(needle, OBJ_STRING)) {
@@ -789,9 +908,9 @@ static Value native_index_of(int arg_count, Value *args)
         int byte_index = string_byte_find(haystack, AS_STRING(needle));
 
         if (byte_index < 0) {
-            return NUMBER_VAL(-1);
+            return INT_VAL(-1);
         }
-        return NUMBER_VAL((double)utf8_length(haystack->chars, byte_index));
+        return INT_VAL(utf8_length(haystack->chars, byte_index));
     }
     vm_runtime_error(ERROR_TYPE, "'index_of' expects an array or a string as first argument, "
                      "received %s", value_type_name(container));
@@ -1683,8 +1802,8 @@ static bool call_value(Value callee, int arg_count)
 
 static inline bool compare_values(bool greater, Value a, Value b, bool *out)
 {
-    if (is_number(a) && is_number(b)) {
-        *out = greater ? AS_NUMBER(a) > AS_NUMBER(b) : AS_NUMBER(a) < AS_NUMBER(b);
+    if (value_is_numeric(a) && value_is_numeric(b)) {
+        *out = greater ? numeric_greater(a, b) : numeric_less(a, b);
         return true;
     }
     if (is_obj_type(a, OBJ_STRING) && is_obj_type(b, OBJ_STRING)) {
@@ -1705,33 +1824,131 @@ static inline bool compare_values(bool greater, Value a, Value b, bool *out)
     return false;
 }
 
-static inline bool arithmetic_values(uint8_t op, Value a, Value b, double *out)
+static inline bool arithmetic_values(uint8_t op, Value a, Value b, Value *out)
 {
-    if (!is_number(a) || !is_number(b)) {
+    if (!value_is_numeric(a) || !value_is_numeric(b)) {
         vm_runtime_error(ERROR_TYPE, "arithmetic operators expect numbers (received %s and %s)",
                          value_type_name(a), value_type_name(b));
         return false;
     }
-    double left = AS_NUMBER(a);
-    double right = AS_NUMBER(b);
+    if (op == OP_DIVIDE || op == OP_MODULO) {
+        double right = value_as_double(b);
 
-    if ((op == OP_DIVIDE || op == OP_MODULO) && right == 0) {
-        vm_runtime_error(ERROR_ZERO_DIVISION, "division by zero");
-        return false;
+        if (right == 0) {
+            vm_runtime_error(ERROR_ZERO_DIVISION, "division by zero");
+            return false;
+        }
+        if (op == OP_MODULO && a.type == VAL_INT && b.type == VAL_INT) {
+            int64_t divisor = AS_INT(b);
+
+            /* INT64_MIN % -1 overflows in C; the mathematical remainder is 0. */
+            *out = INT_VAL(divisor == -1 ? 0 : AS_INT(a) % divisor);
+            return true;
+        }
+        if (op == OP_DIVIDE) {
+            *out = NUMBER_VAL(value_as_double(a) / right);
+        } else {
+            *out = NUMBER_VAL(fmod(value_as_double(a), right));
+        }
+        return true;
     }
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        int64_t result;
+        bool fits;
+
+        if (op == OP_SUBTRACT) {
+            fits = !int_sub_overflow(AS_INT(a), AS_INT(b), &result);
+        } else {
+            fits = !int_mul_overflow(AS_INT(a), AS_INT(b), &result);
+        }
+        if (fits) {
+            *out = INT_VAL(result);
+            return true;
+        }
+    }
+    double left = value_as_double(a);
+    double right = value_as_double(b);
+
     switch (op) {
-    case OP_SUBTRACT: *out = left - right; break;
-    case OP_MULTIPLY: *out = left * right; break;
-    case OP_DIVIDE: *out = left / right; break;
-    default: *out = fmod(left, right); break;
+    case OP_ADD: *out = NUMBER_VAL(left + right); break;
+    case OP_SUBTRACT: *out = NUMBER_VAL(left - right); break;
+    case OP_MULTIPLY: *out = NUMBER_VAL(left * right); break;
+    default: *out = NUMBER_VAL(fmod(left, right)); break;
     }
     return true;
 }
 
+/* `div`: truncating integer division. Both operands must be integers. */
+static inline bool int_divide_values(Value a, Value b, Value *out)
+{
+    if (!is_int(a) || !is_int(b)) {
+        vm_runtime_error(ERROR_TYPE, "'div' expects two integers, received %s and %s",
+                         value_type_name(a), value_type_name(b));
+        return false;
+    }
+    if (AS_INT(b) == 0) {
+        vm_runtime_error(ERROR_ZERO_DIVISION, "division by zero");
+        return false;
+    }
+    if (AS_INT(a) == INT64_MIN && AS_INT(b) == -1) {
+        *out = NUMBER_VAL(TWO_POW_63);
+        return true;
+    }
+    *out = INT_VAL(AS_INT(a) / AS_INT(b));
+    return true;
+}
+
+/* Bitwise operators: integer-only, and shift counts are validated to avoid UB. */
+static inline bool bitwise_values(uint8_t op, Value a, Value b, Value *out)
+{
+    if (!is_int(a) || !is_int(b)) {
+        vm_runtime_error(ERROR_TYPE, "bitwise operators expect integers, received %s and %s",
+                         value_type_name(a), value_type_name(b));
+        return false;
+    }
+    int64_t left = AS_INT(a);
+    int64_t right = AS_INT(b);
+
+    switch (op) {
+    case OP_BIT_AND: *out = INT_VAL(left & right); return true;
+    case OP_BIT_OR: *out = INT_VAL(left | right); return true;
+    case OP_BIT_XOR: *out = INT_VAL(left ^ right); return true;
+    case OP_SHL:
+    case OP_SHR: {
+        if (right < 0 || right > 63) {
+            vm_runtime_error(ERROR_VALUE, "the shift count must be between 0 and 63, received %lld",
+                             (long long)right);
+            return false;
+        }
+        uint64_t bits = (uint64_t)left;
+
+        if (op == OP_SHL) {
+            *out = INT_VAL((int64_t)(bits << (unsigned)right));
+        } else {
+            /* Arithmetic shift: shift the magnitude and restore the sign for
+             * negative values, so the result is well defined for any input. */
+            uint64_t shifted = left < 0 ? ~(~bits >> (unsigned)right) : bits >> (unsigned)right;
+
+            *out = INT_VAL((int64_t)shifted);
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
 static inline bool add_values(Value a, Value b, Value *out)
 {
-    if (is_number(a) && is_number(b)) {
-        *out = NUMBER_VAL(AS_NUMBER(a) + AS_NUMBER(b));
+    if (value_is_numeric(a) && value_is_numeric(b)) {
+        if (a.type == VAL_INT && b.type == VAL_INT) {
+            int64_t result;
+
+            if (!int_add_overflow(AS_INT(a), AS_INT(b), &result)) {
+                *out = INT_VAL(result);
+                return true;
+            }
+        }
+        *out = NUMBER_VAL(value_as_double(a) + value_as_double(b));
         return true;
     }
     if (is_obj_type(a, OBJ_STRING) && is_obj_type(b, OBJ_STRING)) {
@@ -1753,6 +1970,36 @@ static inline bool add_values(Value a, Value b, Value *out)
 /* ------------------------------------------------------------------ */
 /* Execution loop                                                      */
 /* ------------------------------------------------------------------ */
+
+/* Validates an array/string index (an integer or an integral float) and
+ * writes the position; reports the error and returns false otherwise. */
+static bool index_to_position(Value index, int *out)
+{
+    if (is_int(index)) {
+        int64_t integer = AS_INT(index);
+
+        if (integer < 0 || integer > INT_MAX) {
+            vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %lld",
+                             (long long)integer);
+            return false;
+        }
+        *out = (int)integer;
+        return true;
+    }
+    if (is_number(index)) {
+        double raw = AS_NUMBER(index);
+
+        if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
+            vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
+            return false;
+        }
+        *out = (int)raw;
+        return true;
+    }
+    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
+                     value_type_name(index));
+    return false;
+}
 
 #define READ_BYTE() (*frame->ip++)
 #define READ_U16() (frame->ip += 2, (uint16_t)((frame->ip[-2] << 8) | frame->ip[-1]))
@@ -1841,6 +2088,17 @@ static InterpretResult run(int base_frame)
             Value a = sp[-2];
             Value b = sp[-1];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_add_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    sp--;
+                    sp[-1] = INT_VAL(result);
+                    ip += 1;
+                    continue;
+                }
+                goto cold; /* overflow promotes to a double */
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1854,6 +2112,17 @@ static InterpretResult run(int base_frame)
             Value a = sp[-2];
             Value b = sp[-1];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_sub_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    sp--;
+                    sp[-1] = INT_VAL(result);
+                    ip += 1;
+                    continue;
+                }
+                goto cold;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1867,6 +2136,17 @@ static InterpretResult run(int base_frame)
             Value a = sp[-2];
             Value b = sp[-1];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_mul_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    sp--;
+                    sp[-1] = INT_VAL(result);
+                    ip += 1;
+                    continue;
+                }
+                goto cold;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1880,6 +2160,12 @@ static InterpretResult run(int base_frame)
             Value a = sp[-2];
             Value b = sp[-1];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_INT(a) < AS_INT(b));
+                ip += 1;
+                continue;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1893,6 +2179,12 @@ static InterpretResult run(int base_frame)
             Value a = sp[-2];
             Value b = sp[-1];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_INT(a) > AS_INT(b));
+                ip += 1;
+                continue;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1906,6 +2198,16 @@ static InterpretResult run(int base_frame)
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_add_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    *sp++ = INT_VAL(result);
+                    ip += 4;
+                    continue;
+                }
+                goto cold;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1918,6 +2220,16 @@ static InterpretResult run(int base_frame)
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_sub_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    *sp++ = INT_VAL(result);
+                    ip += 4;
+                    continue;
+                }
+                goto cold;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1930,6 +2242,16 @@ static InterpretResult run(int base_frame)
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                int64_t result;
+
+                if (!int_mul_overflow(AS_INT(a), AS_INT(b), &result)) {
+                    *sp++ = INT_VAL(result);
+                    ip += 4;
+                    continue;
+                }
+                goto cold;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1942,6 +2264,11 @@ static InterpretResult run(int base_frame)
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                *sp++ = BOOL_VAL(AS_INT(a) < AS_INT(b));
+                ip += 4;
+                continue;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1954,6 +2281,11 @@ static InterpretResult run(int base_frame)
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
 
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                *sp++ = BOOL_VAL(AS_INT(a) > AS_INT(b));
+                ip += 4;
+                continue;
+            }
             if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
                 goto cold;
             }
@@ -1985,11 +2317,16 @@ static InterpretResult run(int base_frame)
         case OP_JUMP_IF_NOT_LESS_LOCAL_CONST: {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
+            bool less;
 
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                less = AS_INT(a) < AS_INT(b);
+            } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                less = AS_NUMBER(a) < AS_NUMBER(b);
+            } else {
                 goto cold;
             }
-            if (AS_NUMBER(a) < AS_NUMBER(b)) {
+            if (less) {
                 ip += 6;
             } else {
                 ip += 6 + U16_AT(ip + 4);
@@ -2000,11 +2337,16 @@ static InterpretResult run(int base_frame)
         case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
+            bool greater;
 
-            if (a.type != VAL_NUMBER || b.type != VAL_NUMBER) {
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                greater = AS_INT(a) > AS_INT(b);
+            } else if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                greater = AS_NUMBER(a) > AS_NUMBER(b);
+            } else {
                 goto cold;
             }
-            if (AS_NUMBER(a) > AS_NUMBER(b)) {
+            if (greater) {
                 ip += 6;
             } else {
                 ip += 6 + U16_AT(ip + 4);
@@ -2194,20 +2536,12 @@ static InterpretResult run(int base_frame)
             Value result = NIL_VAL;
 
             if (is_obj_type(object, OBJ_ARRAY)) {
-                if (!is_number(index)) {
-                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
-                                     value_type_name(index));
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                double raw = AS_NUMBER(index);
-
-                if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
                 ObjArray *array = AS_ARRAY(object);
-                int position = (int)raw;
+                int position;
 
+                if (!index_to_position(index, &position)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 if (position >= array->count) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
@@ -2221,27 +2555,22 @@ static InterpretResult run(int base_frame)
                     result = stored;
                 }
             } else if (is_obj_type(object, OBJ_STRING)) {
-                if (!is_number(index)) {
-                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
-                                     value_type_name(index));
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                double raw = AS_NUMBER(index);
-
-                if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
                 ObjString *string = AS_STRING(object);
-                int position = (int)raw;
-                int byte_index = utf8_byte_offset(string, position);
+                int position;
+                int byte_index;
+                int char_length;
+
+                if (!index_to_position(index, &position)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                byte_index = utf8_byte_offset(string, position);
 
                 if (byte_index < 0) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (string of %d characters)",
                                      position, utf8_length(string->chars, string->length));
                     return INTERPRET_RUNTIME_ERROR;
                 }
-                int char_length = utf8_char_length(string, byte_index);
+                char_length = utf8_char_length(string, byte_index);
 
                 result = OBJ_VAL(object_string(string->chars + byte_index, char_length));
             } else {
@@ -2262,20 +2591,12 @@ static InterpretResult run(int base_frame)
             Value object = peek(2);
 
             if (is_obj_type(object, OBJ_ARRAY)) {
-                if (!is_number(index)) {
-                    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
-                                     value_type_name(index));
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                double raw = AS_NUMBER(index);
-
-                if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-                    vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
-                    return INTERPRET_RUNTIME_ERROR;
-                }
                 ObjArray *array = AS_ARRAY(object);
-                int position = (int)raw;
+                int position;
 
+                if (!index_to_position(index, &position)) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
                 if (position >= array->count) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
@@ -2362,14 +2683,14 @@ static InterpretResult run(int base_frame)
 
         case OP_LEN: {
             Value value = peek(0);
-            double length;
+            int64_t length;
 
             if (is_obj_type(value, OBJ_ARRAY)) {
-                length = (double)AS_ARRAY(value)->count;
+                length = AS_ARRAY(value)->count;
             } else if (is_obj_type(value, OBJ_MAP)) {
-                length = (double)AS_MAP(value)->count;
+                length = AS_MAP(value)->count;
             } else if (is_obj_type(value, OBJ_STRING)) {
-                length = (double)utf8_length(AS_STRING(value)->chars, AS_STRING(value)->length);
+                length = utf8_length(AS_STRING(value)->chars, AS_STRING(value)->length);
             } else {
                 vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map or a string, received %s",
                                  value_type_name(value));
@@ -2377,7 +2698,7 @@ static InterpretResult run(int base_frame)
             }
             /* Leaves the original value and pushes its length: the compiler uses it
              * to initialize the counter of a for-in. */
-            push(NUMBER_VAL(length));
+            push(INT_VAL(length));
             break;
         }
 
@@ -2452,12 +2773,12 @@ static InterpretResult run(int base_frame)
             uint8_t op = instruction == OP_SUBTRACT_LOCAL_CONST ? OP_SUBTRACT
                          : instruction == OP_MULTIPLY_LOCAL_CONST ? OP_MULTIPLY
                                                                   : OP_DIVIDE;
-            double result;
+            Value result;
 
             if (!arithmetic_values(op, frame->slots[slot], b, &result)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
-            push(NUMBER_VAL(result));
+            push(result);
             break;
         }
 
@@ -2467,12 +2788,40 @@ static InterpretResult run(int base_frame)
         case OP_MODULO: {
             Value b = pop();
             Value a = pop();
-            double result;
+            Value result;
 
             if (!arithmetic_values(instruction, a, b, &result)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
-            push(NUMBER_VAL(result));
+            push(result);
+            break;
+        }
+
+        case OP_INT_DIVIDE: {
+            Value b = pop();
+            Value a = pop();
+            Value result;
+
+            if (!int_divide_values(a, b, &result)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(result);
+            break;
+        }
+
+        case OP_BIT_AND:
+        case OP_BIT_OR:
+        case OP_BIT_XOR:
+        case OP_SHL:
+        case OP_SHR: {
+            Value b = pop();
+            Value a = pop();
+            Value result;
+
+            if (!bitwise_values(instruction, a, b, &result)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(result);
             break;
         }
 
@@ -2483,12 +2832,29 @@ static InterpretResult run(int base_frame)
         case OP_NEGATE: {
             Value value = pop();
 
-            if (!is_number(value)) {
+            if (value.type == VAL_INT) {
+                int64_t integer = AS_INT(value);
+
+                push(integer == INT64_MIN ? NUMBER_VAL(TWO_POW_63) : INT_VAL(-integer));
+            } else if (value.type == VAL_NUMBER) {
+                push(NUMBER_VAL(-AS_NUMBER(value)));
+            } else {
                 vm_runtime_error(ERROR_TYPE, "negation expects a number, received %s",
                                  value_type_name(value));
                 return INTERPRET_RUNTIME_ERROR;
             }
-            push(NUMBER_VAL(-AS_NUMBER(value)));
+            break;
+        }
+
+        case OP_BIT_NOT: {
+            Value value = pop();
+
+            if (!is_int(value)) {
+                vm_runtime_error(ERROR_TYPE, "the bitwise complement expects an integer, received %s",
+                                 value_type_name(value));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(INT_VAL(~AS_INT(value)));
             break;
         }
 
@@ -2705,6 +3071,9 @@ void vm_init(void)
     define_native("pop", native_pop, 1);
     define_native("str", native_str, 1);
     define_native("num", native_num, 1);
+    define_native("int", native_int, 1);
+    define_native("float", native_float, 1);
+    define_native("is_int", native_is_int, 1);
     define_native("type", native_type, 1);
     define_native("clock", native_clock, 0);
     define_native("assert", native_assert, -1);

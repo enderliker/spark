@@ -4,6 +4,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include "lexer.h"
 
@@ -73,7 +74,11 @@ struct Expr {
     int line;
     int column;
     union {
-        double number;
+        struct {
+            bool is_int;
+            int64_t integer;
+            double number;
+        } number;
         Text string;
         bool boolean;
         struct {

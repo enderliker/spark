@@ -45,8 +45,10 @@ original numbering:
   both ints and floats to avoid breaking existing fixtures/docs; add `int()`, `float()`
   and `is_int()` instead. (Was Q2.)
 - **A3 - Division. [decided]** `/` stays floating-point division (existing semantics).
-  Add `//` (integer division) and keep `%` for the remainder. `/` will **not** become
-  integer division when both operands are ints. (Was Q1.)
+  Add integer division and keep `%` for the remainder. `/` will **not** become
+  integer division when both operands are ints. The planned `//` spelling was
+  impossible: `//` is already the line-comment token, so the operator is spelled
+  `div` (`a div b`); confirmed with the user on 2026-10-24. (Was Q1.)
 - **A4 - Native callbacks.** Higher-order natives (`map`/`filter`/`reduce`/`sort_by`)
   need to call a Spark function from C. Implement a re-entrant call helper in `vm.c`
   that pushes a frame and runs a nested interpreter loop, guarded so it does not
@@ -93,17 +95,17 @@ original numbering:
 
 ### Checkpoint: Phase 2
 - [x] All tests pass, build clean, docs updated
-- [ ] Review with the user before Phase 3
+- [x] Review with the user before Phase 3
 
 ### Phase 3 - 64-bit integers (area 2 core)
-- [ ] T19 `VAL_INT`: value helpers, formatting, equality
-- [ ] T20 Integer literals in lexer/parser
-- [ ] T21 Arithmetic & comparison with int/float promotion
-- [ ] T22 Integer division/modulo (`//`, `%`) - per decision A3/Q1
-- [ ] T23 Integer map hashing + integer array indexes
-- [ ] T24 Integer-aware natives (`int`, `float`, `is_int`, `abs`/`min`/`max`/rounding)
-- [ ] T25 Bitwise operators (`& | ^ ~ << >>`, plus `&= |= ^= <<= >>=`)
-- [ ] T26 Docs + tests for integers
+- [x] T19 `VAL_INT`: value helpers, formatting, equality
+- [x] T20 Integer literals in lexer/parser
+- [x] T21 Arithmetic & comparison with int/float promotion
+- [x] T22 Integer division/modulo (`div`, `%`) - per decision A3/Q1
+- [x] T23 Integer map hashing + integer array indexes
+- [x] T24 Integer-aware natives (`int`, `float`, `is_int`, `abs`/`min`/`max`/rounding)
+- [x] T25 Bitwise operators (`& | ^ ~ << >>`, plus `&= |= ^= <<= >>=`)
+- [x] T26 Docs + tests for integers
 
 ### Checkpoint: Phase 3 (critical)
 - [ ] All tests pass, sanitizers clean
@@ -192,10 +194,19 @@ and the reference is in `README.md`, `docs/language.md` and `docs/architecture.m
 Q1, Q2 and Q5 are decided (see A2/A3/A7); the remaining questions below must be answered
 before their phase starts.
 
+**Phase 2 (syntax, T11-T18) is implemented.**
+
+**Phase 3 (64-bit integers, T19-T26) is implemented.** `VAL_INT`/`int64_t` were added
+in `src/value.h`, the lexer/parser produce integer literals, the VM promotes int/float
+and detects overflow, and `div` plus the bitwise operators are in. The behavior is
+covered by `tests/cases/{integers,bitwise}.spark` and
+`tests/errors/{div_cero,div_no_entero,bitwise_no_entero,bitnot_no_entero,shift_fuera,int_conversion}.spark`,
+with the reference in `README.md`, `docs/language.md` and `docs/architecture.md`.
+
 ## Open Questions (need human input)
 
 Resolved:
-- **Q1 (division) - DECIDED:** `/` stays float; add `//` for integer division (A3).
+- **Q1 (division) - DECIDED:** `/` stays float; integer division is spelled `div` (A3).
 - **Q2 (`type`) - DECIDED:** keep `type(x) == "number"`; add `int()`/`float()`/`is_int()` (A2).
 - **Q5 (objects) - DECIDED:** method sugar on maps first; full classes deferred (A7).
 - **Q8 (priority) - DEFERRED:** plan only for now; the user will give the go-ahead
@@ -216,6 +227,6 @@ Still open (answer at the start of the relevant phase):
 
 ## Baseline (for regression checks)
 
-- Tests: 95 passing (`python3 tests/run_tests.py`).
-- Benchmark: `fib(27)` minimum ~9.5 ms, median ~10 ms (`python3 benchmarks/run.py`).
+- Tests: 103 passing (`python3 tests/run_tests.py`).
+- Benchmark: `fib(27)` minimum ~9.4 ms, median ~9.5 ms (`python3 benchmarks/run.py`).
 - No warnings, sanitizers clean.

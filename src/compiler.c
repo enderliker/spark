@@ -100,6 +100,15 @@ static ObjString *name_constant(Text name)
     return object_string(name.chars, name.length);
 }
 
+/* The value of a numeric literal, which may be an integer or a double. */
+static Value expr_number_value(const Expr *expr)
+{
+    if (expr->as.number.is_int) {
+        return INT_VAL(expr->as.number.integer);
+    }
+    return NUMBER_VAL(expr->as.number.number);
+}
+
 static void emit_byte(Compiler *compiler, uint8_t byte, int line)
 {
     chunk_write(&compiler->function->chunk, byte, line, compiler->column);
@@ -452,6 +461,22 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
     }
 }
 
+static int compound_opcode(TokenType op)
+{
+    switch (op) {
+    case TOKEN_PLUS_EQUAL: return OP_ADD;
+    case TOKEN_MINUS_EQUAL: return OP_SUBTRACT;
+    case TOKEN_STAR_EQUAL: return OP_MULTIPLY;
+    case TOKEN_SLASH_EQUAL: return OP_DIVIDE;
+    case TOKEN_AMPERSAND_EQUAL: return OP_BIT_AND;
+    case TOKEN_PIPE_EQUAL: return OP_BIT_OR;
+    case TOKEN_CARET_EQUAL: return OP_BIT_XOR;
+    case TOKEN_LESS_LESS_EQUAL: return OP_SHL;
+    case TOKEN_GREATER_GREATER_EQUAL: return OP_SHR;
+    default: return -1;
+    }
+}
+
 static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType op,
                                        int line)
 {
@@ -468,13 +493,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
         compile_expression(compiler, stmt->as.assign.value);
         if (op != TOKEN_EQUAL) {
             compiler->column = stmt->column;
-            switch (op) {
-            case TOKEN_PLUS_EQUAL: emit_byte(compiler, OP_ADD, line); break;
-            case TOKEN_MINUS_EQUAL: emit_byte(compiler, OP_SUBTRACT, line); break;
-            case TOKEN_STAR_EQUAL: emit_byte(compiler, OP_MULTIPLY, line); break;
-            case TOKEN_SLASH_EQUAL: emit_byte(compiler, OP_DIVIDE, line); break;
-            default: break;
-            }
+            emit_byte(compiler, (uint8_t)compound_opcode(op), line);
         }
         compiler->column = stmt->column;
         emit_set(compiler, ref, line);
@@ -491,13 +510,7 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
     compile_expression(compiler, stmt->as.assign.value);
     compiler->column = stmt->column;
     if (op != TOKEN_EQUAL) {
-        switch (op) {
-        case TOKEN_PLUS_EQUAL: emit_byte(compiler, OP_ADD, line); break;
-        case TOKEN_MINUS_EQUAL: emit_byte(compiler, OP_SUBTRACT, line); break;
-        case TOKEN_STAR_EQUAL: emit_byte(compiler, OP_MULTIPLY, line); break;
-        case TOKEN_SLASH_EQUAL: emit_byte(compiler, OP_DIVIDE, line); break;
-        default: break;
-        }
+        emit_byte(compiler, (uint8_t)compound_opcode(op), line);
     }
     compiler->column = stmt->column;
     emit_byte(compiler, OP_INDEX_SET, line);
@@ -533,7 +546,7 @@ static int emit_condition_jump(Compiler *compiler, Expr *condition, int line)
 
             if (slot >= 0) {
                 int index =
-                    add_constant(compiler, NUMBER_VAL(condition->as.binary.right->as.number), line);
+                    add_constant(compiler, expr_number_value(condition->as.binary.right), line);
 
                 emit_byte(compiler, branch, line);
                 emit_byte(compiler, (uint8_t)slot, line);
@@ -585,7 +598,7 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
     count_slot = add_local(compiler, count_name, line);
     mark_local_initialized(compiler);
 
-    emit_constant(compiler, NUMBER_VAL(0), line);
+    emit_constant(compiler, INT_VAL(0), line);
     index_slot = add_local(compiler, index_name, line);
     mark_local_initialized(compiler);
 
@@ -629,7 +642,7 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
 
     emit_byte(compiler, OP_GET_LOCAL, line);
     emit_byte(compiler, (uint8_t)index_slot, line);
-    emit_constant(compiler, NUMBER_VAL(1), line);
+    emit_constant(compiler, INT_VAL(1), line);
     emit_byte(compiler, OP_ADD, line);
     emit_byte(compiler, OP_SET_LOCAL, line);
     emit_byte(compiler, (uint8_t)index_slot, line);
@@ -1048,6 +1061,12 @@ static void compile_binary_operator(Compiler *compiler, TokenType op, int line)
     case TOKEN_STAR: emit_byte(compiler, OP_MULTIPLY, line); break;
     case TOKEN_SLASH: emit_byte(compiler, OP_DIVIDE, line); break;
     case TOKEN_PERCENT: emit_byte(compiler, OP_MODULO, line); break;
+    case TOKEN_DIV: emit_byte(compiler, OP_INT_DIVIDE, line); break;
+    case TOKEN_AMPERSAND: emit_byte(compiler, OP_BIT_AND, line); break;
+    case TOKEN_PIPE: emit_byte(compiler, OP_BIT_OR, line); break;
+    case TOKEN_CARET: emit_byte(compiler, OP_BIT_XOR, line); break;
+    case TOKEN_LESS_LESS: emit_byte(compiler, OP_SHL, line); break;
+    case TOKEN_GREATER_GREATER: emit_byte(compiler, OP_SHR, line); break;
     case TOKEN_EQUAL_EQUAL: emit_byte(compiler, OP_EQUAL, line); break;
     case TOKEN_BANG_EQUAL:
         emit_byte(compiler, OP_EQUAL, line);
@@ -1075,7 +1094,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     compiler->column = expr->column;
     switch (expr->kind) {
     case EXPR_NUMBER:
-        emit_constant(compiler, NUMBER_VAL(expr->as.number), line);
+        emit_constant(compiler, expr_number_value(expr), line);
         break;
 
     case EXPR_STRING:
@@ -1094,7 +1113,13 @@ static void compile_expression(Compiler *compiler, Expr *expr)
     case EXPR_UNARY:
         compile_expression(compiler, expr->as.unary.operand);
         compiler->column = expr->column;
-        emit_byte(compiler, expr->as.unary.op == TOKEN_MINUS ? OP_NEGATE : OP_NOT, line);
+        if (expr->as.unary.op == TOKEN_MINUS) {
+            emit_byte(compiler, OP_NEGATE, line);
+        } else if (expr->as.unary.op == TOKEN_TILDE) {
+            emit_byte(compiler, OP_BIT_NOT, line);
+        } else {
+            emit_byte(compiler, OP_NOT, line);
+        }
         break;
 
     case EXPR_BINARY: {
@@ -1108,7 +1133,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
                 int slot = resolve_local(compiler, left->as.variable, line);
 
                 if (slot >= 0) {
-                    int index = add_constant(compiler, NUMBER_VAL(right->as.number), line);
+                    int index = add_constant(compiler, expr_number_value(right), line);
 
                     emit_byte(compiler, (uint8_t)fused, line);
                     emit_byte(compiler, (uint8_t)slot, line);

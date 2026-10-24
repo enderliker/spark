@@ -57,18 +57,41 @@ true false nil and or not
 | --- | --- | --- |
 | `nil` | `nil` | falsey |
 | `bool` | `true`, `false` | by value |
-| `number` | `42`, `-3.5` | always truthy (including `0`) |
+| `int` | `42`, `-7`, `0xFF` | always truthy (including `0`) |
+| `number` | `3.14`, `1.5e3` | always truthy (including `0`) |
 | `string` | `"hello"` | always truthy (including `""`) |
 | `array` | `[1, 2]` | always truthy |
 | `map` | `{"a": 1}` | always truthy |
 | `function` | `fn(x) { return x; }`, `print` | always truthy |
 
-Numbers are double-precision floating point. Literals can be decimal (`42`, `3.5`,
-`1e3`), hexadecimal (`0xff`), binary (`0b1010`) or octal (`0o17`). Underscores may
-separate digits (`1_000_000`, `0xFF_FF`, `1e1_0`); a separator must sit between two
-digits.
+There are two numeric types. An **integer** is a signed 64-bit value; a **number** is
+a double-precision float. `type()` reports `"number"` for both, and `is_int(x)` tells
+them apart. `int(x)` and `float(x)` convert between them.
+
+```spark
+print(type(1), type(1.0), is_int(1), is_int(1.0));   // number number true false
+print(1 + 2, 10 / 4, 10 div 4);                      // 3 2.5 2
+```
+
+- A literal **without** a `.` or an exponent is an integer (`42`, `0xFF`, `1_000`); one
+  with a `.` or an exponent is a float (`42.0`, `1e3`).
+- Arithmetic between two integers stays an integer. Mixing an integer with a float
+  promotes both to float, and an integer result that would not fit in 64 bits also
+  promotes to float, so there is never a silent signed overflow:
+
+```spark
+print(9223372036854775807);        //  9223372036854775807
+print(9223372036854775807 + 1);    //  9.22337203685478e+18  (promoted to a float)
+```
+
+- `1` and `1.0` compare equal with `==`, and `map[1]` and `map[1.0]` use the same key.
+- Literals can be decimal (`42`, `3.5`, `1e3`), hexadecimal (`0xff`), binary (`0b1010`)
+  or octal (`0o17`). Underscores may separate digits (`1_000_000`, `0xFF_FF`, `1e1_0`);
+  a separator must sit between two digits.
+
 Arrays and maps can hold any value, including other arrays and functions. Functions,
-arrays and maps are compared by identity; strings by content.
+arrays and maps are compared by identity; strings by content. Integers use the same
+equality rules as numbers (`1 == 1.0`, but `2^53 + 1 != 2^53` as a float).
 
 ## 3. Operators
 
@@ -77,24 +100,42 @@ From highest to lowest precedence:
 | Operators | Associativity | Description |
 | --- | --- | --- |
 | `()` `[]` | left | call and indexing |
-| `!` `not` `-` | right | logical and arithmetic negation |
-| `*` `/` `%` | left | multiplication, division and modulo |
+| `!` `not` `-` `~` | right | logical, arithmetic and bitwise negation |
+| `*` `/` `%` `div` | left | multiplication, division, modulo and integer division |
 | `+` `-` | left | addition/concatenation and subtraction |
+| `<<` `>>` | left | bit shifts |
 | `<` `<=` `>` `>=` | left | comparison of numbers or strings |
 | `==` `!=` | left | equality |
+| `&` | left | bitwise AND |
+| `^` | left | bitwise XOR |
+| `|` | left | bitwise OR |
 | `and` | left | short-circuited conjunction |
 | `or` | left | short-circuited disjunction |
 | `??` | right | null-coalescing |
 | `?:` | right | conditional expression |
 
-`+` adds two numbers or concatenates two strings; it does not mix types. `/` and `%`
-with a zero divisor produce a runtime error. `and` and `or` return one of their
-operands:
+`+` adds two numbers or concatenates two strings; it does not mix types. `/` always
+performs floating-point division; `div` is truncating integer division and requires two
+integers (`7 div 2` is `3`, `-7 div 2` is `-3`). `%` is the remainder (`-7 % 2` is
+`-1`). Dividing or taking the remainder by zero is a runtime error. `and` and `or`
+return one of their operands:
 
 ```spark
 print(nil or "default");   // default
 print(1 and 2);            // 2
 print(false and 1);        // false
+```
+
+The bitwise operators `&`, `|`, `^`, `~`, `<<` and `>>` work on integers only; any
+other operand is a runtime error. `>>` is an arithmetic shift (it keeps the sign) and
+the shift count must be between `0` and `63`. They also have compound-assignment forms
+(`x &= y`, `x |= y`, `x ^= y`, `x <<= y`, `x >>= y`):
+
+```spark
+print(5 & 3, 5 | 3, 5 ^ 3, ~5);   // 1 7 6 -6
+print(1 << 4, -16 >> 2);          // 16 -4
+print(1 << 2 + 3);                // 32  (shift binds looser than +)
+print(2 + 3 & 1);                 // 1   (bitwise AND binds looser than +)
 ```
 
 The conditional operator evaluates only the selected branch and is
@@ -148,6 +189,7 @@ x += 1;      // x = x + 1
 x -= 2;
 x *= 3;
 x /= 2;
+bits &= mask;   // also |= ^= <<= >>=
 array[0] = 5;
 array[1] += 10;
 map["key"] = 42;
@@ -359,7 +401,10 @@ print(upper("hola"), trim("  x  "));
 | `push(array, value)` | Appends to the end and returns the array. |
 | `pop(array)` | Removes and returns the last element; error if empty. |
 | `str(x)` | Text representing the value. |
-| `num(x)` | Number from a numeric string. |
+| `num(x)` | Number from a numeric string (always a float). |
+| `int(x)` | Integer from a number or numeric string; floats truncate toward zero. |
+| `float(x)` | Float from an integer or numeric string. |
+| `is_int(x)` | `true` when the value is an integer. |
 | `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"` or `"function"`. |
 | `clock()` | Monotonic clock seconds, for measuring. |
 | `assert(cond, message?)` | Runtime error if `cond` is falsey. |
@@ -391,11 +436,11 @@ print(upper("hola"), trim("  x  "));
 | `each(array, fn)` | Calls `fn(x)` for every element; returns `nil`. |
 | `sort(array)` | Sorts numbers or strings in place; mixing types is an error. |
 | `sort_by(array, fn)` | Sorts in place with `fn(x, y)` returning whether `x` goes before `y`. |
-| `abs(x)` | Absolute value. |
-| `floor(x)` / `ceil(x)` / `round(x)` | Rounding. |
+| `abs(x)` | Absolute value; an integer stays an integer. |
+| `floor(x)` / `ceil(x)` / `round(x)` | Rounding; an integer input is returned unchanged. |
 | `sqrt(x)` | Square root (error on negative input). |
 | `pow(x, y)` | `x` raised to `y`. |
-| `min(a, b)` / `max(a, b)` | Smaller/larger of two numbers. |
+| `min(a, b)` / `max(a, b)` | Smaller/larger of two numbers; returns the chosen operand. |
 
 The higher-order natives (`map`, `filter`, `reduce`, `each`, `sort_by`) accept a
 callback that may be a closure or another native (for example `map(a, str)`). `sort`
@@ -460,6 +505,7 @@ multi-line functions can be defined.
 
 ## 13. Limits
 
+- Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.
 - 256 local variables per function.
 - 256 call frames (deeper recursion produces a controlled error).

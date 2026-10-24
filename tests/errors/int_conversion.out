@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'int' could not convert "abc" to an integer

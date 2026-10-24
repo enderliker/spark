@@ -1,5 +1,7 @@
 #include "parser.h"
 
+#include <errno.h>
+#include <limits.h>
 #include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -191,7 +193,7 @@ static Text parse_string_part(Parser *parser, Token token)
     return text;
 }
 
-static double parse_number_literal(Parser *parser, Token token)
+static void parse_number_literal(Parser *parser, Token token, Expr *expr)
 {
     char *buffer = new_node(parser, (size_t)token.length + 1);
     int length = 0;
@@ -217,19 +219,56 @@ static double parse_number_literal(Parser *parser, Token token)
         default: break;
         }
     }
+
     if (base == 10) {
-        return strtod(buffer, NULL);
+        bool is_float = false;
+
+        for (int i = 0; i < length; i++) {
+            if (buffer[i] == '.' || buffer[i] == 'e' || buffer[i] == 'E') {
+                is_float = true;
+                break;
+            }
+        }
+        if (!is_float) {
+            char *end = NULL;
+            long long value;
+
+            errno = 0;
+            value = strtoll(buffer, &end, 10);
+            if (errno == 0 && end == buffer + length) {
+                expr->as.number.is_int = true;
+                expr->as.number.integer = (int64_t)value;
+                return;
+            }
+        }
+        expr->as.number.is_int = false;
+        expr->as.number.number = strtod(buffer, NULL);
+        return;
     }
 
-    double value = 0.0;
+    unsigned long long value = 0;
+    unsigned long long digit_limit = (unsigned long long)INT64_MAX;
+    double fallback = 0.0;
+    bool overflow = false;
 
     for (int i = start; i < length; i++) {
         char c = buffer[i];
         int digit = c >= '0' && c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
 
-        value = value * (double)base + (double)digit;
+        fallback = fallback * (double)base + (double)digit;
+        if (value > (digit_limit - (unsigned long long)digit) / (unsigned long long)base) {
+            overflow = true;
+        } else {
+            value = value * (unsigned long long)base + (unsigned long long)digit;
+        }
     }
-    return value;
+    if (!overflow) {
+        expr->as.number.is_int = true;
+        expr->as.number.integer = (int64_t)value;
+        return;
+    }
+    expr->as.number.is_int = false;
+    expr->as.number.number = fallback;
 }
 
 static InterpPart *append_interp_part(Parser *parser, InterpPart **head, InterpPart **tail)
@@ -300,7 +339,7 @@ static Expr *primary(Parser *parser)
     if (match(parser, TOKEN_NUMBER)) {
         Expr *expr = new_expr(parser, EXPR_NUMBER, token.line, token.column);
 
-        expr->as.number = parse_number_literal(parser, token);
+        parse_number_literal(parser, token, expr);
         return expr;
     }
     if (match(parser, TOKEN_STRING)) {
@@ -459,7 +498,8 @@ static Expr *call(Parser *parser)
 
 static Expr *unary(Parser *parser)
 {
-    if (match(parser, TOKEN_BANG) || match(parser, TOKEN_NOT) || match(parser, TOKEN_MINUS)) {
+    if (match(parser, TOKEN_BANG) || match(parser, TOKEN_NOT) || match(parser, TOKEN_MINUS) ||
+        match(parser, TOKEN_TILDE)) {
         Token op = parser->previous;
         Expr *expr = new_expr(parser, EXPR_UNARY, op.line, op.column);
 
@@ -474,7 +514,8 @@ static Expr *factor(Parser *parser)
 {
     Expr *expr = unary(parser);
 
-    while (match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) || match(parser, TOKEN_PERCENT)) {
+    while (match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) || match(parser, TOKEN_PERCENT) ||
+           match(parser, TOKEN_DIV)) {
         Token op = parser->previous;
         Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
@@ -502,9 +543,25 @@ static Expr *term(Parser *parser)
     return expr;
 }
 
-static Expr *comparison(Parser *parser)
+static Expr *shift(Parser *parser)
 {
     Expr *expr = term(parser);
+
+    while (match(parser, TOKEN_LESS_LESS) || match(parser, TOKEN_GREATER_GREATER)) {
+        Token op = parser->previous;
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
+
+        binary->as.binary.left = expr;
+        binary->as.binary.op = op.type;
+        binary->as.binary.right = term(parser);
+        expr = binary;
+    }
+    return expr;
+}
+
+static Expr *comparison(Parser *parser)
+{
+    Expr *expr = shift(parser);
 
     while (match(parser, TOKEN_GREATER) || match(parser, TOKEN_GREATER_EQUAL) ||
            match(parser, TOKEN_LESS) || match(parser, TOKEN_LESS_EQUAL)) {
@@ -513,7 +570,7 @@ static Expr *comparison(Parser *parser)
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
-        binary->as.binary.right = term(parser);
+        binary->as.binary.right = shift(parser);
         expr = binary;
     }
     return expr;
@@ -535,9 +592,57 @@ static Expr *equality(Parser *parser)
     return expr;
 }
 
-static Expr *logic_and(Parser *parser)
+static Expr *bitwise_and(Parser *parser)
 {
     Expr *expr = equality(parser);
+
+    while (match(parser, TOKEN_AMPERSAND)) {
+        Token op = parser->previous;
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
+
+        binary->as.binary.left = expr;
+        binary->as.binary.op = op.type;
+        binary->as.binary.right = equality(parser);
+        expr = binary;
+    }
+    return expr;
+}
+
+static Expr *bitwise_xor(Parser *parser)
+{
+    Expr *expr = bitwise_and(parser);
+
+    while (match(parser, TOKEN_CARET)) {
+        Token op = parser->previous;
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
+
+        binary->as.binary.left = expr;
+        binary->as.binary.op = op.type;
+        binary->as.binary.right = bitwise_and(parser);
+        expr = binary;
+    }
+    return expr;
+}
+
+static Expr *bitwise_or(Parser *parser)
+{
+    Expr *expr = bitwise_xor(parser);
+
+    while (match(parser, TOKEN_PIPE)) {
+        Token op = parser->previous;
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
+
+        binary->as.binary.left = expr;
+        binary->as.binary.op = op.type;
+        binary->as.binary.right = bitwise_xor(parser);
+        expr = binary;
+    }
+    return expr;
+}
+
+static Expr *logic_and(Parser *parser)
+{
+    Expr *expr = bitwise_or(parser);
 
     while (match(parser, TOKEN_AND)) {
         Token op = parser->previous;
@@ -545,7 +650,7 @@ static Expr *logic_and(Parser *parser)
 
         logical->as.logical.left = expr;
         logical->as.logical.op = op.type;
-        logical->as.logical.right = equality(parser);
+        logical->as.logical.right = bitwise_or(parser);
         expr = logical;
     }
     return expr;
@@ -612,7 +717,9 @@ static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)
 
     if (match(parser, TOKEN_EQUAL) || match(parser, TOKEN_PLUS_EQUAL) ||
         match(parser, TOKEN_MINUS_EQUAL) || match(parser, TOKEN_STAR_EQUAL) ||
-        match(parser, TOKEN_SLASH_EQUAL)) {
+        match(parser, TOKEN_SLASH_EQUAL) || match(parser, TOKEN_AMPERSAND_EQUAL) ||
+        match(parser, TOKEN_PIPE_EQUAL) || match(parser, TOKEN_CARET_EQUAL) ||
+        match(parser, TOKEN_LESS_LESS_EQUAL) || match(parser, TOKEN_GREATER_GREATER_EQUAL)) {
         Token op = parser->previous;
         Stmt *stmt = new_stmt(parser, STMT_ASSIGN, expr->line, expr->column);
 

@@ -1,0 +1,2 @@
+exit: 70
+stderr: ZeroDivisionError at line 1: division by zero
