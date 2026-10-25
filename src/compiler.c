@@ -77,6 +77,7 @@ typedef struct Compiler {
 
 static void compile_statement(Compiler *compiler, Stmt *stmt);
 static void compile_expression(Compiler *compiler, Expr *expr);
+static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column);
 
 static void compile_error(Compiler *compiler, int line, const char *fmt, ...)
 {
@@ -438,10 +439,35 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
         fn.locals[0].is_const = true;
     }
 
+    fn.function->arity = 0;
+    fn.function->min_arity = 0;
+    fn.function->is_varargs = false;
     for (ParamList *param = params; param; param = param->next) {
         add_local(&fn, param->name, line);
         mark_local_initialized(&fn);
-        fn.function->arity++;
+        if (param->is_varargs) {
+            fn.function->is_varargs = true;
+        } else {
+            fn.function->arity++;
+            if (!param->default_value) {
+                fn.function->min_arity++;
+            }
+        }
+    }
+
+    int param_slot = 1;
+    for (ParamList *param = params; param; param = param->next, param_slot++) {
+        if (param->default_value) {
+            emit_byte(&fn, OP_DEFAULT_ARG, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            emit_byte(&fn, 0xff, line);
+            emit_byte(&fn, 0xff, line);
+            int jump = fn.function->chunk.count - 2;
+            compile_expression(&fn, param->default_value);
+            emit_byte(&fn, OP_SET_LOCAL, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            patch_jump(&fn, jump);
+        }
     }
 
     if (body->kind != STMT_BLOCK) {
@@ -1046,30 +1072,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         if (compiler->type == FUNC_SCRIPT) {
             compile_error(compiler, line, "'return' can only be used inside a function");
         }
-        if (stmt->as.ret.value && stmt->as.ret.value->kind == EXPR_BINARY &&
-            stmt->as.ret.value->as.binary.op == TOKEN_PLUS) {
-            compile_expression(compiler, stmt->as.ret.value->as.binary.left);
-            compile_expression(compiler, stmt->as.ret.value->as.binary.right);
-            compiler->column = stmt->column;
-            emit_byte(compiler, OP_RETURN_ADD, line);
-            break;
-        }
-        if (stmt->as.ret.value && stmt->as.ret.value->kind == EXPR_VARIABLE) {
-            int slot = resolve_local(compiler, stmt->as.ret.value->as.variable, line);
-
-            if (slot >= 0) {
-                emit_byte(compiler, OP_RETURN_LOCAL, line);
-                emit_byte(compiler, (uint8_t)slot, line);
-                break;
-            }
-        }
-        if (stmt->as.ret.value) {
-            compile_expression(compiler, stmt->as.ret.value);
-        } else {
-            emit_byte(compiler, OP_NIL, line);
-        }
-        compiler->column = stmt->column;
-        emit_byte(compiler, OP_RETURN, line);
+        compile_tail_return(compiler, stmt->as.ret.value, line, stmt->column);
         break;
 
     case STMT_BREAK:
@@ -1080,6 +1083,77 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         compile_continue(compiler, stmt->as.jump.label, line);
         break;
     }
+}
+
+static bool expr_list_has_spread(ExprList *items)
+{
+    for (ExprList *item = items; item; item = item->next) {
+        if (item->is_spread) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column)
+{
+    if (!expr) {
+        emit_byte(compiler, OP_NIL, line);
+        compiler->column = column;
+        emit_byte(compiler, OP_RETURN, line);
+        return;
+    }
+    if (expr->kind == EXPR_CALL) {
+        compile_expression(compiler, expr->as.call.callee);
+        if (expr_list_has_spread(expr->as.call.arguments)) {
+            if (expr->as.call.argument_count == 1 && expr->as.call.arguments->is_spread) {
+                compile_expression(compiler, expr->as.call.arguments->expr);
+            } else {
+                emit_byte(compiler, OP_ARRAY, line);
+                emit_u16(compiler, 0, line);
+                for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+                    compile_expression(compiler, arg->expr);
+                    emit_byte(compiler, arg->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
+                }
+            }
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_TAIL_CALL_SPREAD, line);
+            return;
+        }
+        for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+            compile_expression(compiler, arg->expr);
+        }
+        compiler->column = expr->column;
+        emit_byte(compiler, OP_TAIL_CALL, line);
+        emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
+        return;
+    }
+    if (expr->kind == EXPR_TERNARY) {
+        compile_expression(compiler, expr->as.ternary.condition);
+        int then_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+        compile_tail_return(compiler, expr->as.ternary.then_branch, line, column);
+        patch_jump(compiler, then_jump);
+        compile_tail_return(compiler, expr->as.ternary.else_branch, line, column);
+        return;
+    }
+    if (expr->kind == EXPR_BINARY && expr->as.binary.op == TOKEN_PLUS) {
+        compile_expression(compiler, expr->as.binary.left);
+        compile_expression(compiler, expr->as.binary.right);
+        compiler->column = column;
+        emit_byte(compiler, OP_RETURN_ADD, line);
+        return;
+    }
+    if (expr->kind == EXPR_VARIABLE) {
+        int slot = resolve_local(compiler, expr->as.variable, line);
+        if (slot >= 0) {
+            emit_byte(compiler, OP_RETURN_LOCAL, line);
+            emit_byte(compiler, (uint8_t)slot, line);
+            return;
+        }
+    }
+    compile_expression(compiler, expr);
+    compiler->column = column;
+    emit_byte(compiler, OP_RETURN, line);
 }
 
 
@@ -1247,6 +1321,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         /* Superinstruction: self-recursive call with (local - constant) argument */
         if (compiler->type == FUNC_FUNCTION &&
             expr->as.call.argument_count == 1 &&
+            !expr->as.call.arguments->is_spread &&
             expr->as.call.callee->kind == EXPR_VARIABLE &&
             resolve_local(compiler, expr->as.call.callee->as.variable, line) == 0) {
             Expr *arg = expr->as.call.arguments->expr;
@@ -1265,12 +1340,27 @@ static void compile_expression(Compiler *compiler, Expr *expr)
             }
         }
         compile_expression(compiler, expr->as.call.callee);
-        for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
-            compile_expression(compiler, arg->expr);
+        if (expr_list_has_spread(expr->as.call.arguments)) {
+            if (expr->as.call.argument_count == 1 && expr->as.call.arguments->is_spread) {
+                compile_expression(compiler, expr->as.call.arguments->expr);
+            } else {
+                emit_byte(compiler, OP_ARRAY, line);
+                emit_u16(compiler, 0, line);
+                for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+                    compile_expression(compiler, arg->expr);
+                    emit_byte(compiler, arg->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
+                }
+            }
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_CALL_SPREAD, line);
+        } else {
+            for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+                compile_expression(compiler, arg->expr);
+            }
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_CALL, line);
+            emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
         }
-        compiler->column = expr->column;
-        emit_byte(compiler, OP_CALL, line);
-        emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
         break;
     }
 
@@ -1282,12 +1372,21 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         break;
 
     case EXPR_ARRAY:
-        for (ExprList *item = expr->as.array.items; item; item = item->next) {
-            compile_expression(compiler, item->expr);
+        if (expr_list_has_spread(expr->as.array.items)) {
+            emit_byte(compiler, OP_ARRAY, line);
+            emit_u16(compiler, 0, line);
+            for (ExprList *item = expr->as.array.items; item; item = item->next) {
+                compile_expression(compiler, item->expr);
+                emit_byte(compiler, item->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
+            }
+        } else {
+            for (ExprList *item = expr->as.array.items; item; item = item->next) {
+                compile_expression(compiler, item->expr);
+            }
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_ARRAY, line);
+            emit_u16(compiler, (uint16_t)expr->as.array.count, line);
         }
-        compiler->column = expr->column;
-        emit_byte(compiler, OP_ARRAY, line);
-        emit_u16(compiler, (uint16_t)expr->as.array.count, line);
         break;
 
     case EXPR_MAP:

@@ -109,11 +109,13 @@ static Stmt *new_stmt(Parser *parser, StmtKind kind, int line, int column)
     return stmt;
 }
 
-static void list_append_expr(Parser *parser, ExprList **head, ExprList **tail, Expr *expr)
+static void list_append_expr(Parser *parser, ExprList **head, ExprList **tail, Expr *expr, bool is_spread)
 {
     ExprList *node = new_node(parser, sizeof(ExprList));
 
     node->expr = expr;
+    node->is_spread = is_spread;
+    node->next = NULL;
     if (*tail) {
         (*tail)->next = node;
     } else {
@@ -135,17 +137,64 @@ static void list_append_stmt(Parser *parser, StmtList **head, StmtList **tail, S
     *tail = node;
 }
 
-static void list_append_param(Parser *parser, ParamList **head, ParamList **tail, Text name)
+static void list_append_param(Parser *parser, ParamList **head, ParamList **tail, Text name,
+                              Expr *default_value, bool is_varargs)
 {
     ParamList *node = new_node(parser, sizeof(ParamList));
 
     node->name = name;
+    node->default_value = default_value;
+    node->is_varargs = is_varargs;
+    node->next = NULL;
     if (*tail) {
         (*tail)->next = node;
     } else {
         *head = node;
     }
     *tail = node;
+}
+
+static void parse_params(Parser *parser, ParamList **params, ParamList **tail, int *count, const char *paren_msg)
+{
+    *params = NULL;
+    *tail = NULL;
+    *count = 0;
+    bool has_default = false;
+
+    consume(parser, TOKEN_LEFT_PAREN, paren_msg);
+    if (!check(parser, TOKEN_RIGHT_PAREN)) {
+        do {
+            bool is_varargs = match(parser, TOKEN_DOT_DOT_DOT);
+            Token param = consume(parser, TOKEN_IDENTIFIER,
+                                  is_varargs ? "expected the parameter name after '...'"
+                                             : "expected the parameter name");
+
+            if (*count == 255) {
+                fail(parser, "a function cannot have more than 255 parameters");
+            }
+            if (is_varargs) {
+                if (match(parser, TOKEN_EQUAL)) {
+                    fail(parser, "a varargs parameter cannot have a default value");
+                }
+                list_append_param(parser, params, tail, text_from_token(parser, param), NULL, true);
+                (*count)++;
+                if (!check(parser, TOKEN_RIGHT_PAREN)) {
+                    fail(parser, "a varargs parameter '...' must be the last parameter");
+                }
+                break;
+            }
+            Expr *default_value = NULL;
+            if (match(parser, TOKEN_EQUAL)) {
+                has_default = true;
+                default_value = expression(parser);
+            } else if (has_default) {
+                fail(parser, "a parameter without a default value cannot follow one with a default value");
+            }
+            list_append_param(parser, params, tail, text_from_token(parser, param), default_value, false);
+            (*count)++;
+        } while (match(parser, TOKEN_COMMA) && !check(parser, TOKEN_RIGHT_PAREN));
+    }
+    consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the parameters");
 }
 
 static Text parse_string_part(Parser *parser, Token token)
@@ -374,7 +423,8 @@ static Expr *primary(Parser *parser)
                 if (count == 255) {
                     fail(parser, "an array literal cannot have more than 255 elements");
                 }
-                list_append_expr(parser, &head, &tail, expression(parser));
+                bool is_spread = match(parser, TOKEN_DOT_DOT_DOT);
+                list_append_expr(parser, &head, &tail, expression(parser), is_spread);
                 count++;
             } while (match(parser, TOKEN_COMMA) && !check(parser, TOKEN_RIGHT_BRACKET));
         }
@@ -420,19 +470,7 @@ static Expr *primary(Parser *parser)
         ParamList *params_tail = NULL;
         int param_count = 0;
 
-        consume(parser, TOKEN_LEFT_PAREN, "expected '(' after 'fn'");
-        if (!check(parser, TOKEN_RIGHT_PAREN)) {
-            do {
-                Token param = consume(parser, TOKEN_IDENTIFIER, "expected the parameter name");
-
-                if (param_count == 255) {
-                    fail(parser, "a function cannot have more than 255 parameters");
-                }
-                list_append_param(parser, &params, &params_tail, text_from_token(parser, param));
-                param_count++;
-            } while (match(parser, TOKEN_COMMA) && !check(parser, TOKEN_RIGHT_PAREN));
-        }
-        consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the parameters");
+        parse_params(parser, &params, &params_tail, &param_count, "expected '(' after 'fn'");
 
         fn->as.function.name.chars = "";
         fn->as.function.name.length = 0;
@@ -460,7 +498,8 @@ static ExprList *parse_arguments(Parser *parser, int *count)
             if (*count == 255) {
                 fail(parser, "a call cannot have more than 255 arguments");
             }
-            list_append_expr(parser, &head, &tail, expression(parser));
+            bool is_spread = match(parser, TOKEN_DOT_DOT_DOT);
+            list_append_expr(parser, &head, &tail, expression(parser), is_spread);
             (*count)++;
         } while (match(parser, TOKEN_COMMA) && !check(parser, TOKEN_RIGHT_PAREN));
     }
@@ -797,27 +836,6 @@ static Stmt *parse_var_declaration(Parser *parser, bool with_semicolon)
     return var_declaration_after_name(parser, name, with_semicolon);
 }
 
-static void parse_params(Parser *parser, ParamList **params, ParamList **tail, int *count)
-{
-    *params = NULL;
-    *tail = NULL;
-    *count = 0;
-
-    consume(parser, TOKEN_LEFT_PAREN, "expected '(' after the function name");
-    if (!check(parser, TOKEN_RIGHT_PAREN)) {
-        do {
-            Token param = consume(parser, TOKEN_IDENTIFIER, "expected the parameter name");
-
-            if (*count == 255) {
-                fail(parser, "a function cannot have more than 255 parameters");
-            }
-            list_append_param(parser, params, tail, text_from_token(parser, param));
-            (*count)++;
-        } while (match(parser, TOKEN_COMMA) && !check(parser, TOKEN_RIGHT_PAREN));
-    }
-    consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the parameters");
-}
-
 static Stmt *function_declaration(Parser *parser)
 {
     Token name = consume(parser, TOKEN_IDENTIFIER, "expected the function name");
@@ -826,7 +844,7 @@ static Stmt *function_declaration(Parser *parser)
     ParamList *tail;
     int count;
 
-    parse_params(parser, &params, &tail, &count);
+    parse_params(parser, &params, &tail, &count, "expected '(' after the function name");
     stmt->as.function.name = text_from_token(parser, name);
     stmt->as.function.params = params;
     stmt->as.function.param_count = count;

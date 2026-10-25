@@ -126,15 +126,15 @@ original numbering:
 - [x] Review with the user before Phase 5
 
 ### Phase 5 - Functions & semantics (areas 3, 6)
-- [ ] T34 Tail-call optimization
-- [ ] T35 Default parameters
-- [ ] T36 Varargs + spread (`...`)
-- [ ] T37 Named arguments (optional)
-- [ ] T38 REPL `_` last value
-- [ ] T39 Numeric/semantics polish (`is_nan`, NaN equality documented)
+- [x] T34 Tail-call optimization
+- [x] T35 Default parameters
+- [x] T36 Varargs + spread (`...`)
+- [x] T37 Named arguments (deferred in favor of map option arguments)
+- [x] T38 REPL `_` last value
+- [x] T39 Numeric/semantics polish (`is_nan`, NaN equality documented)
 
 ### Checkpoint: Phase 5
-- [ ] All tests pass, build clean, docs updated
+- [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 6
 
 ### Phase 6 - Modules, exceptions, objects

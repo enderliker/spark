@@ -1,0 +1,2 @@
+exit: 70
+stderr: spread operator '...' requires an array, received number

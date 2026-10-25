@@ -29,6 +29,7 @@ typedef struct {
     uint8_t *ip;
     Value *slots;
     Value *constants;
+    int argc;
 } CallFrame;
 
 typedef struct {
@@ -840,6 +841,15 @@ static Value native_is_int(int arg_count, Value *args)
 {
     (void)arg_count;
     return BOOL_VAL(is_int(args[0]));
+}
+
+static Value native_is_nan(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (args[0].type == VAL_NUMBER && isnan(args[0].as.number)) {
+        return BOOL_VAL(true);
+    }
+    return BOOL_VAL(false);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2436,10 +2446,20 @@ static bool call_closure(ObjClosure *closure, int arg_count)
 {
     ObjFunction *function = closure->function;
 
-    if (arg_count != function->arity) {
-        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
-                         function->name ? function->name->chars : "anonymous", function->arity,
-                         arg_count);
+    if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
+        if (function->is_varargs) {
+            vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
+                             function->name ? function->name->chars : "anonymous",
+                             function->min_arity, arg_count);
+        } else if (function->min_arity == function->arity) {
+            vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
+                             function->name ? function->name->chars : "anonymous", function->arity,
+                             arg_count);
+        } else {
+            vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
+                             function->name ? function->name->chars : "anonymous",
+                             function->min_arity, function->arity, arg_count);
+        }
         return false;
     }
     if (vm.frame_count == FRAMES_MAX) {
@@ -2447,12 +2467,43 @@ static bool call_closure(ObjClosure *closure, int arg_count)
         return false;
     }
 
+    if (function->is_varargs) {
+        int fixed_passed = arg_count < function->arity ? arg_count : function->arity;
+        int extra_count = arg_count > function->arity ? arg_count - function->arity : 0;
+        ObjArray *rest = object_array();
+        push(OBJ_VAL(rest));
+        for (int i = 0; i < extra_count; i++) {
+            array_push(rest, *(vm.stack_top - 1 - extra_count + i));
+        }
+        vm.stack_top -= (extra_count + 1);
+        while (fixed_passed < function->arity) {
+            push(NIL_VAL);
+            fixed_passed++;
+        }
+        push(OBJ_VAL(rest));
+
+        CallFrame *frame = &vm.frames[vm.frame_count++];
+        frame->closure = closure;
+        frame->ip = function->chunk.code;
+        frame->slots = vm.stack_top - (function->arity + 1) - 1;
+        frame->constants = function->chunk.constants;
+        frame->argc = arg_count < function->arity ? arg_count : function->arity;
+        return true;
+    }
+
+    int original_argc = arg_count;
+    while (arg_count < function->arity) {
+        push(NIL_VAL);
+        arg_count++;
+    }
+
     CallFrame *frame = &vm.frames[vm.frame_count++];
 
     frame->closure = closure;
     frame->ip = function->chunk.code;
-    frame->slots = vm.stack_top - arg_count - 1;
+    frame->slots = vm.stack_top - function->arity - 1;
     frame->constants = function->chunk.constants;
+    frame->argc = original_argc;
     return true;
 }
 
@@ -2769,7 +2820,9 @@ static InterpretResult run(int base_frame)
         [OP_JUMP_IF_NOT_LESS_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_LESS_LOCAL_CONST,
         [OP_JUMP_IF_NOT_GREATER_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_GREATER_LOCAL_CONST,
         [OP_LOOP] = &&op_OP_LOOP,
+        [OP_DEFAULT_ARG] = &&op_OP_DEFAULT_ARG,
         [OP_CALL] = &&op_OP_CALL,
+        [OP_TAIL_CALL] = &&op_OP_TAIL_CALL,
         [OP_RETURN_LOCAL] = &&op_OP_RETURN_LOCAL,
         [OP_RETURN] = &&op_OP_RETURN,
         [OP_RETURN_ADD] = &&op_OP_RETURN_ADD,
@@ -3165,6 +3218,17 @@ static InterpretResult run(int base_frame)
             ip += 3 - U16_AT(ip + 1);
             DISPATCH();
 
+        TARGET(OP_DEFAULT_ARG): {
+            uint8_t slot = ip[1];
+            uint16_t offset = U16_AT(ip + 2);
+            if (frame->argc >= slot) {
+                ip += 4 + offset;
+            } else {
+                ip += 4;
+            }
+            DISPATCH();
+        }
+
         TARGET(OP_CALL): {
             int arg_count = ip[1];
             Value callee = sp[-1 - arg_count];
@@ -3177,13 +3241,20 @@ static InterpretResult run(int base_frame)
                     ObjClosure *closure = (ObjClosure *)obj;
                     ObjFunction *function = closure->function;
 
-                    if (arg_count == function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
+                    if (!function->is_varargs && arg_count >= function->min_arity &&
+                        arg_count <= function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
+                        int original_argc = arg_count;
+                        while (arg_count < function->arity) {
+                            *sp++ = NIL_VAL;
+                            arg_count++;
+                        }
                         frame->ip = ip + 2;
                         frame++;
                         frame->closure = closure;
                         frame->ip = function->chunk.code;
-                        frame->slots = sp - arg_count - 1;
+                        frame->slots = sp - function->arity - 1;
                         frame->constants = function->chunk.constants;
+                        frame->argc = original_argc;
                         ip = function->chunk.code;
                         slots = frame->slots;
                         constants = frame->constants;
@@ -3201,6 +3272,62 @@ static InterpretResult run(int base_frame)
                             *native_base = result;
                             sp = native_base + 1;
                             ip += 2;
+                            DISPATCH();
+                        }
+                    }
+                }
+            }
+            goto cold;
+        }
+
+        TARGET(OP_TAIL_CALL): {
+            int arg_count = ip[1];
+            Value callee = sp[-1 - arg_count];
+
+            if (callee.type == VAL_OBJ) {
+                Obj *obj = AS_OBJ(callee);
+                if (obj->type == OBJ_CLOSURE) {
+                    ObjClosure *closure = (ObjClosure *)obj;
+                    ObjFunction *function = closure->function;
+
+                    if (!function->is_varargs && arg_count >= function->min_arity &&
+                        arg_count <= function->arity) {
+                        if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
+                            close_upvalues(slots);
+                        }
+                        int original_argc = arg_count;
+                        memmove(slots, sp - arg_count - 1, (size_t)(arg_count + 1) * sizeof(Value));
+                        while (arg_count < function->arity) {
+                            slots[arg_count + 1] = NIL_VAL;
+                            arg_count++;
+                        }
+                        sp = slots + function->arity + 1;
+                        frame->closure = closure;
+                        frame->ip = function->chunk.code;
+                        frame->constants = function->chunk.constants;
+                        frame->argc = original_argc;
+                        ip = function->chunk.code;
+                        constants = frame->constants;
+                        DISPATCH();
+                    }
+                } else if (obj->type == OBJ_NATIVE) {
+                    ObjNative *native = (ObjNative *)obj;
+                    if (native->arity >= 0 && arg_count == native->arity &&
+                        frame != &vm.frames[base_frame]) {
+                        Value *native_base = sp - arg_count - 1;
+                        vm.frame_count = (int)(frame - vm.frames) + 1;
+                        vm.stack_top = sp;
+                        Value result = native->function(arg_count, native_base + 1);
+                        if (__builtin_expect(!vm.had_error, 1)) {
+                            if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
+                                close_upvalues(slots);
+                            }
+                            sp = slots;
+                            *sp++ = result;
+                            frame--;
+                            ip = frame->ip;
+                            slots = frame->slots;
+                            constants = frame->constants;
                             DISPATCH();
                         }
                     }
@@ -3844,12 +3971,19 @@ cold_dispatch:
             break;
         }
 
-        case OP_PRINT_REPL:
-            value_print(stdout, peek(0));
+        case OP_PRINT_REPL: {
+            Value val = peek(0);
+            value_print(stdout, val);
             fputc('\n', stdout);
             fflush(stdout);
+            int slot = vm_global_slot(object_string("_", 1));
+            if (slot >= 0) {
+                vm.global_slots[slot].value = val;
+                vm.global_slots[slot].defined = true;
+            }
             pop();
             break;
+        }
 
         case OP_JUMP: {
             uint16_t offset = READ_U16();
@@ -3900,6 +4034,15 @@ cold_dispatch:
             break;
         }
 
+        case OP_DEFAULT_ARG: {
+            uint8_t slot = READ_BYTE();
+            uint16_t offset = READ_U16();
+            if (frame->argc >= slot) {
+                frame->ip += offset;
+            }
+            break;
+        }
+
         case OP_CALL: {
             int arg_count = READ_BYTE();
 
@@ -3911,6 +4054,246 @@ cold_dispatch:
             }
             frame = &vm.frames[vm.frame_count - 1];
             break;
+        }
+
+        case OP_TAIL_CALL: {
+            int arg_count = READ_BYTE();
+            Value callee = peek(arg_count);
+            if (is_obj_type(callee, OBJ_CLOSURE)) {
+                ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
+                ObjFunction *function = closure->function;
+                if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
+                    if (function->is_varargs) {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
+                                         function->name ? function->name->chars : "anonymous", function->min_arity,
+                                         arg_count);
+                    } else if (function->min_arity == function->arity) {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
+                                         function->name ? function->name->chars : "anonymous", function->arity,
+                                         arg_count);
+                    } else {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
+                                         function->name ? function->name->chars : "anonymous",
+                                         function->min_arity, function->arity, arg_count);
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                close_upvalues(frame->slots);
+                if (function->is_varargs) {
+                    int fixed_passed = arg_count < function->arity ? arg_count : function->arity;
+                    int extra_count = arg_count > function->arity ? arg_count - function->arity : 0;
+                    ObjArray *rest = object_array();
+                    push(OBJ_VAL(rest));
+                    for (int i = 0; i < extra_count; i++) {
+                        array_push(rest, *(vm.stack_top - 1 - extra_count + i));
+                    }
+                    vm.stack_top -= (extra_count + 1);
+                    memmove(frame->slots, vm.stack_top - fixed_passed - 1, (size_t)(fixed_passed + 1) * sizeof(Value));
+                    for (int i = fixed_passed; i < function->arity; i++) {
+                        frame->slots[i + 1] = NIL_VAL;
+                    }
+                    frame->slots[function->arity + 1] = OBJ_VAL(rest);
+                    vm.stack_top = frame->slots + function->arity + 2;
+                    frame->closure = closure;
+                    frame->ip = function->chunk.code;
+                    frame->constants = function->chunk.constants;
+                    frame->argc = fixed_passed;
+                    break;
+                }
+                int original_argc = arg_count;
+                memmove(frame->slots, vm.stack_top - arg_count - 1, (size_t)(arg_count + 1) * sizeof(Value));
+                while (arg_count < function->arity) {
+                    frame->slots[arg_count + 1] = NIL_VAL;
+                    arg_count++;
+                }
+                vm.stack_top = frame->slots + function->arity + 1;
+                frame->closure = closure;
+                frame->ip = function->chunk.code;
+                frame->constants = function->chunk.constants;
+                frame->argc = original_argc;
+                break;
+            } else if (is_obj_type(callee, OBJ_NATIVE)) {
+                ObjNative *native = (ObjNative *)AS_OBJ(callee);
+                if (native->arity >= 0 && arg_count != native->arity) {
+                    vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
+                                     native->name->chars, native->arity, arg_count);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value *native_base = vm.stack_top - arg_count - 1;
+                Value result = native->function(arg_count, native_base + 1);
+                if (vm.had_error) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                close_upvalues(frame->slots);
+                vm.frame_count--;
+                if (vm.frame_count == 0) {
+                    vm.stack_top = vm.stack;
+                    return INTERPRET_OK;
+                }
+                if (vm.frame_count == base_frame) {
+                    vm.stack_top = vm.frames[vm.frame_count].slots;
+                    push(result);
+                    return INTERPRET_OK;
+                }
+                vm.stack_top = vm.frames[vm.frame_count].slots;
+                push(result);
+                frame = &vm.frames[vm.frame_count - 1];
+                break;
+            }
+            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
+                             value_type_name(callee));
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        case OP_ARRAY_PUSH: {
+            Value item = pop();
+            Value array = peek(0);
+            array_push(AS_ARRAY(array), item);
+            break;
+        }
+
+        case OP_ARRAY_EXTEND: {
+            Value src = pop();
+            Value dest = peek(0);
+            if (!is_obj_type(src, OBJ_ARRAY)) {
+                vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
+                                 value_type_name(src));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            ObjArray *src_arr = AS_ARRAY(src);
+            for (int i = 0; i < src_arr->count; i++) {
+                array_push(AS_ARRAY(dest), src_arr->items[i]);
+            }
+            break;
+        }
+
+        case OP_CALL_SPREAD: {
+            Value args = pop();
+            if (!is_obj_type(args, OBJ_ARRAY)) {
+                vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
+                                 value_type_name(args));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            ObjArray *arr = AS_ARRAY(args);
+            int count = arr->count;
+            if (vm.stack_top + count >= vm.stack + STACK_MAX) {
+                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            for (int i = 0; i < count; i++) {
+                push(arr->items[i]);
+            }
+            if (!call_value(peek(count), count)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            if (vm.had_error) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_TAIL_CALL_SPREAD: {
+            Value args = pop();
+            if (!is_obj_type(args, OBJ_ARRAY)) {
+                vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
+                                 value_type_name(args));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            ObjArray *arr = AS_ARRAY(args);
+            int arg_count = arr->count;
+            if (vm.stack_top + arg_count >= vm.stack + STACK_MAX) {
+                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            for (int i = 0; i < arg_count; i++) {
+                push(arr->items[i]);
+            }
+            Value callee = peek(arg_count);
+            if (is_obj_type(callee, OBJ_CLOSURE)) {
+                ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
+                ObjFunction *function = closure->function;
+                if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
+                    if (function->is_varargs) {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
+                                         function->name ? function->name->chars : "anonymous", function->min_arity,
+                                         arg_count);
+                    } else if (function->min_arity == function->arity) {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
+                                         function->name ? function->name->chars : "anonymous", function->arity,
+                                         arg_count);
+                    } else {
+                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
+                                         function->name ? function->name->chars : "anonymous",
+                                         function->min_arity, function->arity, arg_count);
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                close_upvalues(frame->slots);
+                if (function->is_varargs) {
+                    int fixed_passed = arg_count < function->arity ? arg_count : function->arity;
+                    int extra_count = arg_count > function->arity ? arg_count - function->arity : 0;
+                    ObjArray *rest = object_array();
+                    push(OBJ_VAL(rest));
+                    for (int i = 0; i < extra_count; i++) {
+                        array_push(rest, *(vm.stack_top - 1 - extra_count + i));
+                    }
+                    vm.stack_top -= (extra_count + 1);
+                    memmove(frame->slots, vm.stack_top - fixed_passed - 1, (size_t)(fixed_passed + 1) * sizeof(Value));
+                    for (int i = fixed_passed; i < function->arity; i++) {
+                        frame->slots[i + 1] = NIL_VAL;
+                    }
+                    frame->slots[function->arity + 1] = OBJ_VAL(rest);
+                    vm.stack_top = frame->slots + function->arity + 2;
+                    frame->closure = closure;
+                    frame->ip = function->chunk.code;
+                    frame->constants = function->chunk.constants;
+                    frame->argc = fixed_passed;
+                    break;
+                }
+                int original_argc = arg_count;
+                memmove(frame->slots, vm.stack_top - arg_count - 1, (size_t)(arg_count + 1) * sizeof(Value));
+                while (arg_count < function->arity) {
+                    frame->slots[arg_count + 1] = NIL_VAL;
+                    arg_count++;
+                }
+                vm.stack_top = frame->slots + function->arity + 1;
+                frame->closure = closure;
+                frame->ip = function->chunk.code;
+                frame->constants = function->chunk.constants;
+                frame->argc = original_argc;
+                break;
+            } else if (is_obj_type(callee, OBJ_NATIVE)) {
+                ObjNative *native = (ObjNative *)AS_OBJ(callee);
+                if (native->arity >= 0 && arg_count != native->arity) {
+                    vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
+                                     native->name->chars, native->arity, arg_count);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                Value *native_base = vm.stack_top - arg_count - 1;
+                Value result = native->function(arg_count, native_base + 1);
+                if (vm.had_error) {
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                close_upvalues(frame->slots);
+                vm.frame_count--;
+                if (vm.frame_count == 0) {
+                    vm.stack_top = vm.stack;
+                    return INTERPRET_OK;
+                }
+                if (vm.frame_count == base_frame) {
+                    vm.stack_top = vm.frames[vm.frame_count].slots;
+                    push(result);
+                    return INTERPRET_OK;
+                }
+                vm.stack_top = vm.frames[vm.frame_count].slots;
+                push(result);
+                frame = &vm.frames[vm.frame_count - 1];
+                break;
+            }
+            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
+                             value_type_name(callee));
+            return INTERPRET_RUNTIME_ERROR;
         }
 
         case OP_CLOSURE: {
@@ -4110,6 +4493,7 @@ void vm_init(void)
     define_native("int", native_int, 1);
     define_native("float", native_float, 1);
     define_native("is_int", native_is_int, 1);
+    define_native("is_nan", native_is_nan, 1);
     define_native("type", native_type, 1);
     define_native("clock", native_clock, 0);
     define_native("assert", native_assert, -1);
@@ -4174,6 +4558,18 @@ void vm_init(void)
     define_native("regex_find", native_regex_find, 2);
     define_native("regex_replace", native_regex_replace, 3);
     vm_set_args(0, NULL);
+
+    int underscore_slot = vm_global_slot(object_string("_", 1));
+    if (underscore_slot >= 0) {
+        vm.global_slots[underscore_slot].value = NIL_VAL;
+        vm.global_slots[underscore_slot].defined = true;
+    }
+    int nan_slot = vm_global_slot(object_string("nan", 3));
+    if (nan_slot >= 0) {
+        vm.global_slots[nan_slot].value = NUMBER_VAL(NAN);
+        vm.global_slots[nan_slot].defined = true;
+        vm.global_slots[nan_slot].is_const = true;
+    }
 }
 
 void vm_free(void)

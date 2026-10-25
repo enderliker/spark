@@ -1,0 +1,44 @@
+fn f(a, b = 10) {
+    return a + b;
+}
+print(f(1));
+print(f(1, 2));
+
+fn greet(name, prefix = "Hello", suffix = "!") {
+    return prefix + " " + name + suffix;
+}
+print(greet("Ender"));
+print(greet("Ender", "Hi"));
+print(greet("Ender", "Hey", " :)"));
+
+fn calc(a, b = a * 2, c = a + b) {
+    return c;
+}
+print(calc(5));
+print(calc(5, 3));
+print(calc(5, 3, 100));
+
+fn make_box(val, box = []) {
+    push(box, val);
+    return box;
+}
+var b1 = make_box(1);
+var b2 = make_box(2);
+print(len(b1));
+print(len(b2));
+print(b1 == b2);
+
+var add = fn(x, y = 5) {
+    return x + y;
+};
+print(add(10));
+print(add(10, 20));
+
+fn sum_tco(n, acc = 0) {
+    if (n <= 0) {
+        return acc;
+    }
+    return sum_tco(n - 1, acc + n);
+}
+print(sum_tco(100));
+print(sum_tco(100, 10));

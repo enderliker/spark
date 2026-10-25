@@ -502,6 +502,8 @@ ObjFunction *object_function(void)
     ObjFunction *function = allocate_obj(sizeof(ObjFunction), OBJ_FUNCTION);
 
     function->arity = 0;
+    function->min_arity = 0;
+    function->is_varargs = false;
     function->upvalue_count = 0;
     function->name = NULL;
     chunk_init(&function->chunk);

@@ -74,7 +74,7 @@ Concrete types:
   `free`, `occupied` or `tombstone`; it caches the key hash to avoid recomputation,
   uses specialized fast probing for object/string keys, and doubles capacity when it fills
   up while counting tombstones to decide when to compact.
-- `ObjFunction`: code, arity, number of upvalues and name.
+- `ObjFunction`: code, arity, min_arity (for default parameters), is_varargs, number of upvalues and name.
 - `ObjClosure`: reference to the function plus the array of captured upvalues.
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
 - `ObjNative`: C function pointer, arity (`-1` = variadic) and name.
@@ -94,11 +94,11 @@ The VM is a stack machine. The main instructions:
 | --- | --- |
 | Constants and stack | `CONSTANT`, `NIL`, `TRUE`, `FALSE`, `POP`, `DUP`, `DUP2` |
 | Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `DEFINE_GLOBAL_CONST`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
-| Collections | `ARRAY n`, `MAP n`, `INDEX`, `INDEX_SET`, `LEN`, `TO_STRING`, `ITER_KEYS` |
+| Collections | `ARRAY n`, `ARRAY_PUSH`, `ARRAY_EXTEND`, `MAP n`, `INDEX`, `INDEX_SET`, `LEN`, `TO_STRING`, `ITER_KEYS` |
 | Arithmetic and logic | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `MODULO`, `INT_DIVIDE`, `BIT_AND`, `BIT_OR`, `BIT_XOR`, `SHL`, `SHR`, `EQUAL`, `GREATER`, `LESS`, `NOT`, `NEGATE`, `BIT_NOT` |
-| Superinstructions | `ADD_LOCAL_CONST`, `SUBTRACT_LOCAL_CONST`, `MULTIPLY_LOCAL_CONST`, `DIVIDE_LOCAL_CONST`, `LESS_LOCAL_CONST`, `GREATER_LOCAL_CONST`, `JUMP_IF_NOT_LESS_LOCAL_CONST`, `JUMP_IF_NOT_GREATER_LOCAL_CONST`, `RETURN_LOCAL` |
+| Superinstructions | `ADD_LOCAL_CONST`, `SUBTRACT_LOCAL_CONST`, `MULTIPLY_LOCAL_CONST`, `DIVIDE_LOCAL_CONST`, `LESS_LOCAL_CONST`, `GREATER_LOCAL_CONST`, `JUMP_IF_NOT_LESS_LOCAL_CONST`, `JUMP_IF_NOT_GREATER_LOCAL_CONST`, `RETURN_LOCAL`, `RETURN_ADD`, `CALL_SELF_SUB_LOCAL_CONST` |
 | Control | `JUMP`, `JUMP_IF_FALSE` (peek), `JUMP_IF_FALSE_POP` (consume), `LOOP` (16-bit offsets) |
-| Functions | `CALL argc`, `CLOSURE const [upvalues]`, `CLOSE_UPVALUE`, `RETURN` |
+| Functions | `CALL argc`, `CALL_SPREAD`, `TAIL_CALL argc`, `TAIL_CALL_SPREAD`, `DEFAULT_ARG slot offset`, `CLOSURE const [upvalues]`, `CLOSE_UPVALUE`, `RETURN` |
 | REPL | `PRINT_REPL` |
 
 `JUMP_IF_FALSE` peeks at the top without popping (used by `and`/`or`);
@@ -139,6 +139,9 @@ counter.
   `SET_GLOBAL`.
 - Compound assignments reuse `DUP2` + `INDEX` so the array and the index are not
   evaluated twice.
+- **Tail-call optimization**: When a `return` returns a function call (including branches of a ternary), the compiler emits `OP_TAIL_CALL` or `OP_TAIL_CALL_SPREAD`. The VM closes open upvalues for the current frame, copies the new arguments into the current frame's slots (`frame->slots`), reinitializes the instruction pointer and constants pool, and executes the target function without allocating a new `CallFrame`.
+- **Default parameters**: Functions track `min_arity` alongside `arity`. Calling a function with `argc < arity` pads the stack with `nil` and records `frame->argc`. The function preamble contains `OP_DEFAULT_ARG slot offset` for each parameter with a default; if `frame->argc >= slot`, it skips evaluation, otherwise it compiles the default expression and writes it into the local parameter slot.
+- **Varargs and spread**: Functions with `...rest` have `is_varargs = true`. Any arguments beyond `arity` are collected into a newly allocated `ObjArray` placed in slot `arity + 1`. Spread calls (`f(...items)`) or spread array literals (`[...items]`) dynamically build and flatten the argument array via `OP_ARRAY_PUSH` and `OP_ARRAY_EXTEND`, followed by `OP_CALL_SPREAD` or `OP_TAIL_CALL_SPREAD`.
 
 ### Superinstructions
 

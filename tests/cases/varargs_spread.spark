@@ -1,0 +1,84 @@
+// 1. Basic varargs function
+fn to_list(...items) {
+    return items;
+}
+print(to_list());
+print(to_list(1));
+print(to_list(1, 2, 3));
+
+// 2. Fixed params + varargs
+fn greet(greeting, punctuation, ...names) {
+    var result = greeting;
+    for (var name in names) {
+        result += " " + name;
+    }
+    return result + punctuation;
+}
+print(greet("Hello", "!"));
+print(greet("Hello", "!", "Alice"));
+print(greet("Hello", "!", "Alice", "Bob", "Charlie"));
+
+// 3. Default params + varargs
+fn format(prefix, indent = 2, ...lines) {
+    var out = [];
+    var pad = "";
+    for (var i in range(indent)) {
+        pad += " ";
+    }
+    for (var line in lines) {
+        push(out, pad + prefix + line);
+    }
+    return out;
+}
+print(format(">>"));
+print(format(">>", 4));
+print(format(">>", 4, "first", "second"));
+
+// 4. Spread in function call (single spread)
+fn add3(a, b, c) {
+    return a + b + c;
+}
+var nums = [10, 20, 30];
+print(add3(...nums));
+
+// 5. Mixed spread in function call
+print(add3(1, ...[2, 3]));
+print(add3(...[1, 2], 3));
+print(add3(1, ...[2], 3));
+
+// 6. Spread with varargs
+print(to_list(...nums));
+print(to_list(1, 2, ...nums, 40));
+
+// 7. Spread in array literals
+var base = [2, 3];
+var combined = [1, ...base, 4, ...[5, 6], 7];
+print(combined);
+print([...[]]);
+print([...[99]]);
+
+// 8. Anonymous function with varargs
+var joiner = fn(sep, ...words) {
+    return join(words, sep);
+};
+print(joiner("-", "a", "b", "c"));
+print(joiner("/", ...["x", "y", "z"]));
+
+// 9. Tail-call optimization with varargs
+fn tail_sum(acc, ...rest) {
+    if (len(rest) == 0) {
+        return acc;
+    }
+    var first = rest[0];
+    return tail_sum(acc + first, ...slice(rest, 1, len(rest)));
+}
+print(tail_sum(0, 1, 2, 3, 4, 5));
+
+// 10. Deep tail recursion with varargs (reusing call frame)
+fn count_down(n, ...rest) {
+    if (n <= 0) {
+        return rest[0];
+    }
+    return count_down(n - 1, rest[0] + 1);
+}
+print(count_down(1000, 0));

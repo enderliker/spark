@@ -40,6 +40,8 @@ typedef struct {
 typedef struct ObjFunction {
     Obj obj;
     int arity;
+    int min_arity;
+    bool is_varargs;
     int upvalue_count;
     Chunk chunk;
     ObjString *name;

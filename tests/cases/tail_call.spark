@@ -1,0 +1,44 @@
+fn count(n, acc) {
+    if (n == 0) {
+        return acc;
+    }
+    return count(n - 1, acc + 1);
+}
+print(count(100000, 0));
+
+fn even(n) {
+    if (n == 0) {
+        return true;
+    }
+    return odd(n - 1);
+}
+
+fn odd(n) {
+    if (n == 0) {
+        return false;
+    }
+    return even(n - 1);
+}
+
+print(even(100001));
+print(even(100000));
+
+fn sum(n, acc) {
+    return n <= 0 ? acc : sum(n - 1, acc + n);
+}
+print(sum(1000, 0));
+
+fn make_closures(n, acc) {
+    var x = n;
+    var get_x = fn() { return x; };
+    push(acc, get_x);
+    if (n <= 0) {
+        return acc;
+    }
+    return make_closures(n - 1, acc);
+}
+var list = make_closures(3, []);
+print(list[0]());
+print(list[1]());
+print(list[2]());
+print(list[3]());

@@ -88,6 +88,8 @@ print(9223372036854775807 + 1);    //  9.22337203685478e+18  (promoted to a floa
 - Literals can be decimal (`42`, `3.5`, `1e3`), hexadecimal (`0xff`), binary (`0b1010`)
   or octal (`0o17`). Underscores may separate digits (`1_000_000`, `0xFF_FF`, `1e1_0`);
   a separator must sit between two digits.
+- The global constant `nan` represents IEEE 754 NaN (Not a Number). Following IEEE 754,
+  `nan == nan` is `false`. Use the native `is_nan(x)` to test if a numeric value is NaN.
 
 Arrays and maps can hold any value, including other arrays and functions. Functions,
 arrays and maps are compared by identity; strings by content. Integers use the same
@@ -312,8 +314,18 @@ print(counter(5), counter(3));   // 5 8
 - Functions are values: they can be stored in variables, passed as arguments and
   returned.
 - A function without `return` returns `nil`.
-- The number of arguments must exactly match the arity; otherwise it is a runtime
-  error.
+- **Default parameters**: `fn f(a, b = 10)` allows omitting trailing arguments; default
+  expressions are evaluated per call and may reference earlier parameters. Parameters
+  without defaults cannot follow a parameter with a default value.
+- **Varargs**: `fn f(first, ...rest)` collects any extra arguments into an array. The
+  varargs parameter `...name` must be the last parameter and cannot specify a default
+  value.
+- **Spread operator (`...`)**: `f(...args)` or `f(1, ...args, 2)` unpacks an array into
+  function arguments. Spreading a non-array value raises a `TypeError`.
+- **Tail-call optimization (TCO)**: Calls in tail position (`return f(...);` or ternary
+  branches `return cond ? f() : g();`) reuse the current call frame. Tail recursion
+  operates in $O(1)$ stack frames, allowing arbitrary recursion depth without stack
+  overflow.
 - Closures capture **variables** by reference, so two closures created in the same
   call share the state of the captured variable.
 - The variable of a `for (var i = ...)` is a single one for the whole loop. Variables
@@ -341,6 +353,7 @@ print(a, pop(a));
 
 - Indexes must be non-negative integers within range.
 - Arrays are passed by reference (they are objects).
+- Array literals support the spread operator: `[1, ...items, 4]` unpacks array elements.
 - `len` counts elements; on strings it counts UTF-8 characters.
 - The array helpers `contains`, `index_of`, `insert`, `remove`, `reverse`, `fill`,
   `slice`, `sort`, `sort_by`, `map`, `filter`, `reduce` and `each` are documented in
@@ -405,6 +418,7 @@ print(upper("hola"), trim("  x  "));
 | `int(x)` | Integer from a number or numeric string; floats truncate toward zero. |
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
+| `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
 | `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"` or `"function"`. |
 | `clock()` | Monotonic clock seconds, for measuring. |
 | `assert(cond, message?)` | Runtime error if `cond` is falsey. |
@@ -524,15 +538,16 @@ Interpreter exit codes:
 ## 12. REPL
 
 With no arguments, `spark` opens a REPL. Every expression statement prints its value,
-global variables persist and errors do not close the session. Type `salir`, `exit` or
-`quit` (or Ctrl+D) to finish. Lines accumulate while there are unclosed braces, so
-multi-line functions can be defined.
+global variables persist and errors do not close the session. The special variable `_`
+automatically holds the result of the last evaluated expression statement. Type
+`salir`, `exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
+unclosed braces, so multi-line functions can be defined.
 
 ## 13. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.
 - 256 local variables per function.
-- 256 call frames (deeper recursion produces a controlled error).
+- 256 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).
 - 16-bit constant index per function.
-- No modules, exceptions, threads or file I/O.
+- No modules, exceptions or threads.

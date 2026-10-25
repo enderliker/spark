@@ -115,7 +115,13 @@ const char *opcode_name(OpCode op)
     case OP_JUMP_IF_NOT_LESS_LOCAL_CONST: return "JUMP_IF_NOT_LESS_LC";
     case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: return "JUMP_IF_NOT_GREATER_LC";
     case OP_LOOP: return "LOOP";
+    case OP_DEFAULT_ARG: return "DEFAULT_ARG";
+    case OP_ARRAY_PUSH: return "ARRAY_PUSH";
+    case OP_ARRAY_EXTEND: return "ARRAY_EXTEND";
     case OP_CALL: return "CALL";
+    case OP_CALL_SPREAD: return "CALL_SPREAD";
+    case OP_TAIL_CALL: return "TAIL_CALL";
+    case OP_TAIL_CALL_SPREAD: return "TAIL_CALL_SPREAD";
     case OP_CLOSURE: return "CLOSURE";
     case OP_CLOSE_UPVALUE: return "CLOSE_UPVALUE";
     case OP_RETURN: return "RETURN";
@@ -201,6 +207,7 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
     case OP_GET_UPVALUE:
     case OP_SET_UPVALUE:
     case OP_CALL:
+    case OP_TAIL_CALL:
     case OP_RETURN_LOCAL:
         return byte_instruction(chunk, opcode_name(op), offset);
     case OP_ADD_LOCAL_CONST:
@@ -235,6 +242,12 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         return jump_instruction(chunk, opcode_name(op), 1, offset);
     case OP_LOOP:
         return jump_instruction(chunk, opcode_name(op), -1, offset);
+    case OP_DEFAULT_ARG: {
+        int slot = chunk->code[offset + 1];
+        int jump = (chunk->code[offset + 2] << 8) | chunk->code[offset + 3];
+        printf("%-18s %4d -> %d\n", opcode_name(op), slot, offset + 4 + jump);
+        return offset + 4;
+    }
     case OP_ARRAY:
     case OP_MAP: {
         int count = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];

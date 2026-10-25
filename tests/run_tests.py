@@ -113,6 +113,7 @@ def test_repl() -> None:
     print("\nREPL")
     session = (
         "1 + 2;\n"
+        "_ * 3;\n"
         "var x = 5;\n"
         "x * 2;\n"
         "fn doble(n) {\n"
@@ -125,6 +126,7 @@ def test_repl() -> None:
     completed = run([], stdin=session)
     checks = {
         "prints the result of an expression": "spark> 3" in completed.stdout,
+        "captures last expression in _": "spark> 9" in completed.stdout,
         "keeps global variables": "spark> 10" in completed.stdout,
         "accepts multi-line blocks": "spark> 42" in completed.stdout,
         "runs print": "done" in completed.stdout,

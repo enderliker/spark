@@ -1,0 +1,13 @@
+print(nan);
+print(is_nan(nan));
+print(nan == nan);
+print(nan != nan);
+print(nan < 10);
+print(10 < nan);
+print(nan == 0);
+print(is_nan(float("nan")));
+print(is_nan(42));
+print(is_nan(42.5));
+print(is_nan("nan"));
+print(is_nan(nil));
+print(is_nan(true));

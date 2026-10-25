@@ -450,10 +450,10 @@ document why it is deferred.
 ### T34 - Tail-call optimization
 **Description:** Reuse the frame for `return f(args);` when the call is in tail position.
 **Acceptance criteria:**
-- [ ] Deep tail recursion (e.g. 1e6) does not exhaust frames.
-- [ ] Non-tail recursion still errors at the frame limit.
+- [x] Deep tail recursion (e.g. 1e6) does not exhaust frames.
+- [x] Non-tail recursion still errors at the frame limit.
 **Verification:**
-- [ ] Fixture; suite; sanitizers; docs note.
+- [x] Fixture; suite; sanitizers; docs note.
 **Dependencies:** None.
 **Files:** `src/compiler.c`, `src/vm.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M.
@@ -462,10 +462,10 @@ document why it is deferred.
 **Description:** `fn f(a, b = 10)` - missing trailing args use the default expression
 (evaluated per call).
 **Acceptance criteria:**
-- [ ] Calling with fewer args works; calling with too many still errors.
-- [ ] Defaults can reference earlier parameters.
+- [x] Calling with fewer args works; calling with too many still errors.
+- [x] Defaults can reference earlier parameters.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** None.
 **Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -473,10 +473,10 @@ document why it is deferred.
 ### T36 - Varargs + spread (`...`)
 **Description:** `fn f(...rest)` collects extra args into an array; `f(...array)` spreads.
 **Acceptance criteria:**
-- [ ] Varargs and spread can coexist with fixed params.
-- [ ] Arity checks account for varargs.
+- [x] Varargs and spread can coexist with fixed params.
+- [x] Arity checks account for varargs.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** T35 (shares parser/compiler edits).
 **Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -484,10 +484,9 @@ document why it is deferred.
 ### T37 - Named arguments (optional)
 **Description:** `f(a: 1, b: 2)` with compile-time checks against parameter names.
 **Acceptance criteria:**
-- [ ] Mixing positional and named is allowed only in the documented order.
-- [ ] Unknown/duplicate names are compile errors.
+- [x] Deferred per scope note in favor of map option arguments (`f({"a": 1})`), preserving runtime performance and simple stack calling convention.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Decision documented.
 **Dependencies:** T35.
 **Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
 **Scope:** M (optional - may be deferred).
@@ -495,9 +494,9 @@ document why it is deferred.
 ### T38 - REPL `_` last value
 **Description:** Expose the previous expression result as `_` in the REPL.
 **Acceptance criteria:**
-- [ ] `_` is set after each expression statement; documented.
+- [x] `_` is set after each expression statement; documented.
 **Verification:**
-- [ ] REPL session in `tests/run_tests.py`; docs.
+- [x] REPL session in `tests/run_tests.py`; docs.
 **Dependencies:** None.
 **Files:** `src/main.c`, `src/vm.c`, `tests/run_tests.py`, `docs/language.md`.
 **Scope:** S.
@@ -506,15 +505,15 @@ document why it is deferred.
 **Description:** `is_nan(x)`, documented NaN equality, and any equality edge cases
 found while adding integers.
 **Acceptance criteria:**
-- [ ] NaN behavior documented and tested; `is_nan` available.
+- [x] NaN behavior documented and tested; `is_nan` available.
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** T19.
 **Files:** `src/object.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
 ## Checkpoint: Phase 5
-- [ ] All tests pass, build clean, docs updated
+- [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 6
 
 ---

@@ -62,7 +62,13 @@ typedef enum {
     OP_JUMP_IF_NOT_LESS_LOCAL_CONST,    /* u8 slot, u16 const, u16 offset */
     OP_JUMP_IF_NOT_GREATER_LOCAL_CONST, /* u8 slot, u16 const, u16 offset */
     OP_LOOP,          /* u16: backward offset */
+    OP_DEFAULT_ARG,   /* u8: slot, u16: offset to skip default expr if provided */
+    OP_ARRAY_PUSH,    /* appends top of stack to array below it, pops value */
+    OP_ARRAY_EXTEND,  /* unpacks array on top of stack into array below it, pops src */
     OP_CALL,          /* u8: arguments */
+    OP_CALL_SPREAD,   /* arguments are in the array on top of stack */
+    OP_TAIL_CALL,     /* u8: arguments */
+    OP_TAIL_CALL_SPREAD, /* arguments are in the array on top of stack */
     OP_CLOSURE,       /* u16 constant + (is_local, index) pairs */
     OP_CLOSE_UPVALUE,
     OP_RETURN,

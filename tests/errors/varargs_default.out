@@ -1,0 +1,2 @@
+exit: 65
+stderr: a varargs parameter cannot have a default value

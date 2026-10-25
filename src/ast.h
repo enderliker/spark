@@ -18,6 +18,7 @@ typedef struct {
 
 typedef struct ExprList {
     Expr *expr;
+    bool is_spread;
     struct ExprList *next;
 } ExprList;
 
@@ -28,6 +29,8 @@ typedef struct StmtList {
 
 typedef struct ParamList {
     Text name;
+    Expr *default_value; /* NULL if no default */
+    bool is_varargs;
     struct ParamList *next;
 } ParamList;
 
