@@ -12,6 +12,7 @@
 
 #define MAX_REGEX_INST 1024
 #define MAX_THREADS 1024
+#define MAX_NODES 1024
 
 typedef enum {
     RE_CHAR,
@@ -52,10 +53,39 @@ typedef struct {
     bool anchored;
 } ReProgram;
 
+/* ------------------------------------------------------------------ */
+/* AST Representation                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    AST_EMPTY,
+    AST_CHAR,
+    AST_ANY,
+    AST_CLASS,
+    AST_BOL,
+    AST_EOL,
+    AST_CAT,
+    AST_ALT,
+    AST_STAR,
+    AST_PLUS,
+    AST_OPT
+} AstType;
+
+typedef struct AstNode AstNode;
+struct AstNode {
+    AstType type;
+    char c;
+    CharClass cls;
+    AstNode *left;
+    AstNode *right;
+};
+
 typedef struct {
     const char *pattern;
     int index;
     int length;
+    AstNode arena[MAX_NODES];
+    int node_count;
     ReProgram prog;
     char *error;
     size_t error_size;
@@ -68,16 +98,16 @@ static void re_error(ReCompiler *c, const char *msg)
     }
 }
 
-static int emit(ReCompiler *c, ReOpcode op)
+static AstNode *alloc_node(ReCompiler *c, AstType type)
 {
-    if (c->prog.count >= MAX_REGEX_INST - 1) {
+    if (c->node_count >= MAX_NODES) {
         re_error(c, "pattern too complex");
-        return -1;
+        return NULL;
     }
-    int idx = c->prog.count++;
-    memset(&c->prog.code[idx], 0, sizeof(ReInst));
-    c->prog.code[idx].op = op;
-    return idx;
+    AstNode *n = &c->arena[c->node_count++];
+    memset(n, 0, sizeof(AstNode));
+    n->type = type;
+    return n;
 }
 
 static char re_peek(ReCompiler *c)
@@ -91,9 +121,6 @@ static char re_advance(ReCompiler *c)
     if (c->index >= c->length) return '\0';
     return c->pattern[c->index++];
 }
-
-/* Forward declarations */
-static int compile_expr(ReCompiler *c);
 
 static void add_shorthand(CharClass *cls, char type)
 {
@@ -113,37 +140,45 @@ static void add_shorthand(CharClass *cls, char type)
     }
 }
 
-static int compile_atom(ReCompiler *c)
+/* Forward declarations */
+static AstNode *parse_expr(ReCompiler *c);
+
+static AstNode *parse_atom(ReCompiler *c)
 {
     char ch = re_peek(c);
-    if (ch == '\0' || ch == '|' || ch == ')' || ch == '*' || ch == '+' || ch == '?') {
-        return -1;
+    if (ch == '\0' || ch == '|' || ch == ')') {
+        return NULL;
+    }
+
+    if (ch == '*' || ch == '+' || ch == '?') {
+        re_error(c, "unexpected quantifier");
+        return NULL;
     }
 
     if (ch == '(') {
         re_advance(c);
-        int start = compile_expr(c);
+        AstNode *inner = parse_expr(c);
         if (re_peek(c) != ')') {
             re_error(c, "unclosed parenthesis");
-            return -1;
+            return NULL;
         }
         re_advance(c);
-        return start;
+        return inner ? inner : alloc_node(c, AST_EMPTY);
     }
 
     if (ch == '.') {
         re_advance(c);
-        return emit(c, RE_ANY);
+        return alloc_node(c, AST_ANY);
     }
 
     if (ch == '^') {
         re_advance(c);
-        return emit(c, RE_BOL);
+        return alloc_node(c, AST_BOL);
     }
 
     if (ch == '$') {
         re_advance(c);
-        return emit(c, RE_EOL);
+        return alloc_node(c, AST_EOL);
     }
 
     if (ch == '[') {
@@ -162,6 +197,10 @@ static int compile_atom(ReCompiler *c)
             first = false;
             char cur = re_advance(c);
             if (cur == '\\') {
+                if (c->index >= c->length) {
+                    re_error(c, "unclosed character class");
+                    return NULL;
+                }
                 char esc = re_advance(c);
                 if (esc == 'd' || esc == 'D' || esc == 'w' || esc == 'W' || esc == 's' || esc == 'S') {
                     add_shorthand(&cls, esc);
@@ -172,6 +211,16 @@ static int compile_atom(ReCompiler *c)
             } else if (re_peek(c) == '-' && c->index + 1 < c->length && c->pattern[c->index + 1] != ']') {
                 re_advance(c); /* consume '-' */
                 char end_char = re_advance(c);
+                if (end_char == '\\' && c->index < c->length) {
+                    end_char = re_advance(c);
+                    if (end_char == 'n') end_char = '\n';
+                    else if (end_char == 't') end_char = '\t';
+                    else if (end_char == 'r') end_char = '\r';
+                }
+                if ((unsigned char)cur > (unsigned char)end_char) {
+                    re_error(c, "invalid range in character class");
+                    return NULL;
+                }
                 for (int code = (unsigned char)cur; code <= (unsigned char)end_char; code++) {
                     class_set(&cls, (unsigned char)code);
                 }
@@ -182,7 +231,7 @@ static int compile_atom(ReCompiler *c)
 
         if (re_peek(c) != ']') {
             re_error(c, "unclosed character class");
-            return -1;
+            return NULL;
         }
         re_advance(c);
 
@@ -194,158 +243,237 @@ static int compile_atom(ReCompiler *c)
             cls = neg;
         }
 
-        int idx = emit(c, RE_CLASS);
-        if (idx >= 0) c->prog.code[idx].cls = cls;
-        return idx;
+        AstNode *node = alloc_node(c, AST_CLASS);
+        if (node) node->cls = cls;
+        return node;
     }
 
     if (ch == '\\') {
         re_advance(c);
+        if (c->index >= c->length) {
+            re_error(c, "trailing backslash");
+            return NULL;
+        }
         char esc = re_advance(c);
         if (esc == 'd' || esc == 'D' || esc == 'w' || esc == 'W' || esc == 's' || esc == 'S') {
             CharClass cls;
             memset(&cls, 0, sizeof(cls));
             add_shorthand(&cls, esc);
-            int idx = emit(c, RE_CLASS);
-            if (idx >= 0) c->prog.code[idx].cls = cls;
-            return idx;
+            AstNode *node = alloc_node(c, AST_CLASS);
+            if (node) node->cls = cls;
+            return node;
         }
         char literal = esc;
         if (esc == 'n') literal = '\n';
         else if (esc == 't') literal = '\t';
         else if (esc == 'r') literal = '\r';
-        int idx = emit(c, RE_CHAR);
-        if (idx >= 0) c->prog.code[idx].c = literal;
-        return idx;
+        AstNode *node = alloc_node(c, AST_CHAR);
+        if (node) node->c = literal;
+        return node;
     }
 
     re_advance(c);
-    int idx = emit(c, RE_CHAR);
-    if (idx >= 0) c->prog.code[idx].c = ch;
-    return idx;
+    AstNode *node = alloc_node(c, AST_CHAR);
+    if (node) node->c = ch;
+    return node;
 }
 
-static int compile_piece(ReCompiler *c)
+static AstNode *parse_piece(ReCompiler *c)
 {
-    int atom_start = c->prog.count;
-    int start = compile_atom(c);
-    if (start < 0) return -1;
+    AstNode *atom = parse_atom(c);
+    if (!atom) return NULL;
 
     char q = re_peek(c);
     if (q == '*' || q == '+' || q == '?') {
         re_advance(c);
-        int atom_end = c->prog.count;
+        AstType type = (q == '*') ? AST_STAR : ((q == '+') ? AST_PLUS : AST_OPT);
+        AstNode *node = alloc_node(c, type);
+        if (node) node->left = atom;
+        return node;
+    }
+    return atom;
+}
 
-        if (q == '*') {
-            /* split L_atom, L_exit */
-            /* code for atom */
-            /* jump L_split */
-            /* L_exit */
-            int split_idx = emit(c, RE_SPLIT);
-            int jump_idx = emit(c, RE_JUMP);
-            int exit_idx = c->prog.count;
-
-            /* Shift atom to sit between split and jump */
-            ReInst atom_copy[MAX_REGEX_INST];
-            int atom_len = atom_end - atom_start;
-            memcpy(atom_copy, &c->prog.code[atom_start], sizeof(ReInst) * (size_t)atom_len);
-
-            c->prog.code[atom_start].op = RE_SPLIT;
-            c->prog.code[atom_start].target1 = atom_start + 1;
-            c->prog.code[atom_start].target2 = exit_idx;
-
-            memcpy(&c->prog.code[atom_start + 1], atom_copy, sizeof(ReInst) * (size_t)atom_len);
-
-            c->prog.code[atom_start + 1 + atom_len].op = RE_JUMP;
-            c->prog.code[atom_start + 1 + atom_len].target1 = atom_start;
-
-            (void)split_idx;
-            (void)jump_idx;
-            return atom_start;
-        } else if (q == '+') {
-            /* atom */
-            /* split atom_start, exit */
-            int split_idx = emit(c, RE_SPLIT);
-            c->prog.code[split_idx].target1 = atom_start;
-            c->prog.code[split_idx].target2 = c->prog.count;
-            return atom_start;
-        } else if (q == '?') {
-            /* split atom, exit */
-            int exit_idx = c->prog.count + 1;
-            ReInst atom_copy[MAX_REGEX_INST];
-            int atom_len = atom_end - atom_start;
-            memcpy(atom_copy, &c->prog.code[atom_start], sizeof(ReInst) * (size_t)atom_len);
-
-            emit(c, RE_SPLIT); /* space for split */
-            c->prog.code[atom_start].op = RE_SPLIT;
-            c->prog.code[atom_start].target1 = atom_start + 1;
-            c->prog.code[atom_start].target2 = exit_idx;
-
-            memcpy(&c->prog.code[atom_start + 1], atom_copy, sizeof(ReInst) * (size_t)atom_len);
-            return atom_start;
+static AstNode *parse_branch(ReCompiler *c)
+{
+    AstNode *root = NULL;
+    while (re_peek(c) != '\0' && re_peek(c) != '|' && re_peek(c) != ')') {
+        AstNode *piece = parse_piece(c);
+        if (!piece) break;
+        if (!root) {
+            root = piece;
+        } else {
+            AstNode *cat = alloc_node(c, AST_CAT);
+            if (cat) {
+                cat->left = root;
+                cat->right = piece;
+                root = cat;
+            }
         }
     }
-    return start;
+    return root ? root : alloc_node(c, AST_EMPTY);
 }
 
-static int compile_branch(ReCompiler *c)
+static AstNode *parse_expr(ReCompiler *c)
 {
-    int start = -1;
-    while (re_peek(c) != '\0' && re_peek(c) != '|' && re_peek(c) != ')') {
-        int piece = compile_piece(c);
-        if (piece < 0) break;
-        if (start < 0) start = piece;
-    }
-    return start;
-}
-
-static int compile_expr(ReCompiler *c)
-{
-    int left = compile_branch(c);
+    AstNode *left = parse_branch(c);
     if (re_peek(c) == '|') {
         re_advance(c);
-        int jump_left = emit(c, RE_JUMP);
-        int right = compile_expr(c);
-
-        int exit_idx = c->prog.count;
-        c->prog.code[jump_left].target1 = exit_idx;
-
-        /* Move left & jump into a split */
-        int left_len = jump_left - left + 1;
-        ReInst copy[MAX_REGEX_INST];
-        memcpy(copy, &c->prog.code[left], sizeof(ReInst) * (size_t)left_len);
-
-        emit(c, RE_SPLIT);
-        c->prog.code[left].op = RE_SPLIT;
-        c->prog.code[left].target1 = left + 1;
-        c->prog.code[left].target2 = right + 1;
-
-        memcpy(&c->prog.code[left + 1], copy, sizeof(ReInst) * (size_t)left_len);
-        (void)right;
+        AstNode *right = parse_expr(c);
+        AstNode *alt = alloc_node(c, AST_ALT);
+        if (alt) {
+            alt->left = left;
+            alt->right = right;
+            return alt;
+        }
     }
     return left;
 }
 
+/* ------------------------------------------------------------------ */
+/* NFA Bytecode Generator                                             */
+/* ------------------------------------------------------------------ */
+
+static int emit_inst(ReCompiler *c, ReOpcode op)
+{
+    if (c->prog.count >= MAX_REGEX_INST - 1) {
+        re_error(c, "pattern too complex");
+        return -1;
+    }
+    int idx = c->prog.count++;
+    memset(&c->prog.code[idx], 0, sizeof(ReInst));
+    c->prog.code[idx].op = op;
+    return idx;
+}
+
+static void emit_node(ReCompiler *c, AstNode *n)
+{
+    if (!n || n->type == AST_EMPTY) {
+        return;
+    }
+
+    switch (n->type) {
+    case AST_CHAR: {
+        int idx = emit_inst(c, RE_CHAR);
+        if (idx >= 0) c->prog.code[idx].c = n->c;
+        break;
+    }
+    case AST_ANY:
+        emit_inst(c, RE_ANY);
+        break;
+    case AST_CLASS: {
+        int idx = emit_inst(c, RE_CLASS);
+        if (idx >= 0) c->prog.code[idx].cls = n->cls;
+        break;
+    }
+    case AST_BOL:
+        emit_inst(c, RE_BOL);
+        break;
+    case AST_EOL:
+        emit_inst(c, RE_EOL);
+        break;
+    case AST_CAT:
+        emit_node(c, n->left);
+        emit_node(c, n->right);
+        break;
+    case AST_ALT: {
+        int split = emit_inst(c, RE_SPLIT);
+        int left_start = c->prog.count;
+        emit_node(c, n->left);
+        int jump = emit_inst(c, RE_JUMP);
+        int right_start = c->prog.count;
+        emit_node(c, n->right);
+        int end = c->prog.count;
+
+        if (split >= 0) {
+            c->prog.code[split].target1 = left_start;
+            c->prog.code[split].target2 = right_start;
+        }
+        if (jump >= 0) {
+            c->prog.code[jump].target1 = end;
+        }
+        break;
+    }
+    case AST_STAR: {
+        int split = emit_inst(c, RE_SPLIT);
+        int start = c->prog.count;
+        emit_node(c, n->left);
+        int jump = emit_inst(c, RE_JUMP);
+        int end = c->prog.count;
+
+        if (split >= 0) {
+            c->prog.code[split].target1 = start;
+            c->prog.code[split].target2 = end;
+        }
+        if (jump >= 0) {
+            c->prog.code[jump].target1 = split;
+        }
+        break;
+    }
+    case AST_PLUS: {
+        int start = c->prog.count;
+        emit_node(c, n->left);
+        int split = emit_inst(c, RE_SPLIT);
+        if (split >= 0) {
+            c->prog.code[split].target1 = start;
+            c->prog.code[split].target2 = c->prog.count;
+        }
+        break;
+    }
+    case AST_OPT: {
+        int split = emit_inst(c, RE_SPLIT);
+        int start = c->prog.count;
+        emit_node(c, n->left);
+        int end = c->prog.count;
+
+        if (split >= 0) {
+            c->prog.code[split].target1 = start;
+            c->prog.code[split].target2 = end;
+        }
+        break;
+    }
+    case AST_EMPTY:
+        break;
+    }
+}
+
 static bool re_compile(const char *pattern, ReProgram *out, char *error, size_t error_size)
 {
-    ReCompiler compiler;
-    compiler.pattern = pattern;
-    compiler.index = 0;
-    compiler.length = (int)strlen(pattern);
-    compiler.prog.count = 0;
-    compiler.prog.anchored = (pattern[0] == '^');
-    compiler.error = error;
-    compiler.error_size = error_size;
+    ReCompiler *compiler = malloc(sizeof(ReCompiler));
+    if (!compiler) {
+        if (error && error_size > 0) snprintf(error, error_size, "out of memory");
+        return false;
+    }
+    compiler->pattern = pattern;
+    compiler->index = 0;
+    compiler->length = (int)strlen(pattern);
+    compiler->node_count = 0;
+    compiler->prog.count = 0;
+    compiler->prog.anchored = (pattern[0] == '^');
+    compiler->error = error;
+    compiler->error_size = error_size;
     if (error && error_size > 0) error[0] = '\0';
 
-    compile_expr(&compiler);
-    emit(&compiler, RE_MATCH);
+    AstNode *ast = parse_expr(compiler);
+    if (compiler->index < compiler->length && (!compiler->error || compiler->error[0] == '\0')) {
+        re_error(compiler, "unexpected trailing character");
+    }
 
-    if (compiler.error && compiler.error[0] != '\0') {
+    if (compiler->error && compiler->error[0] != '\0') {
+        free(compiler);
         return false;
     }
 
-    *out = compiler.prog;
+    emit_node(compiler, ast);
+    emit_inst(compiler, RE_MATCH);
+
+    if (compiler->error && compiler->error[0] != '\0') {
+        free(compiler);
+        return false;
+    }
+
+    *out = compiler->prog;
+    free(compiler);
     return true;
 }
 
@@ -482,6 +610,7 @@ ObjArray *regex_find_all(const char *pattern, const char *text, char *error, siz
         return NULL;
     }
 
+    mem_pause_gc();
     ObjArray *results = object_array();
     int len = (int)strlen(text);
     int pos = 0;
@@ -494,8 +623,13 @@ ObjArray *regex_find_all(const char *pattern, const char *text, char *error, siz
         int match_len = mend - mstart;
         ObjString *s = object_string(text + mstart, match_len);
         array_push(results, OBJ_VAL(s));
-        pos = mend > mstart ? mend : mstart + 1;
+        if (mend > mstart) {
+            pos = mend;
+        } else {
+            pos = mstart + 1;
+        }
     }
+    mem_resume_gc();
     return results;
 }
 
@@ -525,7 +659,16 @@ ObjString *regex_replace(const char *pattern, const char *replacement, const cha
             buf_append(&out, text + pos, (size_t)(mstart - pos));
         }
         buf_append(&out, replacement, (size_t)repl_len);
-        pos = mend > mstart ? mend : mstart + 1;
+        if (mend > mstart) {
+            pos = mend;
+        } else {
+            if (mstart < len) {
+                buf_append(&out, text + mstart, 1);
+                pos = mstart + 1;
+            } else {
+                break;
+            }
+        }
     }
 
     ObjString *result = object_string(out.data ? out.data : "", (int)out.len);

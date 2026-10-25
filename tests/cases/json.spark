@@ -16,4 +16,7 @@ var roundtrip = from_json(to_json({"a": 1, "b": [true, false]}));
 print(roundtrip["a"]);
 print(roundtrip["b"][0], roundtrip["b"][1]);
 
+var emoji = from_json("\"\\uD83D\\uDE00\"");
+print(emoji);
+
 print("json ok");

@@ -1704,7 +1704,11 @@ static Value native_env(int arg_count, Value *args)
                              value_type_name(args[0]));
             return NIL_VAL;
         }
-        const char *val = getenv(AS_STRING(args[0])->chars);
+        ObjString *name_str = AS_STRING(args[0]);
+        if (strlen(name_str->chars) != (size_t)name_str->length) {
+            return NIL_VAL;
+        }
+        const char *val = getenv(name_str->chars);
         if (!val) {
             return NIL_VAL;
         }
@@ -1765,6 +1769,15 @@ void vm_set_args(int argc, char **argv)
     pop();
 }
 
+static inline bool string_has_null(ObjString *s, const char *fn_name)
+{
+    if (strlen(s->chars) != (size_t)s->length) {
+        vm_runtime_error(ERROR_VALUE, "'%s' argument cannot contain null bytes", fn_name);
+        return true;
+    }
+    return false;
+}
+
 static Value native_file_exists(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -1773,7 +1786,11 @@ static Value native_file_exists(int arg_count, Value *args)
                          value_type_name(args[0]));
         return NIL_VAL;
     }
-    return BOOL_VAL(access(AS_STRING(args[0])->chars, F_OK) == 0);
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "file_exists")) {
+        return NIL_VAL;
+    }
+    return BOOL_VAL(access(path_str->chars, F_OK) == 0);
 }
 
 static Value native_read_file(int arg_count, Value *args)
@@ -1784,7 +1801,11 @@ static Value native_read_file(int arg_count, Value *args)
                          value_type_name(args[0]));
         return NIL_VAL;
     }
-    const char *path = AS_STRING(args[0])->chars;
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "read_file")) {
+        return NIL_VAL;
+    }
+    const char *path = path_str->chars;
     FILE *file = fopen(path, "rb");
     if (!file) {
         vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for reading", path);
@@ -1830,7 +1851,11 @@ static Value native_write_file(int arg_count, Value *args)
                          value_type_name(args[1]));
         return NIL_VAL;
     }
-    const char *path = AS_STRING(args[0])->chars;
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "write_file")) {
+        return NIL_VAL;
+    }
+    const char *path = path_str->chars;
     ObjString *data = AS_STRING(args[1]);
     FILE *file = fopen(path, "wb");
     if (!file) {
@@ -1863,7 +1888,11 @@ static Value native_append_file(int arg_count, Value *args)
                          value_type_name(args[1]));
         return NIL_VAL;
     }
-    const char *path = AS_STRING(args[0])->chars;
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "append_file")) {
+        return NIL_VAL;
+    }
+    const char *path = path_str->chars;
     ObjString *data = AS_STRING(args[1]);
     FILE *file = fopen(path, "ab");
     if (!file) {
@@ -1894,6 +1923,10 @@ static Value native_open(int arg_count, Value *args)
                          value_type_name(args[0]));
         return NIL_VAL;
     }
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "open")) {
+        return NIL_VAL;
+    }
     const char *mode = "r";
     if (arg_count == 2) {
         if (!is_obj_type(args[1], OBJ_STRING)) {
@@ -1901,17 +1934,21 @@ static Value native_open(int arg_count, Value *args)
                              value_type_name(args[1]));
             return NIL_VAL;
         }
-        mode = AS_STRING(args[1])->chars;
+        ObjString *mode_str = AS_STRING(args[1]);
+        if (string_has_null(mode_str, "open")) {
+            return NIL_VAL;
+        }
+        mode = mode_str->chars;
     }
 
-    FILE *file = fopen(AS_STRING(args[0])->chars, mode);
+    FILE *file = fopen(path_str->chars, mode);
     if (!file) {
         vm_runtime_error(ERROR_RUNTIME, "could not open '%s' with mode '%s'",
-                         AS_STRING(args[0])->chars, mode);
+                         path_str->chars, mode);
         return NIL_VAL;
     }
 
-    ObjFile *obj_file = object_file(file, AS_STRING(args[0]));
+    ObjFile *obj_file = object_file(file, path_str);
     return OBJ_VAL(obj_file);
 }
 
@@ -1969,8 +2006,8 @@ static Value native_read(int arg_count, Value *args)
         if (!integer_argument(args[1], "bytes", "read", &bytes)) {
             return NIL_VAL;
         }
-        if (bytes < 0) {
-            vm_runtime_error(ERROR_VALUE, "'read' byte count cannot be negative");
+        if (bytes < 0 || bytes > 0x3fffffff) {
+            vm_runtime_error(ERROR_VALUE, "'read' byte count out of valid range");
             return NIL_VAL;
         }
         if (bytes == 0) {
@@ -1983,6 +2020,11 @@ static Value native_read(int arg_count, Value *args)
             return NIL_VAL;
         }
         size_t read_bytes = fread(buf, 1, (size_t)bytes, file->stream);
+        if (ferror(file->stream)) {
+            free(buf);
+            vm_runtime_error(ERROR_RUNTIME, "error reading from file");
+            return NIL_VAL;
+        }
         buf[read_bytes] = '\0';
         ObjString *res = object_string(buf, (int)read_bytes);
         free(buf);
@@ -2000,6 +2042,11 @@ static Value native_read(int arg_count, Value *args)
             vm_runtime_error(ERROR_RUNTIME, "file too large in 'read'");
             return NIL_VAL;
         }
+    }
+    if (ferror(file->stream)) {
+        buf_free(&contents);
+        vm_runtime_error(ERROR_RUNTIME, "error reading from file");
+        return NIL_VAL;
     }
     ObjString *res = object_string(contents.data ? contents.data : "", (int)contents.len);
     buf_free(&contents);

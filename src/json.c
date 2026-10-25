@@ -144,12 +144,15 @@ ObjString *json_encode(Value value, char *error, size_t error_size)
     buf_t out;
     buf_init(&out);
 
+    mem_pause_gc();
     if (!encode_value(value, &out, error, error_size, 0)) {
+        mem_resume_gc();
         buf_free(&out);
         return NULL;
     }
 
     ObjString *result = object_string(out.data ? out.data : "", (int)out.len);
+    mem_resume_gc();
     buf_free(&out);
     return result;
 }
@@ -281,6 +284,29 @@ static Value parse_string_value(JsonParser *p)
                         return NIL_VAL;
                     }
                 }
+                /* Handle UTF-16 surrogate pairs */
+                if (code >= 0xd800 && code <= 0xdbff) {
+                    if (p->index + 2 <= p->length && p->source[p->index] == '\\' && p->source[p->index + 1] == 'u') {
+                        json_advance(p); /* '\\' */
+                        json_advance(p); /* 'u' */
+                        uint32_t low = 0;
+                        for (int i = 0; i < 4; i++) {
+                            char h = json_advance(p);
+                            low <<= 4;
+                            if (h >= '0' && h <= '9') low |= (uint32_t)(h - '0');
+                            else if (h >= 'a' && h <= 'f') low |= (uint32_t)(h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') low |= (uint32_t)(h - 'A' + 10);
+                            else {
+                                buf_free(&buf);
+                                json_error(p, "invalid unicode surrogate escape in string");
+                                return NIL_VAL;
+                            }
+                        }
+                        if (low >= 0xdc00 && low <= 0xdfff) {
+                            code = 0x10000 + ((code - 0xd800) << 10) + (low - 0xdc00);
+                        }
+                    }
+                }
                 /* Encode UTF-8 */
                 if (code <= 0x7f) {
                     char ch = (char)code;
@@ -291,13 +317,21 @@ static Value parse_string_value(JsonParser *p)
                         (char)(0x80 | (code & 0x3f))
                     };
                     buf_append(&buf, chs, 2);
-                } else {
+                } else if (code <= 0xffff) {
                     char chs[3] = {
                         (char)(0xe0 | (code >> 12)),
                         (char)(0x80 | ((code >> 6) & 0x3f)),
                         (char)(0x80 | (code & 0x3f))
                     };
                     buf_append(&buf, chs, 3);
+                } else {
+                    char chs[4] = {
+                        (char)(0xf0 | (code >> 18)),
+                        (char)(0x80 | ((code >> 12) & 0x3f)),
+                        (char)(0x80 | ((code >> 6) & 0x3f)),
+                        (char)(0x80 | (code & 0x3f))
+                    };
+                    buf_append(&buf, chs, 4);
                 }
                 break;
             }
@@ -403,14 +437,11 @@ static Value parse_array_value(JsonParser *p)
         return NIL_VAL;
     }
 
-    /* Pause GC during JSON parsing to ensure newly allocated nested structures are never swept */
-    mem_pause_gc();
     ObjArray *arr = object_array();
 
     json_skip_whitespace(p);
     if (json_peek(p) == ']') {
         json_advance(p);
-        mem_resume_gc();
         return OBJ_VAL(arr);
     }
 
@@ -418,7 +449,6 @@ static Value parse_array_value(JsonParser *p)
         json_skip_whitespace(p);
         Value item = parse_value(p);
         if (json_has_error(p)) {
-            mem_resume_gc();
             return NIL_VAL;
         }
         array_push(arr, item);
@@ -427,7 +457,6 @@ static Value parse_array_value(JsonParser *p)
         char c = json_peek(p);
         if (c == ']') {
             json_advance(p);
-            mem_resume_gc();
             return OBJ_VAL(arr);
         }
         if (c == ',') {
@@ -435,7 +464,6 @@ static Value parse_array_value(JsonParser *p)
             continue;
         }
         json_error(p, "expected ',' or ']' in array");
-        mem_resume_gc();
         return NIL_VAL;
     }
 }
@@ -447,13 +475,11 @@ static Value parse_object_value(JsonParser *p)
         return NIL_VAL;
     }
 
-    mem_pause_gc();
     ObjMap *map = object_map();
 
     json_skip_whitespace(p);
     if (json_peek(p) == '}') {
         json_advance(p);
-        mem_resume_gc();
         return OBJ_VAL(map);
     }
 
@@ -461,20 +487,17 @@ static Value parse_object_value(JsonParser *p)
         json_skip_whitespace(p);
         if (json_peek(p) != '"') {
             json_error(p, "expected string key in object");
-            mem_resume_gc();
             return NIL_VAL;
         }
 
         Value key = parse_string_value(p);
         if (json_has_error(p)) {
-            mem_resume_gc();
             return NIL_VAL;
         }
 
         json_skip_whitespace(p);
         if (json_peek(p) != ':') {
             json_error(p, "expected ':' after key in object");
-            mem_resume_gc();
             return NIL_VAL;
         }
         json_advance(p);
@@ -482,7 +505,6 @@ static Value parse_object_value(JsonParser *p)
         json_skip_whitespace(p);
         Value val = parse_value(p);
         if (json_has_error(p)) {
-            mem_resume_gc();
             return NIL_VAL;
         }
 
@@ -492,7 +514,6 @@ static Value parse_object_value(JsonParser *p)
         char c = json_peek(p);
         if (c == '}') {
             json_advance(p);
-            mem_resume_gc();
             return OBJ_VAL(map);
         }
         if (c == ',') {
@@ -500,7 +521,6 @@ static Value parse_object_value(JsonParser *p)
             continue;
         }
         json_error(p, "expected ',' or '}' in object");
-        mem_resume_gc();
         return NIL_VAL;
     }
 }
@@ -566,16 +586,20 @@ Value json_decode(const char *text, int length, char *error, size_t error_size)
         error[0] = '\0';
     }
 
+    mem_pause_gc();
     Value val = parse_value(&parser);
     if (json_has_error(&parser)) {
+        mem_resume_gc();
         return NIL_VAL;
     }
 
     json_skip_whitespace(&parser);
     if (parser.index < parser.length) {
         json_error(&parser, "trailing characters after JSON value");
+        mem_resume_gc();
         return NIL_VAL;
     }
 
+    mem_resume_gc();
     return val;
 }

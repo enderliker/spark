@@ -5,4 +5,11 @@ true
 10 20 30
 aNUMbNUMcNUM
 b*n*n*
+START:hello
+hello:END
+true
+true
+2
+cat dog
+my pet and my pet
 regex ok

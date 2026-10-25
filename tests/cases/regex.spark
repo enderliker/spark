@@ -13,4 +13,13 @@ print(replaced);
 var words = regex_replace("[aeiou]", "*", "banana");
 print(words);
 
+print(regex_replace("^", "START:", "hello"));
+print(regex_replace("$", ":END", "hello"));
+print(regex_match("cat|dog", "dog"));
+print(regex_match("(a|b)+", "ababa"));
+var animals = regex_find("cat|dog", "my cat and my dog");
+print(len(animals));
+print(animals[0], animals[1]);
+print(regex_replace("cat|dog", "pet", "my cat and my dog"));
+
 print("regex ok");
