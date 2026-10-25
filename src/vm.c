@@ -3274,6 +3274,7 @@ static InterpretResult run(int base_frame)
                             ip += 2;
                             DISPATCH();
                         }
+                        return INTERPRET_RUNTIME_ERROR;
                     }
                 }
             }
@@ -3330,6 +3331,7 @@ static InterpretResult run(int base_frame)
                             constants = frame->constants;
                             DISPATCH();
                         }
+                        return INTERPRET_RUNTIME_ERROR;
                     }
                 }
             }
@@ -4176,7 +4178,7 @@ cold_dispatch:
             }
             ObjArray *arr = AS_ARRAY(args);
             int count = arr->count;
-            if (vm.stack_top + count >= vm.stack + STACK_MAX) {
+            if (count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
                 vm_runtime_error(ERROR_MEMORY, "stack overflow");
                 return INTERPRET_RUNTIME_ERROR;
             }
@@ -4202,7 +4204,7 @@ cold_dispatch:
             }
             ObjArray *arr = AS_ARRAY(args);
             int arg_count = arr->count;
-            if (vm.stack_top + arg_count >= vm.stack + STACK_MAX) {
+            if (arg_count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
                 vm_runtime_error(ERROR_MEMORY, "stack overflow");
                 return INTERPRET_RUNTIME_ERROR;
             }

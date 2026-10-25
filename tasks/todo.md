@@ -512,6 +512,24 @@ found while adding integers.
 **Files:** `src/object.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
+### Phase 5 review (T34-T39)
+**Description:** Post-phase review using code-review-and-quality, code-simplification,
+security-and-hardening and performance-optimization skills.
+**Fixes:**
+- [x] In `OP_CALL` and `OP_TAIL_CALL`, return `INTERPRET_RUNTIME_ERROR` immediately when
+  a native function raises a runtime error (`vm.had_error`) instead of falling through to
+  `cold`, which caused native errors to execute and print twice.
+- [x] Parameter default value scope hygiene: initialize parameter locals one by one as their
+  defaults are processed, preventing self-referencing defaults (`fn f(a = a)`) and
+  forward-referencing uninitialized defaults (`fn f(a = b, b = 1)`), matching local variable
+  initializer semantics.
+- [x] Stack overflow boundary hardening: use integer arithmetic (`count >= STACK_MAX - top`)
+  in `OP_CALL_SPREAD` and `OP_TAIL_CALL_SPREAD` to prevent pointer addition overflow.
+- [x] Trailing comma support in varargs: allow `fn f(...rest,)` matching standard parameter lists.
+- [x] Deduplicate argument compilation with spread via `compile_spread_arguments`.
+**Verification:**
+- [x] Full suite (128 tests); AddressSanitizer/UBSan clean; benchmarks ~5.1 ms.
+
 ## Checkpoint: Phase 5
 - [x] All tests pass, build clean, docs updated
 - [ ] Review with the user before Phase 6

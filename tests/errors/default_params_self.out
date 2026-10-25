@@ -1,0 +1,2 @@
+exit: 65
+stderr: cannot use variable 'a' inside its own initializer

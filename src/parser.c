@@ -178,6 +178,7 @@ static void parse_params(Parser *parser, ParamList **params, ParamList **tail, i
                 }
                 list_append_param(parser, params, tail, text_from_token(parser, param), NULL, true);
                 (*count)++;
+                match(parser, TOKEN_COMMA);
                 if (!check(parser, TOKEN_RIGHT_PAREN)) {
                     fail(parser, "a varargs parameter '...' must be the last parameter");
                 }

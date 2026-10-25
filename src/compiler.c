@@ -444,7 +444,6 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
     fn.function->is_varargs = false;
     for (ParamList *param = params; param; param = param->next) {
         add_local(&fn, param->name, line);
-        mark_local_initialized(&fn);
         if (param->is_varargs) {
             fn.function->is_varargs = true;
         } else {
@@ -468,6 +467,7 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
             emit_byte(&fn, (uint8_t)param_slot, line);
             patch_jump(&fn, jump);
         }
+        fn.locals[param_slot].depth = fn.scope_depth;
     }
 
     if (body->kind != STMT_BLOCK) {
@@ -1095,6 +1095,20 @@ static bool expr_list_has_spread(ExprList *items)
     return false;
 }
 
+static void compile_spread_arguments(Compiler *compiler, ExprList *arguments, int count, int line)
+{
+    if (count == 1 && arguments->is_spread) {
+        compile_expression(compiler, arguments->expr);
+    } else {
+        emit_byte(compiler, OP_ARRAY, line);
+        emit_u16(compiler, 0, line);
+        for (ExprList *arg = arguments; arg; arg = arg->next) {
+            compile_expression(compiler, arg->expr);
+            emit_byte(compiler, arg->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
+        }
+    }
+}
+
 static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column)
 {
     if (!expr) {
@@ -1106,16 +1120,7 @@ static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int co
     if (expr->kind == EXPR_CALL) {
         compile_expression(compiler, expr->as.call.callee);
         if (expr_list_has_spread(expr->as.call.arguments)) {
-            if (expr->as.call.argument_count == 1 && expr->as.call.arguments->is_spread) {
-                compile_expression(compiler, expr->as.call.arguments->expr);
-            } else {
-                emit_byte(compiler, OP_ARRAY, line);
-                emit_u16(compiler, 0, line);
-                for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
-                    compile_expression(compiler, arg->expr);
-                    emit_byte(compiler, arg->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
-                }
-            }
+            compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);
             compiler->column = expr->column;
             emit_byte(compiler, OP_TAIL_CALL_SPREAD, line);
             return;
@@ -1341,16 +1346,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         }
         compile_expression(compiler, expr->as.call.callee);
         if (expr_list_has_spread(expr->as.call.arguments)) {
-            if (expr->as.call.argument_count == 1 && expr->as.call.arguments->is_spread) {
-                compile_expression(compiler, expr->as.call.arguments->expr);
-            } else {
-                emit_byte(compiler, OP_ARRAY, line);
-                emit_u16(compiler, 0, line);
-                for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
-                    compile_expression(compiler, arg->expr);
-                    emit_byte(compiler, arg->is_spread ? OP_ARRAY_EXTEND : OP_ARRAY_PUSH, line);
-                }
-            }
+            compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);
             compiler->column = expr->column;
             emit_byte(compiler, OP_CALL_SPREAD, line);
         } else {
