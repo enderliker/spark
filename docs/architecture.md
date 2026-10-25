@@ -78,6 +78,7 @@ Concrete types:
 - `ObjClosure`: reference to the function plus the array of captured upvalues.
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
 - `ObjNative`: C function pointer, arity (`-1` = variadic) and name.
+- `ObjFile`: GC-managed file stream handle (`FILE *stream`, `is_closed`, `path`), automatically closed upon garbage collection if not closed explicitly.
 
 ## Bytecode
 

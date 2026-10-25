@@ -33,7 +33,8 @@ typedef enum {
     OBJ_FUNCTION,
     OBJ_CLOSURE,
     OBJ_NATIVE,
-    OBJ_UPVALUE
+    OBJ_UPVALUE,
+    OBJ_FILE
 } ObjType;
 
 struct Obj {

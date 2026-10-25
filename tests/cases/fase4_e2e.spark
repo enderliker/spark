@@ -1,0 +1,48 @@
+// Phase 4 End-to-End integration test.
+var tmp_path = "/tmp/spark_fase4_e2e.json";
+
+// 1. Prepare data with random numbers
+srand(12345);
+var entries = [];
+for (var i = 0; i < 3; i += 1) {
+    push(entries, {
+        "id": i + 1,
+        "token": "KEY_" + str(randint(100, 999))
+    });
+}
+
+var payload = {
+    "project": "Spark",
+    "version": 4,
+    "items": entries
+};
+
+// 2. Write JSON to file
+write_file(tmp_path, to_json(payload));
+assert(file_exists(tmp_path), "file was not created");
+
+// 3. Read back with streaming file handle
+var handle = open(tmp_path, "r");
+var content = "";
+while (not eof(handle)) {
+    var line = read_line(handle);
+    if (line != nil) {
+        content = content + line;
+    }
+}
+close(handle);
+
+// 4. Parse JSON
+var parsed = from_json(content);
+print(parsed["project"]);
+print(parsed["version"]);
+print(len(parsed["items"]));
+
+// 5. Use regex to extract all numeric tokens
+var text_summary = to_json(parsed["items"]);
+var ids = regex_find("\\d+", text_summary);
+print(len(ids));
+
+// 6. Clean up
+write_file(tmp_path, "");
+print("fase 4 end-to-end ok");

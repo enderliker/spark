@@ -218,6 +218,7 @@ int main(int argc, char **argv)
 {
     const char *file = NULL;
     bool dump = false;
+    int script_arg_index = argc;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -236,11 +237,9 @@ int main(int argc, char **argv)
             fprintf(stderr, "spark: unknown option '%s' (try --help)\n", argv[i]);
             return 64;
         }
-        if (file) {
-            fprintf(stderr, "spark: only one file can be run at a time\n");
-            return 64;
-        }
         file = argv[i];
+        script_arg_index = i;
+        break;
     }
 
     if (dump && !file) {
@@ -249,6 +248,9 @@ int main(int argc, char **argv)
     }
 
     vm_init();
+    if (file && !dump) {
+        vm_set_args(argc - script_arg_index, &argv[script_arg_index]);
+    }
 
     int status;
     if (file) {

@@ -8,14 +8,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "ast.h"
 #include "buf.h"
 #include "chunk.h"
 #include "compiler.h"
+#include "json.h"
 #include "memory.h"
 #include "object.h"
 #include "parser.h"
+#include "regex.h"
 #include "table.h"
 
 #define STACK_MAX 131072
@@ -214,6 +217,13 @@ static void blacken(Obj *object)
     case OBJ_UPVALUE:
         mark_value(((ObjUpvalue *)object)->closed);
         break;
+    case OBJ_FILE: {
+        ObjFile *file = (ObjFile *)object;
+        if (file->path) {
+            mark_object((Obj *)file->path);
+        }
+        break;
+    }
     }
 }
 
@@ -1646,6 +1656,577 @@ static Value native_sort_by(int arg_count, Value *args)
         return args[0];
     }
     return sort_array_with(array, less_callback, args[1]) ? args[0] : NIL_VAL;
+}
+
+extern char **environ;
+
+static Value native_exit(int arg_count, Value *args)
+{
+    int code = 0;
+    if (arg_count == 1) {
+        if (!integer_argument(args[0], "code", "exit", &code)) {
+            return NIL_VAL;
+        }
+    } else if (arg_count > 1) {
+        vm_runtime_error(ERROR_ARITY, "'exit' expects 0 or 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    fflush(stdout);
+    fflush(stderr);
+    exit(code);
+    return NIL_VAL;
+}
+
+static Value native_env(int arg_count, Value *args)
+{
+    if (arg_count == 0) {
+        ObjMap *map = object_map();
+        push(OBJ_VAL(map));
+        if (environ) {
+            for (char **e = environ; *e; e++) {
+                char *eq = strchr(*e, '=');
+                if (eq) {
+                    ObjString *key = object_string(*e, (int)(eq - *e));
+                    push(OBJ_VAL(key));
+                    ObjString *val = object_string(eq + 1, (int)strlen(eq + 1));
+                    push(OBJ_VAL(val));
+                    map_set(map, OBJ_VAL(key), OBJ_VAL(val));
+                    pop();
+                    pop();
+                }
+            }
+        }
+        return pop();
+    }
+    if (arg_count == 1) {
+        if (!is_obj_type(args[0], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'env' expects a string, received %s",
+                             value_type_name(args[0]));
+            return NIL_VAL;
+        }
+        const char *val = getenv(AS_STRING(args[0])->chars);
+        if (!val) {
+            return NIL_VAL;
+        }
+        return OBJ_VAL(object_string(val, (int)strlen(val)));
+    }
+    vm_runtime_error(ERROR_ARITY, "'env' expects 0 or 1 argument, received %d", arg_count);
+    return NIL_VAL;
+}
+
+static Value native_input(int arg_count, Value *args)
+{
+    if (arg_count == 1) {
+        if (is_obj_type(args[0], OBJ_STRING)) {
+            fputs(AS_STRING(args[0])->chars, stdout);
+        } else {
+            value_print(stdout, args[0]);
+        }
+        fflush(stdout);
+    } else if (arg_count > 1) {
+        vm_runtime_error(ERROR_ARITY, "'input' expects 0 or 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+
+    char *line = NULL;
+    size_t capacity = 0;
+    ssize_t read_bytes = getline(&line, &capacity, stdin);
+
+    if (read_bytes < 0) {
+        free(line);
+        return NIL_VAL;
+    }
+
+    while (read_bytes > 0 && (line[read_bytes - 1] == '\n' || line[read_bytes - 1] == '\r')) {
+        read_bytes--;
+    }
+    line[read_bytes] = '\0';
+
+    ObjString *result = object_string(line, (int)read_bytes);
+    free(line);
+    return OBJ_VAL(result);
+}
+
+void vm_set_args(int argc, char **argv)
+{
+    ObjArray *array = object_array();
+    push(OBJ_VAL(array));
+    for (int i = 0; i < argc; i++) {
+        ObjString *arg = object_string(argv[i], (int)strlen(argv[i]));
+        push(OBJ_VAL(arg));
+        array_push(array, OBJ_VAL(arg));
+        pop();
+    }
+    int slot = vm_global_slot(object_string("argv", 4));
+    if (slot >= 0) {
+        vm.global_slots[slot].value = OBJ_VAL(array);
+        vm.global_slots[slot].defined = true;
+    }
+    pop();
+}
+
+static Value native_file_exists(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'file_exists' expects a string, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    return BOOL_VAL(access(AS_STRING(args[0])->chars, F_OK) == 0);
+}
+
+static Value native_read_file(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'read_file' expects a string, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    const char *path = AS_STRING(args[0])->chars;
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for reading", path);
+        return NIL_VAL;
+    }
+
+    buf_t contents;
+    buf_init(&contents);
+    char chunk[8192];
+    size_t read_bytes;
+
+    while ((read_bytes = fread(chunk, 1, sizeof(chunk), file)) > 0) {
+        if (buf_append(&contents, chunk, read_bytes) != 0) {
+            buf_free(&contents);
+            fclose(file);
+            vm_runtime_error(ERROR_RUNTIME, "file too large '%s'", path);
+            return NIL_VAL;
+        }
+    }
+    if (ferror(file)) {
+        buf_free(&contents);
+        fclose(file);
+        vm_runtime_error(ERROR_RUNTIME, "error reading '%s'", path);
+        return NIL_VAL;
+    }
+    fclose(file);
+
+    ObjString *result = object_string(contents.data ? contents.data : "", (int)contents.len);
+    buf_free(&contents);
+    return OBJ_VAL(result);
+}
+
+static Value native_write_file(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'write_file' expects a string as first argument, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'write_file' expects a string as second argument, received %s",
+                         value_type_name(args[1]));
+        return NIL_VAL;
+    }
+    const char *path = AS_STRING(args[0])->chars;
+    ObjString *data = AS_STRING(args[1]);
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for writing", path);
+        return NIL_VAL;
+    }
+
+    if (data->length > 0) {
+        size_t written = fwrite(data->chars, 1, (size_t)data->length, file);
+        if (written < (size_t)data->length) {
+            fclose(file);
+            vm_runtime_error(ERROR_RUNTIME, "could not write all data to '%s'", path);
+            return NIL_VAL;
+        }
+    }
+    fclose(file);
+    return NIL_VAL;
+}
+
+static Value native_append_file(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'append_file' expects a string as first argument, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'append_file' expects a string as second argument, received %s",
+                         value_type_name(args[1]));
+        return NIL_VAL;
+    }
+    const char *path = AS_STRING(args[0])->chars;
+    ObjString *data = AS_STRING(args[1]);
+    FILE *file = fopen(path, "ab");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for appending", path);
+        return NIL_VAL;
+    }
+
+    if (data->length > 0) {
+        size_t written = fwrite(data->chars, 1, (size_t)data->length, file);
+        if (written < (size_t)data->length) {
+            fclose(file);
+            vm_runtime_error(ERROR_RUNTIME, "could not append all data to '%s'", path);
+            return NIL_VAL;
+        }
+    }
+    fclose(file);
+    return NIL_VAL;
+}
+
+static Value native_open(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'open' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'open' expects a string path, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    const char *mode = "r";
+    if (arg_count == 2) {
+        if (!is_obj_type(args[1], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'open' expects a string mode, received %s",
+                             value_type_name(args[1]));
+            return NIL_VAL;
+        }
+        mode = AS_STRING(args[1])->chars;
+    }
+
+    FILE *file = fopen(AS_STRING(args[0])->chars, mode);
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' with mode '%s'",
+                         AS_STRING(args[0])->chars, mode);
+        return NIL_VAL;
+    }
+
+    ObjFile *obj_file = object_file(file, AS_STRING(args[0]));
+    return OBJ_VAL(obj_file);
+}
+
+static Value native_read_line(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_FILE)) {
+        vm_runtime_error(ERROR_TYPE, "'read_line' expects a file handle, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjFile *file = AS_FILE(args[0]);
+    if (file->is_closed || !file->stream) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot read from a closed file");
+        return NIL_VAL;
+    }
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n = getline(&line, &cap, file->stream);
+    if (n < 0) {
+        free(line);
+        return NIL_VAL;
+    }
+
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) {
+        n--;
+    }
+    line[n] = '\0';
+
+    ObjString *res = object_string(line, (int)n);
+    free(line);
+    return OBJ_VAL(res);
+}
+
+static Value native_read(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'read' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_FILE)) {
+        vm_runtime_error(ERROR_TYPE, "'read' expects a file handle, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjFile *file = AS_FILE(args[0]);
+    if (file->is_closed || !file->stream) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot read from a closed file");
+        return NIL_VAL;
+    }
+
+    if (arg_count == 2) {
+        int bytes = 0;
+        if (!integer_argument(args[1], "bytes", "read", &bytes)) {
+            return NIL_VAL;
+        }
+        if (bytes < 0) {
+            vm_runtime_error(ERROR_VALUE, "'read' byte count cannot be negative");
+            return NIL_VAL;
+        }
+        if (bytes == 0) {
+            return OBJ_VAL(object_string("", 0));
+        }
+
+        char *buf = malloc((size_t)bytes + 1);
+        if (!buf) {
+            vm_runtime_error(ERROR_RUNTIME, "out of memory in 'read'");
+            return NIL_VAL;
+        }
+        size_t read_bytes = fread(buf, 1, (size_t)bytes, file->stream);
+        buf[read_bytes] = '\0';
+        ObjString *res = object_string(buf, (int)read_bytes);
+        free(buf);
+        return OBJ_VAL(res);
+    }
+
+    buf_t contents;
+    buf_init(&contents);
+    char chunk[8192];
+    size_t read_bytes;
+
+    while ((read_bytes = fread(chunk, 1, sizeof(chunk), file->stream)) > 0) {
+        if (buf_append(&contents, chunk, read_bytes) != 0) {
+            buf_free(&contents);
+            vm_runtime_error(ERROR_RUNTIME, "file too large in 'read'");
+            return NIL_VAL;
+        }
+    }
+    ObjString *res = object_string(contents.data ? contents.data : "", (int)contents.len);
+    buf_free(&contents);
+    return OBJ_VAL(res);
+}
+
+static Value native_write(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_FILE)) {
+        vm_runtime_error(ERROR_TYPE, "'write' expects a file handle as first argument, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'write' expects a string as second argument, received %s",
+                         value_type_name(args[1]));
+        return NIL_VAL;
+    }
+    ObjFile *file = AS_FILE(args[0]);
+    if (file->is_closed || !file->stream) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot write to a closed file");
+        return NIL_VAL;
+    }
+    ObjString *data = AS_STRING(args[1]);
+    size_t written = 0;
+    if (data->length > 0) {
+        written = fwrite(data->chars, 1, (size_t)data->length, file->stream);
+    }
+    return INT_VAL((int64_t)written);
+}
+
+static Value native_close(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_FILE)) {
+        vm_runtime_error(ERROR_TYPE, "'close' expects a file handle, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjFile *file = AS_FILE(args[0]);
+    if (file->is_closed || !file->stream) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot close an already closed file");
+        return NIL_VAL;
+    }
+    fclose(file->stream);
+    file->stream = NULL;
+    file->is_closed = true;
+    return NIL_VAL;
+}
+
+static Value native_eof(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_FILE)) {
+        vm_runtime_error(ERROR_TYPE, "'eof' expects a file handle, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjFile *file = AS_FILE(args[0]);
+    if (file->is_closed || !file->stream) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot check eof on a closed file");
+        return NIL_VAL;
+    }
+    return BOOL_VAL(feof(file->stream) != 0);
+}
+
+static uint64_t prng_state = 0x853c49e6748fea9bULL;
+
+static inline uint64_t prng_next(void)
+{
+    uint64_t z = (prng_state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+static Value native_srand(int arg_count, Value *args)
+{
+    (void)arg_count;
+    uint64_t seed = 0;
+    if (args[0].type == VAL_INT) {
+        seed = (uint64_t)AS_INT(args[0]);
+    } else if (args[0].type == VAL_NUMBER) {
+        seed = (uint64_t)AS_NUMBER(args[0]);
+    } else {
+        vm_runtime_error(ERROR_TYPE, "'srand' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    prng_state = seed != 0 ? seed : 0x853c49e6748fea9bULL;
+    return NIL_VAL;
+}
+
+static Value native_rand(int arg_count, Value *args)
+{
+    (void)arg_count;
+    (void)args;
+    double r = (double)(prng_next() >> 11) * (1.0 / 9007199254740992.0);
+    return NUMBER_VAL(r);
+}
+
+static Value native_randint(int arg_count, Value *args)
+{
+    int64_t min_val = 0;
+    int64_t max_val = 0;
+
+    if (arg_count == 1) {
+        if (!is_int(args[0])) {
+            vm_runtime_error(ERROR_TYPE, "'randint' expects integer arguments, received %s",
+                             value_type_name(args[0]));
+            return NIL_VAL;
+        }
+        max_val = AS_INT(args[0]);
+        min_val = 0;
+    } else if (arg_count == 2) {
+        if (!is_int(args[0]) || !is_int(args[1])) {
+            vm_runtime_error(ERROR_TYPE, "'randint' expects integer arguments");
+            return NIL_VAL;
+        }
+        min_val = AS_INT(args[0]);
+        max_val = AS_INT(args[1]);
+    } else {
+        vm_runtime_error(ERROR_ARITY, "'randint' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+
+    if (min_val > max_val) {
+        vm_runtime_error(ERROR_VALUE, "'randint' min (%lld) cannot be greater than max (%lld)",
+                         (long long)min_val, (long long)max_val);
+        return NIL_VAL;
+    }
+
+    uint64_t range = (uint64_t)(max_val - min_val) + 1;
+    uint64_t offset;
+    if (range == 0) {
+        offset = prng_next();
+    } else {
+        offset = prng_next() % range;
+    }
+    return INT_VAL(min_val + (int64_t)offset);
+}
+
+static Value native_to_json(int arg_count, Value *args)
+{
+    (void)arg_count;
+    char error[256] = {0};
+    ObjString *json = json_encode(args[0], error, sizeof(error));
+    if (!json) {
+        vm_runtime_error(ERROR_VALUE, "%s", error[0] ? error : "could not serialize to JSON");
+        return NIL_VAL;
+    }
+    return OBJ_VAL(json);
+}
+
+static Value native_from_json(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'from_json' expects a string, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *str = AS_STRING(args[0]);
+    char error[256] = {0};
+    Value val = json_decode(str->chars, str->length, error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    return val;
+}
+
+static Value native_regex_match(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_match' expects two strings");
+        return NIL_VAL;
+    }
+    ObjString *pat = AS_STRING(args[0]);
+    ObjString *text = AS_STRING(args[1]);
+    char error[256] = {0};
+    bool matched = regex_match(pat->chars, text->chars, error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    return BOOL_VAL(matched);
+}
+
+static Value native_regex_find(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_find' expects two strings");
+        return NIL_VAL;
+    }
+    ObjString *pat = AS_STRING(args[0]);
+    ObjString *text = AS_STRING(args[1]);
+    char error[256] = {0};
+    ObjArray *matches = regex_find_all(pat->chars, text->chars, error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    return OBJ_VAL(matches);
+}
+
+static Value native_regex_replace(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING) ||
+        !is_obj_type(args[2], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_replace' expects three strings");
+        return NIL_VAL;
+    }
+    ObjString *pat = AS_STRING(args[0]);
+    ObjString *repl = AS_STRING(args[1]);
+    ObjString *text = AS_STRING(args[2]);
+    char error[256] = {0};
+    ObjString *res = regex_replace(pat->chars, repl->chars, text->chars, error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    return OBJ_VAL(res);
 }
 
 int vm_global_slot(ObjString *name)
@@ -3524,6 +4105,28 @@ void vm_init(void)
     define_native("reduce", native_reduce, -1);
     define_native("sort", native_sort, 1);
     define_native("sort_by", native_sort_by, 2);
+    define_native("exit", native_exit, -1);
+    define_native("env", native_env, -1);
+    define_native("input", native_input, -1);
+    define_native("file_exists", native_file_exists, 1);
+    define_native("read_file", native_read_file, 1);
+    define_native("write_file", native_write_file, 2);
+    define_native("append_file", native_append_file, 2);
+    define_native("open", native_open, -1);
+    define_native("read_line", native_read_line, 1);
+    define_native("read", native_read, -1);
+    define_native("write", native_write, 2);
+    define_native("close", native_close, 1);
+    define_native("eof", native_eof, 1);
+    define_native("srand", native_srand, 1);
+    define_native("rand", native_rand, 0);
+    define_native("randint", native_randint, -1);
+    define_native("to_json", native_to_json, 1);
+    define_native("from_json", native_from_json, 1);
+    define_native("regex_match", native_regex_match, 2);
+    define_native("regex_find", native_regex_find, 2);
+    define_native("regex_replace", native_regex_replace, 3);
+    vm_set_args(0, NULL);
 }
 
 void vm_free(void)

@@ -1,0 +1,19 @@
+// Test Phase 4 JSON encode and decode.
+var raw = "{\"name\": \"spark\", \"version\": 1, \"active\": true, \"scores\": [10, 20, 30], \"extra\": null}";
+var data = from_json(raw);
+
+print(data["name"]);
+print(data["version"]);
+print(data["active"]);
+print(len(data["scores"]));
+print(data["scores"][0], data["scores"][2]);
+print(data["extra"] == nil);
+
+var encoded = to_json([1, "hello", true, nil]);
+print(encoded);
+
+var roundtrip = from_json(to_json({"a": 1, "b": [true, false]}));
+print(roundtrip["a"]);
+print(roundtrip["b"][0], roundtrip["b"][1]);
+
+print("json ok");

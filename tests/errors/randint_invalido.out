@@ -1,0 +1,2 @@
+exit: 70
+stderr: min (10) cannot be greater than max (5)

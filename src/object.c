@@ -554,6 +554,16 @@ ObjUpvalue *object_upvalue(Value *slot)
     return upvalue;
 }
 
+ObjFile *object_file(FILE *stream, ObjString *path)
+{
+    ObjFile *file = allocate_obj(sizeof(ObjFile), OBJ_FILE);
+
+    file->stream = stream;
+    file->is_closed = false;
+    file->path = path;
+    return file;
+}
+
 void object_free(Obj *obj)
 {
     switch (obj->type) {
@@ -590,6 +600,16 @@ void object_free(Obj *obj)
     case OBJ_UPVALUE:
         mem_realloc(obj, sizeof(ObjUpvalue), 0);
         break;
+    case OBJ_FILE: {
+        ObjFile *file = (ObjFile *)obj;
+        if (file->stream && !file->is_closed) {
+            fclose(file->stream);
+            file->stream = NULL;
+            file->is_closed = true;
+        }
+        mem_realloc(file, sizeof(ObjFile), 0);
+        break;
+    }
     }
 }
 
@@ -630,6 +650,7 @@ const char *obj_type_name(ObjType type)
     case OBJ_CLOSURE: return "function";
     case OBJ_NATIVE: return "native function";
     case OBJ_UPVALUE: return "upvalue";
+    case OBJ_FILE: return "file";
     }
     return "object";
 }
@@ -768,6 +789,12 @@ static void value_format(buf_t *b, Value v, bool repr)
         case OBJ_UPVALUE:
             buf_append_str(b, "<upvalue>");
             break;
+        case OBJ_FILE: {
+            ObjFile *file = (ObjFile *)AS_OBJ(v);
+            buf_appendf(b, "<file %s%s>", file->path ? file->path->chars : "unknown",
+                        file->is_closed ? " (closed)" : "");
+            break;
+        }
         }
         break;
     }

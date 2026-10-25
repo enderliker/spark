@@ -15,6 +15,7 @@ typedef enum {
 
 void vm_init(void);
 void vm_free(void);
+void vm_set_args(int argc, char **argv);
 
 /* Parses, compiles and runs the source code. In REPL mode standalone
  * expressions are printed and global variables are kept between calls. */

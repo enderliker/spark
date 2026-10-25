@@ -1,0 +1,16 @@
+// Test Phase 4 regex operations.
+print(regex_match("^[a-z]+$", "spark"));
+print(regex_match("^[a-z]+$", "SPARK"));
+print(regex_match("\\d+", "abc 123 def"));
+
+var numbers = regex_find("\\d+", "item 10, item 20 and item 30");
+print(len(numbers));
+print(numbers[0], numbers[1], numbers[2]);
+
+var replaced = regex_replace("\\d+", "NUM", "a1b22c333");
+print(replaced);
+
+var words = regex_replace("[aeiou]", "*", "banana");
+print(words);
+
+print("regex ok");

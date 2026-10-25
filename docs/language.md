@@ -441,6 +441,31 @@ print(upper("hola"), trim("  x  "));
 | `sqrt(x)` | Square root (error on negative input). |
 | `pow(x, y)` | `x` raised to `y`. |
 | `min(a, b)` / `max(a, b)` | Smaller/larger of two numbers; returns the chosen operand. |
+| `exit(code?)` | Flushes stdout/stderr and terminates the program with the given exit code (default 0). |
+| `env(name?)` | Value of an environment variable as string or `nil`; without arguments, returns a map of all variables. |
+| `input(prompt?)` | Reads a line from standard input (without trailing newline); returns `nil` on EOF. |
+| `file_exists(path)` | Whether the file exists at `path`. |
+| `read_file(path)` | Reads entire file contents as a string. |
+| `write_file(path, data)` | Writes string data to file (truncating existing contents). |
+| `append_file(path, data)` | Appends string data to file. |
+| `open(path, mode?)` | Opens file and returns a file handle object (default mode `"r"`). |
+| `read_line(file)` | Reads next line from file handle; returns `nil` on EOF. |
+| `read(file, bytes?)` | Reads up to `bytes` from file handle, or until EOF if omitted. |
+| `write(file, data)` | Writes string data to file handle; returns count of bytes written. |
+| `close(file)` | Closes file handle; using a closed handle is an error. |
+| `eof(file)` | Whether file handle has reached end of file. |
+| `rand()` | Float in `[0.0, 1.0)`. |
+| `randint(max)` / `randint(min, max)` | Random integer in `[min, max]` (inclusive). |
+| `srand(seed)` | Seeds the PRNG with an integer or float. |
+| `to_json(value)` | Serializes a value to a JSON string. |
+| `from_json(text)` | Deserializes a JSON string into Spark values. |
+| `regex_match(pattern, text)` | Whether `pattern` matches `text`. |
+| `regex_find(pattern, text)` | Array of all non-overlapping matches of `pattern` in `text`. |
+| `regex_replace(pattern, repl, text)` | Replaces non-overlapping matches with `repl`. |
+
+The script arguments are accessible through the global array `argv`, where `argv[0]`
+is the script file path and subsequent elements are arguments passed on the command line
+(empty in the REPL).
 
 The higher-order natives (`map`, `filter`, `reduce`, `each`, `sort_by`) accept a
 callback that may be a closure or another native (for example `map(a, str)`). `sort`

@@ -1,0 +1,4 @@
+write_file("/tmp/spark_tmp_err.txt", "data");
+var f = open("/tmp/spark_tmp_err.txt", "r");
+close(f);
+read_line(f);

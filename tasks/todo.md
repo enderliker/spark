@@ -3,7 +3,7 @@
 Detailed, dependency-ordered task list for the roadmap in `tasks/plan.md`. Execute
 top to bottom; do not start a phase before its checkpoint is approved. Every task
 must satisfy the Definition of Done in the plan (warning-free build, tests, docs,
-sanitizers for VM tasks, benchmark <= 15 ms).
+sanitizers for VM tasks, benchmark <= 5 ms).
 
 Legend: **scope** S (1-2 files), M (3-5), L (5-8). Anything XL is split further.
 
@@ -283,7 +283,7 @@ for `3.0`, `1e3`.
 - [x] Overflow promotes deterministically to `double` (documented).
 - [x] Mixed comparisons are correct (e.g. `1 < 1.5`).
 **Verification:**
-- [x] Fixtures incl. overflow cases; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
+- [x] Fixtures incl. overflow cases; suite; sanitizers; `python3 benchmarks/run.py` <= 5 ms.
 **Dependencies:** T19, T20.
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M (risky).
@@ -349,9 +349,9 @@ runtime error otherwise.
 **Scope:** S.
 
 ## Checkpoint: Phase 3 (critical)
-- [ ] All tests pass, sanitizers clean
-- [ ] Benchmark minimum still <= 15 ms
-- [ ] Review with the user before Phase 4
+- [x] All tests pass, sanitizers clean
+- [x] Benchmark minimum still <= 5 ms
+- [x] Review with the user before Phase 4
 
 ---
 
@@ -361,10 +361,10 @@ runtime error otherwise.
 **Description:** `exit(code)` stops with that status; `argv` is a global array of the
 script arguments; `env` reads environment variables.
 **Acceptance criteria:**
-- [ ] `exit` flushes the REPL/stdout and returns the requested code.
-- [ ] `argv` includes the script name and its arguments; empty in the REPL.
+- [x] `exit` flushes the REPL/stdout and returns the requested code.
+- [x] `argv` includes the script name and its arguments; empty in the REPL.
 **Verification:**
-- [ ] CLI fixture; suite; docs.
+- [x] CLI fixture; suite; docs.
 **Dependencies:** None.
 **Files:** `src/main.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -372,10 +372,10 @@ script arguments; `env` reads environment variables.
 ### T28 - stdin (`input(prompt?)`)
 **Description:** `input(prompt?)` reads one line from stdin (without the newline).
 **Acceptance criteria:**
-- [ ] Returns `nil` on EOF.
-- [ ] Prints the prompt when provided and flushes.
+- [x] Returns `nil` on EOF.
+- [x] Prints the prompt when provided and flushes.
 **Verification:**
-- [ ] Fixture feeding stdin via the test harness; suite; docs.
+- [x] Fixture feeding stdin via the test harness; suite; docs.
 **Dependencies:** T27 (shares main/vm wiring).
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
@@ -384,10 +384,10 @@ script arguments; `env` reads environment variables.
 **Description:** `read_file(path)`, `write_file(path, data)`, `append_file(path, data)`,
 `file_exists(path)`; errors as runtime errors.
 **Acceptance criteria:**
-- [ ] Missing/unreadable files produce a runtime error with the path.
-- [ ] `write_file` truncates, `append_file` appends.
+- [x] Missing/unreadable files produce a runtime error with the path.
+- [x] `write_file` truncates, `append_file` appends.
 **Verification:**
-- [ ] Fixture using `/tmp` files; suite; docs.
+- [x] Fixture using `/tmp` files; suite; docs.
 **Dependencies:** None.
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
@@ -396,10 +396,10 @@ script arguments; `env` reads environment variables.
 **Description:** `open(path, mode)` returns a file handle with `read_line`, `read`,
 `write`, `close`, `eof`.
 **Acceptance criteria:**
-- [ ] A new `ObjFile` type is GC-managed and closed on finalization.
-- [ ] Using a closed handle is a clear runtime error.
+- [x] A new `ObjFile` type is GC-managed and closed on finalization.
+- [x] Using a closed handle is a clear runtime error.
 **Verification:**
-- [ ] Fixture; suite; sanitizers (fd leak check); docs.
+- [x] Fixture; suite; sanitizers (fd leak check); docs.
 **Dependencies:** T29.
 **Files:** `src/value.h`, `src/object.c/h`, `src/vm.c`, `tests/`, `docs/`.
 **Scope:** M (risky: new object type + GC).
@@ -407,10 +407,10 @@ script arguments; `env` reads environment variables.
 ### T31 - Random (`rand`, `randint`, `srand`)
 **Description:** Dependency-free PRNG (e.g. xorshift/PCG) with explicit seeding.
 **Acceptance criteria:**
-- [ ] Deterministic given a seed (documented range for `randint`).
-- [ ] Reproducible fixtures (fixed seed).
+- [x] Deterministic given a seed (documented range for `randint`).
+- [x] Reproducible fixtures (fixed seed).
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** T19 (integers).
 **Files:** `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
@@ -419,10 +419,10 @@ script arguments; `env` reads environment variables.
 **Description:** `to_json(value)` and `from_json(text)` with a documented mapping
 (nil/bool/int/number/string/array/map).
 **Acceptance criteria:**
-- [ ] Round-trip of supported values; unsupported values raise an error.
-- [ ] Malformed JSON raises a runtime error with position info.
+- [x] Round-trip of supported values; unsupported values raise an error.
+- [x] Malformed JSON raises a runtime error with position info.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** T19 (ints), T5 (strings).
 **Files:** `src/object.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -431,17 +431,17 @@ script arguments; `env` reads environment variables.
 **Description:** A small backtracking regex engine (`match`, `find`, `replace`) or
 document why it is deferred.
 **Acceptance criteria:**
-- [ ] Supported syntax subset documented.
-- [ ] ReDoS risk acknowledged (complexity limits).
+- [x] Supported syntax subset documented.
+- [x] ReDoS risk acknowledged (complexity limits).
 **Verification:**
-- [ ] Fixtures; suite; docs.
+- [x] Fixtures; suite; docs.
 **Dependencies:** T5.
 **Files:** `src/vm.c` (or a new `src/regex.c/.h`), `tests/`, `docs/`.
 **Scope:** L (stretch - may be deferred).
 
 ## Checkpoint: Phase 4
-- [ ] All tests pass; an end-to-end script (read file, parse, write output) works
-- [ ] Review with the user before Phase 5
+- [x] All tests pass; an end-to-end script (read file, parse, write output) works
+- [x] Review with the user before Phase 5
 
 ---
 
@@ -594,7 +594,7 @@ widen operands (e.g. 32-bit constants/jumps) where required.
 - [ ] New caps documented and tested; disassembler updated for wider operands.
 - [ ] No silent truncation.
 **Verification:**
-- [ ] Fixtures at the new boundary; suite; benchmark <= 15 ms; docs.
+- [ ] Fixtures at the new boundary; suite; benchmark <= 5 ms; docs.
 **Dependencies:** None.
 **Files:** `src/chunk.h`, `src/chunk.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M (risk: operand layout change).
@@ -631,7 +631,7 @@ goes before `y`).
 - [x] Large arrays (e.g. 100k elements) sort in O(n log n); benchmark unaffected.
 - [x] Callback errors still propagate and the stack stays balanced.
 **Verification:**
-- [x] Fixtures with large arrays; suite; sanitizers; `python3 benchmarks/run.py` <= 15 ms.
+- [x] Fixtures with large arrays; suite; sanitizers; `python3 benchmarks/run.py` <= 5 ms.
 **Dependencies:** T9, T46 (growable stack, optional).
 **Files:** `src/vm.c`, `tests/cases/sorting.*`, `docs/language.md`.
 **Scope:** S.

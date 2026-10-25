@@ -1,0 +1,43 @@
+// Test Phase 4 I/O and file operations.
+var test_file = "/tmp/spark_test_io.txt";
+
+if (file_exists(test_file)) {
+    // clean up from any previous failed run
+    write_file(test_file, "");
+}
+
+// 1. One-shot file operations
+write_file(test_file, "line 1\n");
+print(file_exists(test_file));
+append_file(test_file, "line 2\n");
+var content = read_file(test_file);
+print(content);
+
+// 2. File handle operations
+var f = open(test_file, "r");
+print(type(f));
+print(eof(f));
+var l1 = read_line(f);
+print(l1);
+var l2 = read_line(f);
+print(l2);
+var l3 = read_line(f);
+print(l3 == nil);
+print(eof(f));
+close(f);
+
+// 3. Write and read full contents with open
+var f_out = open(test_file, "w");
+write(f_out, "spark streaming file");
+close(f_out);
+
+var f_in = open(test_file, "r");
+var partial = read(f_in, 5);
+print(partial);
+var rest = read(f_in);
+print(rest);
+close(f_in);
+
+// 4. Clean up
+write_file(test_file, "");
+print("io ok");

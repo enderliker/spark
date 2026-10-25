@@ -28,7 +28,7 @@ original numbering:
 - `python3 tests/run_tests.py` passes (new behavior has new fixtures).
 - Sanitizer run is clean when the task touches the VM/GC/compiler:
   `make clean && make CFLAGS="-std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wall -Wextra -Wpedantic" LDFLAGS="-fsanitize=address,undefined" && python3 tests/run_tests.py && make clean && make`.
-- `python3 benchmarks/run.py` minimum stays **<= 15 ms** unless the task is explicitly
+- `python3 benchmarks/run.py` minimum stays **<= 5 ms** unless the task is explicitly
   about performance (then state the target).
 - Documentation updated: `README.md`, `docs/language.md`, `docs/architecture.md`.
 - All artifacts in English (`AGENTS.md`).
@@ -108,22 +108,22 @@ original numbering:
 - [x] T26 Docs + tests for integers
 
 ### Checkpoint: Phase 3 (critical)
-- [ ] All tests pass, sanitizers clean
-- [ ] Benchmark minimum still <= 15 ms
-- [ ] Review with the user before Phase 4
+- [x] All tests pass, sanitizers clean
+- [x] Benchmark minimum still <= 5 ms
+- [x] Review with the user before Phase 4
 
 ### Phase 4 - Standard library / I/O (area 4)
-- [ ] T27 `exit(code)`, `argv`, `env(name?)`
-- [ ] T28 stdin (`input(prompt?)`)
-- [ ] T29 One-shot file natives (`read_file`, `write_file`, `append_file`, `file_exists`)
-- [ ] T30 File object (`open`, `read_line`, `write`, `close`)
-- [ ] T31 Random (`rand`, `randint`, `srand`)
-- [ ] T32 JSON encode/decode
-- [ ] T33 Regex (stretch)
+- [x] T27 `exit(code)`, `argv`, `env(name?)`
+- [x] T28 stdin (`input(prompt?)`)
+- [x] T29 One-shot file natives (`read_file`, `write_file`, `append_file`, `file_exists`)
+- [x] T30 File object (`open`, `read_line`, `write`, `close`)
+- [x] T31 Random (`rand`, `randint`, `srand`)
+- [x] T32 JSON encode/decode
+- [x] T33 Regex (stretch)
 
 ### Checkpoint: Phase 4
-- [ ] All tests pass; a real script (read file, parse, write output) works end-to-end
-- [ ] Review with the user before Phase 5
+- [x] All tests pass; a real script (read file, parse, write output) works end-to-end
+- [x] Review with the user before Phase 5
 
 ### Phase 5 - Functions & semantics (areas 3, 6)
 - [ ] T34 Tail-call optimization
@@ -177,7 +177,7 @@ original numbering:
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| Integers destabilize the `double`-based VM, tests and benchmark | High | Dedicated phase with its own checkpoint; int/float promotion rules fixed in A1/A3; benchmark gate <= 15 ms |
+| Integers destabilize the `double`-based VM, tests and benchmark | High | Dedicated phase with its own checkpoint; int/float promotion rules fixed in A1/A3; benchmark gate <= 5 ms |
 | Re-entrant native callbacks corrupt the VM stack/frames | High | T7 is a design spike + isolated helper; sanitizer run; frame guards |
 | Exceptions change error propagation in `run()` | High | Keep `had_error` for normal errors, add a separate handler stack; fall back to runtime error when no handler |
 | Modules touch parser/compiler/vm and path resolution | Medium | Design task T40 first, shared-global model (A6) |
@@ -202,6 +202,13 @@ and detects overflow, and `div` plus the bitwise operators are in. The behavior 
 covered by `tests/cases/{integers,bitwise}.spark` and
 `tests/errors/{div_cero,div_no_entero,bitwise_no_entero,bitnot_no_entero,shift_fuera,int_conversion}.spark`,
 with the reference in `README.md`, `docs/language.md` and `docs/architecture.md`.
+
+**Phase 4 (standard library / I/O, T27-T33) is implemented.** `exit(code)`, `argv`,
+`env(name?)`, `input(prompt?)`, one-shot file operations (`read_file`, `write_file`,
+`append_file`, `file_exists`), file handles (`open`, `read_line`, `read`, `write`, `close`, `eof`),
+PRNG (`rand`, `randint`, `srand`), JSON (`to_json`, `from_json`) and linear-time regex
+(`regex_match`, `regex_find`, `regex_replace`) are in. Covered by
+`tests/cases/{io,random,json,regex,fase4_e2e}.spark` and `tests/errors/{file_closed,from_json_error,randint_invalido,regex_invalido}.spark`.
 
 ## Open Questions (need human input)
 

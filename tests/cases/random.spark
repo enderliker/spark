@@ -1,0 +1,17 @@
+// Test Phase 4 random generator.
+srand(42);
+
+print(randint(1, 10));
+print(randint(1, 10));
+print(randint(1, 10));
+
+var r = rand();
+print(r >= 0.0 and r < 1.0);
+
+srand(42);
+// Should repeat exactly the same sequence
+print(randint(1, 10));
+print(randint(1, 10));
+print(randint(1, 10));
+
+print("random ok");

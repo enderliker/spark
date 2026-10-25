@@ -60,10 +60,18 @@ typedef struct {
     int upvalue_count;
 } ObjClosure;
 
+typedef struct ObjFile {
+    Obj obj;
+    FILE *stream;
+    bool is_closed;
+    ObjString *path;
+} ObjFile;
+
 #define AS_FUNCTION(v) ((ObjFunction *)(v).as.obj)
 #define AS_CLOSURE(v) ((ObjClosure *)(v).as.obj)
 #define AS_ARRAY(v) ((ObjArray *)(v).as.obj)
 #define AS_MAP(v) ((ObjMap *)(v).as.obj)
+#define AS_FILE(v) ((ObjFile *)(v).as.obj)
 
 typedef Value (*NativeFn)(int arg_count, Value *args);
 
@@ -95,6 +103,7 @@ ObjFunction *object_function(void);
 ObjClosure *object_closure(ObjFunction *function);
 ObjNative *object_native(NativeFn fn, int arity, const char *name);
 ObjUpvalue *object_upvalue(Value *slot);
+ObjFile *object_file(FILE *stream, ObjString *path);
 
 void object_free(Obj *obj);
 void intern_remove_unmarked(void);

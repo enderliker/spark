@@ -23,6 +23,12 @@ for (var i = 0; i < 10; i += 1) {
 - Types: `nil`, `bool`, `int`, `number`, `string`, `array`, `map` and `function`.
 - 64-bit integers alongside doubles: literals, promotion, `div`, `%`, bitwise
   operators (`&`, `|`, `^`, `~`, `<<`, `>>`) and `int`/`float`/`is_int`.
+- Standard library and I/O: script arguments `argv`, environment variables `env`,
+  `exit(code)`, `input(prompt)`, one-shot file operations (`read_file`, `write_file`,
+  `append_file`, `file_exists`), file handles (`open`, `read`, `read_line`, `write`,
+  `close`, `eof`), PRNG (`rand`, `randint`, `srand`), JSON encoding/decoding
+  (`to_json`, `from_json`), and linear-time regular expressions (`regex_match`,
+  `regex_find`, `regex_replace`).
 - Global and local variables with block-lexical scope; `const` declares immutable
   bindings.
 - First-class functions, recursion and **closures** captured by reference.

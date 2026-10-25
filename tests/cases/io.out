@@ -1,0 +1,13 @@
+true
+line 1
+line 2
+
+file
+false
+line 1
+line 2
+true
+true
+spark
+ streaming file
+io ok

@@ -204,6 +204,27 @@ def test_cli() -> None:
     report("missing file returns 74", missing.returncode == 74,
            missing.stdout + missing.stderr)
 
+    exit_script = ROOT / "tests" / "test_exit.spark"
+    exit_script.write_text("exit(42);\n", encoding="utf-8")
+    try:
+        exit_run = run([str(exit_script)])
+        report("exit(code) sets returncode", exit_run.returncode == 42,
+               f"expected 42, got {exit_run.returncode}")
+    finally:
+        if exit_script.exists():
+            exit_script.unlink()
+
+    argv_script = ROOT / "tests" / "test_argv.spark"
+    argv_script.write_text("print(len(argv), argv[1], argv[2]);\n", encoding="utf-8")
+    try:
+        argv_run = run([str(argv_script), "hello", "world"])
+        report("argv captures CLI arguments",
+               argv_run.returncode == 0 and "3 hello world" in argv_run.stdout,
+               argv_run.stdout + argv_run.stderr)
+    finally:
+        if argv_script.exists():
+            argv_script.unlink()
+
 
 def main() -> int:
     if not BINARY.exists():
