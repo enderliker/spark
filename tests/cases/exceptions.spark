@@ -1,0 +1,75 @@
+// Basic try/catch with param
+try {
+    print("try 1");
+    throw "err1";
+    print("unreachable");
+} catch (e) {
+    print("caught: " + e);
+}
+
+// Catch without param
+try {
+    throw 42;
+} catch {
+    print("caught without param");
+}
+
+// Nested try/catch and rethrow
+try {
+    try {
+        throw "inner";
+    } catch (e) {
+        print("rethrowing " + e);
+        throw e + " -> outer";
+    }
+} catch (e2) {
+    print("caught rethrow: " + e2);
+}
+
+// Finally on normal completion
+var f1_ran = false;
+try {
+    print("try normal");
+} finally {
+    f1_ran = true;
+}
+print("finally ran: " + str(f1_ran));
+
+// Finally on early return
+fn test_return() {
+    try {
+        return "early result";
+    } finally {
+        print("finally during return");
+    }
+    return "unreachable";
+}
+print("test_return: " + test_return());
+
+// Try-catch-finally combination
+try {
+    try {
+        throw "boom";
+    } catch (e) {
+        print("handled: " + e);
+    } finally {
+        print("finally 1");
+    }
+} finally {
+    print("finally 2");
+}
+
+// Unwinding across call frames and closing upvalues
+var captured_fn = nil;
+fn make_thrower() {
+    var secret = "closed-upvalue-data";
+    captured_fn = fn() { return secret; };
+    throw "aborting make_thrower";
+}
+
+try {
+    make_thrower();
+} catch (e) {
+    print("caught make_thrower: " + e);
+}
+print("upvalue after unwind: " + captured_fn());

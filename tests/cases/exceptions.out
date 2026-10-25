@@ -1,0 +1,14 @@
+try 1
+caught: err1
+caught without param
+rethrowing inner
+caught rethrow: inner -> outer
+try normal
+finally ran: true
+finally during return
+test_return: early result
+handled: boom
+finally 1
+finally 2
+caught make_thrower: aborting make_thrower
+upvalue after unwind: closed-upvalue-data

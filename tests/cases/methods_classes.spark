@@ -1,0 +1,87 @@
+// Map method calls and 'self'
+var obj = {
+    "count": 0,
+    "increment": fn(n) {
+        self.count += n;
+        return self.count;
+    },
+    "get_count": fn() {
+        return self.count;
+    }
+};
+
+print(obj.get_count());
+print(obj.increment(5));
+print(obj.increment(10));
+print(obj.count);
+obj.count = 42;
+print(obj.get_count());
+
+// Classes and 'new'
+class Counter {
+    init(start = 0, step = 1) {
+        self.val = start;
+        self.step = step;
+    }
+
+    next() {
+        self.val += self.step;
+        return self.val;
+    }
+
+    current() {
+        return self.val;
+    }
+
+    add_step(delta) {
+        self.step += delta;
+        return self;
+    }
+}
+
+var c1 = new Counter(10, 2);
+print(c1.current());
+print(c1.next());
+print(c1.next());
+
+// Chaining
+c1.add_step(3).next();
+print(c1.current());
+
+// Default arguments in init
+var c2 = Counter();
+print(c2.current());
+print(c2.next());
+
+// Class without init
+class Greeter {
+    say_hello(target) {
+        return "Hello, " + target + "!";
+    }
+}
+
+var g = new Greeter();
+print(g.say_hello("World"));
+
+// Methods calling other methods on self
+class Rectangle {
+    init(w, h) {
+        self.w = w;
+        self.h = h;
+    }
+
+    area() {
+        return self.w * self.h;
+    }
+
+    perimeter() {
+        return 2 * (self.w + self.h);
+    }
+
+    describe() {
+        return "Area: " + str(self.area()) + ", Perimeter: " + str(self.perimeter());
+    }
+}
+
+var rect = new Rectangle(4, 5);
+print(rect.describe());

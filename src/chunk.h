@@ -20,6 +20,7 @@ typedef enum {
     OP_DEFINE_GLOBAL, /* u16 */
     OP_DEFINE_GLOBAL_CONST, /* u16; defines the slot and marks it constant */
     OP_SET_GLOBAL,    /* u16 */
+    OP_IMPORT,        /* u16: constant with the module path */
     OP_GET_UPVALUE,   /* u8 */
     OP_SET_UPVALUE,   /* u8 */
     OP_INDEX,
@@ -73,7 +74,14 @@ typedef enum {
     OP_CLOSE_UPVALUE,
     OP_RETURN,
     OP_RETURN_ADD,
-    OP_CALL_SELF_SUB_LOCAL_CONST /* u8: slot, u16: constant */
+    OP_CALL_SELF_SUB_LOCAL_CONST, /* u8: slot, u16: constant */
+    OP_THROW,
+    OP_PUSH_CATCH,   /* u16: offset to catch block */
+    OP_PUSH_FINALLY, /* u16: offset to finally block */
+    OP_POP_TRY,
+    OP_END_FINALLY,
+    OP_INVOKE,       /* u16: constant method name, u8: arg count */
+    OP_SELF
 } OpCode;
 
 typedef struct {

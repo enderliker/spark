@@ -135,17 +135,17 @@ original numbering:
 
 ### Checkpoint: Phase 5
 - [x] All tests pass, build clean, docs updated
-- [ ] Review with the user before Phase 6
+- [x] Review with the user before Phase 6
 
 ### Phase 6 - Modules, exceptions, objects
-- [ ] T40 `import` design + implementation
-- [ ] T41 Module cache + cyclic-import handling
-- [ ] T42 `throw` + `try`/`catch`/`finally`
-- [ ] T43 Method-call sugar on maps + `self`
-- [ ] T44 Classes (fields, methods, `new`) - optional/advanced
+- [x] T40 `import` design + implementation
+- [x] T41 Module cache + cyclic-import handling
+- [x] T42 `throw` + `try`/`catch`/`finally`
+- [x] T43 Method-call sugar on maps + `self`
+- [x] T44 Classes (fields, methods, `new`) - optional/advanced
 
 ### Checkpoint: Phase 6
-- [ ] All tests pass, sanitizers clean; multi-file program works
+- [x] All tests pass, sanitizers clean; multi-file program works
 - [ ] Review with the user before Phase 7
 
 ### Phase 7 - VM performance & limits (area 5)

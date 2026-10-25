@@ -1,0 +1,5 @@
+import "./cycle_a.spark";
+
+fn from_b() {
+    return "b";
+}

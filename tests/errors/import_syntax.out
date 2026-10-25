@@ -1,0 +1,2 @@
+exit: 65
+stderr: SyntaxError at line 3: expected a module path string after 'import'

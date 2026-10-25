@@ -21,6 +21,7 @@ typedef struct {
 static Stmt *declaration(Parser *parser);
 static Stmt *statement(Parser *parser);
 static Expr *expression(Parser *parser);
+static Expr *call(Parser *parser);
 static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon);
 
 static void fail_at(Parser *parser, Token token, const char *message)
@@ -401,6 +402,9 @@ static Expr *primary(Parser *parser)
     if (match(parser, TOKEN_STRING_PART)) {
         return parse_interpolation(parser, token);
     }
+    if (match(parser, TOKEN_NEW)) {
+        return call(parser);
+    }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line, token.column);
 
@@ -529,6 +533,27 @@ static Expr *call(Parser *parser)
             index->as.index.index = expression(parser);
             consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after the index");
             expr = index;
+        } else if (match(parser, TOKEN_DOT)) {
+            Token name = consume(parser, TOKEN_IDENTIFIER, "expected property or method name after '.'");
+            if (match(parser, TOKEN_LEFT_PAREN)) {
+                Expr *mcall = new_expr(parser, EXPR_METHOD_CALL, expr->line, expr->column);
+                int count = 0;
+                ExprList *arguments = parse_arguments(parser, &count);
+
+                mcall->as.method_call.receiver = expr;
+                mcall->as.method_call.method = text_from_token(parser, name);
+                mcall->as.method_call.arguments = arguments;
+                mcall->as.method_call.argument_count = count;
+                expr = mcall;
+            } else {
+                Expr *index = new_expr(parser, EXPR_INDEX, expr->line, parser->previous.column);
+                Expr *prop_str = new_expr(parser, EXPR_STRING, name.line, name.column);
+
+                prop_str->as.string = text_from_token(parser, name);
+                index->as.index.object = expr;
+                index->as.index.index = prop_str;
+                expr = index;
+            }
         } else {
             break;
         }
@@ -1019,6 +1044,45 @@ static Stmt *labelled_loop(Parser *parser, Token label)
     return NULL;
 }
 
+static Stmt *try_statement(Parser *parser, int line, int column)
+{
+    Token try_tok = parser->previous;
+    consume(parser, TOKEN_LEFT_BRACE, "expected '{' after 'try'");
+    Stmt *try_block = block(parser);
+    bool has_catch = false;
+    Text catch_var = (Text){ "", 0 };
+    Stmt *catch_block = NULL;
+    Stmt *finally_block = NULL;
+
+    if (match(parser, TOKEN_CATCH)) {
+        has_catch = true;
+        if (match(parser, TOKEN_LEFT_PAREN)) {
+            Token var_tok = consume(parser, TOKEN_IDENTIFIER, "expected identifier for catch parameter");
+            catch_var = text_from_token(parser, var_tok);
+            consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after catch parameter");
+        } else if (match(parser, TOKEN_IDENTIFIER)) {
+            catch_var = text_from_token(parser, parser->previous);
+        }
+        consume(parser, TOKEN_LEFT_BRACE, "expected '{' after 'catch'");
+        catch_block = block(parser);
+    }
+    if (match(parser, TOKEN_FINALLY)) {
+        consume(parser, TOKEN_LEFT_BRACE, "expected '{' after 'finally'");
+        finally_block = block(parser);
+    }
+    if (!has_catch && !finally_block) {
+        fail_at(parser, try_tok, "expected 'catch' or 'finally' after 'try' block");
+    }
+
+    Stmt *stmt = new_stmt(parser, STMT_TRY, line, column);
+    stmt->as.try_stmt.try_block = try_block;
+    stmt->as.try_stmt.has_catch = has_catch;
+    stmt->as.try_stmt.catch_var = catch_var;
+    stmt->as.try_stmt.catch_block = catch_block;
+    stmt->as.try_stmt.finally_block = finally_block;
+    return stmt;
+}
+
 static Stmt *statement(Parser *parser)
 {
     int line = parser->current.line;
@@ -1071,14 +1135,85 @@ static Stmt *statement(Parser *parser)
         consume(parser, TOKEN_SEMICOLON, "expected ';' after 'continue'");
         return stmt;
     }
+    if (match(parser, TOKEN_THROW)) {
+        Stmt *stmt = new_stmt(parser, STMT_THROW, line, column);
+
+        stmt->as.throw_stmt.value = expression(parser);
+        consume(parser, TOKEN_SEMICOLON, "expected ';' after 'throw'");
+        return stmt;
+    }
+    if (match(parser, TOKEN_TRY)) {
+        return try_statement(parser, line, column);
+    }
     if (match(parser, TOKEN_LEFT_BRACE)) {
         return block(parser);
     }
     return expression_or_assignment(parser, true);
 }
 
+static Stmt *import_declaration(Parser *parser)
+{
+    Token keyword = parser->previous;
+    Token path_tok = consume(parser, TOKEN_STRING, "expected a module path string after 'import'");
+    Stmt *stmt = new_stmt(parser, STMT_IMPORT, keyword.line, keyword.column);
+
+    stmt->as.import_stmt.path = parse_string_part(parser, path_tok);
+    consume(parser, TOKEN_SEMICOLON, "expected ';' after the import statement");
+    return stmt;
+}
+
+static Stmt *class_declaration(Parser *parser)
+{
+    Token name_tok = consume(parser, TOKEN_IDENTIFIER, "expected class name");
+    consume(parser, TOKEN_LEFT_BRACE, "expected '{' before class body");
+
+    ClassMethod *head = NULL;
+    ClassMethod *tail = NULL;
+
+    while (!check(parser, TOKEN_RIGHT_BRACE) && !check(parser, TOKEN_EOF)) {
+        Token method_name = consume(parser, TOKEN_IDENTIFIER, "expected method name in class body");
+        ParamList *params = NULL;
+        ParamList *params_tail = NULL;
+        int count = 0;
+        parse_params(parser, &params, &params_tail, &count, "expected '(' after method name");
+
+        Stmt *body = statement(parser);
+        if (body->kind != STMT_BLOCK) {
+            fail_at(parser, method_name, "method body must be a block enclosed in braces");
+        }
+
+        ClassMethod *method = new_node(parser, sizeof(ClassMethod));
+        method->name = text_from_token(parser, method_name);
+        method->params = params;
+        method->param_count = count;
+        method->body = body;
+        method->is_init = (method->name.length == 4 && memcmp(method->name.chars, "init", 4) == 0);
+        method->next = NULL;
+
+        if (!head) {
+            head = method;
+        } else {
+            tail->next = method;
+        }
+        tail = method;
+    }
+
+    consume(parser, TOKEN_RIGHT_BRACE, "expected '}' after class body");
+
+    Stmt *stmt = new_stmt(parser, STMT_CLASS, name_tok.line, name_tok.column);
+    stmt->as.class_stmt.name = text_from_token(parser, name_tok);
+    stmt->as.class_stmt.methods = head;
+    return stmt;
+}
+
 static Stmt *declaration(Parser *parser)
 {
+    if (match(parser, TOKEN_CLASS)) {
+        return class_declaration(parser);
+    }
+    if (match(parser, TOKEN_IMPORT)) {
+        return import_declaration(parser);
+    }
     if (match(parser, TOKEN_VAR)) {
         return parse_var_declaration(parser, true);
     }

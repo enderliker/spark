@@ -1,0 +1,4 @@
+fn orphan() {
+    return self.foo;
+}
+orphan();

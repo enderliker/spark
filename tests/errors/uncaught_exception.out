@@ -1,0 +1,2 @@
+exit: 70
+stderr: RuntimeError at line 4: uncaught exception: boom

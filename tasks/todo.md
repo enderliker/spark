@@ -532,7 +532,7 @@ security-and-hardening and performance-optimization skills.
 
 ## Checkpoint: Phase 5
 - [x] All tests pass, build clean, docs updated
-- [ ] Review with the user before Phase 6
+- [x] Review with the user before Phase 6
 
 ---
 
@@ -542,10 +542,10 @@ security-and-hardening and performance-optimization skills.
 **Description:** `import "path";` compiles and runs a module once per resolved path;
 propose a shared global namespace (A6).
 **Acceptance criteria:**
-- [ ] Relative paths resolve against the importing file.
-- [ ] A module's top-level `var`/`fn` become usable by the importer (per Q3).
+- [x] Relative paths resolve against the importing file.
+- [x] A module's top-level `var`/`fn` become usable by the importer (per Q3).
 **Verification:**
-- [ ] Multi-file fixture; suite; docs.
+- [x] Multi-file fixture; suite; docs.
 **Dependencies:** Q3 answered.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/compiler.c`, `src/vm.c`, `src/main.c`, `tests/`, `docs/`.
 **Scope:** L (do the design note first).
@@ -553,10 +553,10 @@ propose a shared global namespace (A6).
 ### T41 - Module cache + cyclic-import handling
 **Description:** Cache compiled modules by absolute path; detect/handle import cycles.
 **Acceptance criteria:**
-- [ ] Importing the same module twice runs it once.
-- [ ] Cycles either error clearly or are handled (documented).
+- [x] Importing the same module twice runs it once.
+- [x] Cycles either error clearly or are handled (documented).
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** T40.
 **Files:** `src/vm.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M.
@@ -566,10 +566,10 @@ propose a shared global namespace (A6).
 handler; uncaught throw is a runtime error. Caught value per Q4. Runtime diagnostics
 already carry an `ErrorType` category (`src/error.h`) that a handler can dispatch on.
 **Acceptance criteria:**
-- [ ] `finally` always runs; stack/upvalues are cleaned during unwinding.
-- [ ] Errors inside `catch`/`finally` behave correctly.
+- [x] `finally` always runs; stack/upvalues are cleaned during unwinding.
+- [x] Errors inside `catch`/`finally` behave correctly.
 **Verification:**
-- [ ] Fixtures incl. nested try; suite; sanitizers; docs.
+- [x] Fixtures incl. nested try; suite; sanitizers; docs.
 **Dependencies:** Q4 answered.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/chunk.h`, `src/chunk.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/`.
 **Scope:** L (do the design note first).
@@ -578,10 +578,10 @@ already carry an `ErrorType` category (`src/error.h`) that a handler can dispatc
 **Description:** `recv.method(args)` looks up `"method"` in a map and calls it with the
 receiver bound to `self`.
 **Acceptance criteria:**
-- [ ] Calling a method on a non-map/missing key errors clearly.
-- [ ] `self` is available inside the method.
+- [x] Calling a method on a non-map/missing key errors clearly.
+- [x] `self` is available inside the method.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** None.
 **Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -589,15 +589,15 @@ receiver bound to `self`.
 ### T44 - Classes (optional/advanced)
 **Description:** Full `class`/`new`/fields/methods and (optionally) single inheritance.
 **Acceptance criteria:**
-- [ ] Per Q5; fields, methods, `self`, and construction documented.
+- [x] Per Q5; fields, methods, `self`, and construction documented.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** T43, Q5 answered.
 **Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `src/object.c/h`, `tests/`, `docs/`.
 **Scope:** L (design note first; may be deferred).
 
 ## Checkpoint: Phase 6
-- [ ] All tests pass, sanitizers clean; a multi-file program works
+- [x] All tests pass, sanitizers clean; a multi-file program works
 - [ ] Review with the user before Phase 7
 
 ---

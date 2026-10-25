@@ -48,7 +48,7 @@ continuation byte; they continue with letters, digits and `_`. The keywords are:
 
 ```
 var const fn if else while for in return break continue do switch case default
-true false nil and or not
+true false nil and or not import try catch finally throw class new
 ```
 
 ## 2. Types
@@ -535,7 +535,88 @@ Interpreter exit codes:
 | `70` | Runtime error |
 | `74` | Could not read the file |
 
-## 12. REPL
+## 12. Modules
+
+Spark supports multi-file programs via the `import` statement:
+
+```spark
+import "./math_utils";
+import "./helpers/string.spark";
+```
+
+- Paths are relative to the importing file (or current directory in the REPL).
+- The `.spark` file extension is optional; if omitted, it is appended automatically.
+- Modules share the global execution environment: any top-level `var`, `const`, `fn`, or `class` declared in an imported module becomes available to the importer.
+- The runtime canonicalizes module paths using `realpath()` and caches loaded modules. Each module is parsed, compiled, and executed at most once. Cyclic imports are detected and handled without re-execution or infinite loops.
+
+## 13. Exception handling
+
+Exceptions are raised with `throw` and handled with `try` / `catch` / `finally`:
+
+```spark
+try {
+    throw "something failed";
+} catch (e) {
+    print("Caught:", e);
+} finally {
+    print("Cleanup");
+}
+```
+
+- Any Spark value can be thrown (`string`, `number`, `map`, etc.).
+- `catch` can optionally bind an identifier to the thrown value: `catch (e)` or `catch err`.
+- `finally` blocks always execute, whether the `try` block completes normally, handles an exception, returns early via `return`, or leaves an uncaught exception propagating upward.
+- If an exception reaches the top of the call stack without finding a handler, the VM terminates execution with exit code 70 and reports `uncaught exception: <value>`.
+
+## 14. Object-oriented features: Methods, `self`, and Classes
+
+Spark provides prototype-friendly map methods and syntactic class declarations.
+
+### Method call sugar and `self`
+
+Calling a function stored in a map using the dot operator automatically binds `self` to the map receiver:
+
+```spark
+var counter = {
+    "count": 0,
+    "increment": fn(step = 1) {
+        self.count += step;
+        return self.count;
+    }
+};
+
+print(counter.increment(2)); // 2
+```
+
+- Dot notation can also read and write map properties: `obj.field = value;`.
+- Inside any method invoked via `recv.method(...)`, the identifier `self` refers to `recv`.
+- If a function accessing `self` is called directly rather than via a method call, a runtime `NameError` is raised indicating `self` is not bound.
+- Method calls can be chained: `obj.step().step().get()`.
+
+### Classes and `new`
+
+The `class` statement provides clean syntax for constructors and method sets:
+
+```spark
+class Person {
+    init(name, age = 0) {
+        self.name = name;
+        self.age = age;
+    }
+
+    greet() {
+        return "Hello, I am " + self.name;
+    }
+}
+
+var p = new Person("Ada", 36);
+print(p.greet());
+```
+
+- The constructor is defined using the optional `init(...)` method.
+- `new Class(...)` or `Class(...)` invokes the constructor, initializes a new map instance, binds its methods, executes `init`, and returns the instance.
+
+## 15. REPL
 
 With no arguments, `spark` opens a REPL. Every expression statement prints its value,
 global variables persist and errors do not close the session. The special variable `_`
@@ -543,11 +624,11 @@ automatically holds the result of the last evaluated expression statement. Type
 `salir`, `exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
 unclosed braces, so multi-line functions can be defined.
 
-## 13. Limits
+## 16. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.
 - 256 local variables per function.
 - 256 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).
 - 16-bit constant index per function.
-- No modules, exceptions or threads.
+- No native threads or green coroutines.

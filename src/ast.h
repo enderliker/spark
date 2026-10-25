@@ -69,7 +69,8 @@ typedef enum {
     EXPR_ARRAY,
     EXPR_MAP,
     EXPR_INTERPOLATION,
-    EXPR_FUNCTION
+    EXPR_FUNCTION,
+    EXPR_METHOD_CALL
 } ExprKind;
 
 struct Expr {
@@ -134,6 +135,12 @@ struct Expr {
             int param_count;
             Stmt *body;
         } function;
+        struct {
+            Expr *receiver;
+            Text method;
+            ExprList *arguments;
+            int argument_count;
+        } method_call;
     } as;
 };
 
@@ -151,8 +158,21 @@ typedef enum {
     STMT_FUNCTION,
     STMT_RETURN,
     STMT_BREAK,
-    STMT_CONTINUE
+    STMT_CONTINUE,
+    STMT_IMPORT,
+    STMT_THROW,
+    STMT_TRY,
+    STMT_CLASS
 } StmtKind;
+
+typedef struct ClassMethod {
+    Text name;
+    ParamList *params;
+    int param_count;
+    Stmt *body;
+    bool is_init;
+    struct ClassMethod *next;
+} ClassMethod;
 
 struct Stmt {
     StmtKind kind;
@@ -217,6 +237,23 @@ struct Stmt {
         struct {
             Text label;
         } jump;
+        struct {
+            Text path;
+        } import_stmt;
+        struct {
+            Expr *value;
+        } throw_stmt;
+        struct {
+            Stmt *try_block;
+            bool has_catch;
+            Text catch_var;
+            Stmt *catch_block;
+            Stmt *finally_block;
+        } try_stmt;
+        struct {
+            Text name;
+            ClassMethod *methods;
+        } class_stmt;
     } as;
 };
 

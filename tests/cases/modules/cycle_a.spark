@@ -1,0 +1,5 @@
+import "./cycle_b.spark";
+
+fn from_a() {
+    return "hello from a and " + from_b();
+}

@@ -274,6 +274,34 @@ for strings. The same rule applies to a callback result that is stored after
 - The REPL compiles in `repl_mode`, which turns each expression statement into
   `PRINT_REPL` to show its value.
 
+## Modules and loading
+
+The VM manages modules through a canonical module table (`vm.modules`).
+- `import "path";` emits `OP_IMPORT`.
+- Path resolution normalizes paths relative to the current file's directory (stored in `function->script_path`) using `realpath()`, appending `.spark` if needed.
+- If a module is currently marked `MODULE_LOADING`, a cyclic import is detected and the import succeeds without re-executing the module body, allowing mutual references.
+- Once loaded, `MODULE_LOADED` ensures each file executes at most once across the entire process lifetime.
+- Modules share the global namespace, making top-level declarations directly accessible across imported files.
+
+## Exception handling and stack unwinding
+
+Exception handling uses a runtime try-handler stack (`TryHandler vm.try_handlers[TRY_HANDLERS_MAX]`):
+- `OP_PUSH_CATCH` and `OP_PUSH_FINALLY` record the handler kind, target IP, current frame index, stack depth, and try nesting depth.
+- `OP_POP_TRY` removes the active handler when a try block exits normally.
+- `throw <value>;` emits `OP_THROW`. When an exception is thrown:
+  1. The VM scans `try_handlers` from top to bottom.
+  2. If a catch handler is found in the current frame or an outer frame, intervening call frames are unwound, open upvalues for popped local slots are closed via `close_upvalues`, and execution jumps to the handler target IP with the thrown value pushed.
+  3. If a finally handler is encountered during unwinding, the exception value is preserved in `vm.exception_value`, the finally block runs, and `OP_END_FINALLY` resumes unwinding if the exception was not caught inside the finally block.
+  4. If no handler exists, the VM halts with a runtime error (`uncaught exception`).
+
+## Object-oriented model and methods
+
+Spark uses a prototype-inspired model with class syntactic sugar:
+- Maps act as objects. Method calls `receiver.method(args)` emit `OP_INVOKE` (constant name index + argument count).
+- `OP_INVOKE` looks up the closure in the receiver map and calls it, setting `CallFrame.self = receiver`.
+- Inside method functions, references to `self` resolve to `OP_SELF`, which retrieves `frame->self`. If `frame->self` is not set (e.g. standalone call), a runtime `NameError` is raised.
+- `class Name { init(...) { ... } method() { ... } }` desugars into a constructor function named `Name`. Calling `new Name(...)` or `Name(...)` creates a map instance, attaches the class's method closures, runs `init(...)` with `self` bound, and returns the instance.
+
 ## Tests
 
 `tests/run_tests.py`:

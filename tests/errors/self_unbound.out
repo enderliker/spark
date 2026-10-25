@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'self' is not bound (not in a method call)

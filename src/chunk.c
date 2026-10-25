@@ -75,6 +75,7 @@ const char *opcode_name(OpCode op)
     case OP_DEFINE_GLOBAL: return "DEFINE_GLOBAL";
     case OP_DEFINE_GLOBAL_CONST: return "DEFINE_GLOBAL_CONST";
     case OP_SET_GLOBAL: return "SET_GLOBAL";
+    case OP_IMPORT: return "IMPORT";
     case OP_GET_UPVALUE: return "GET_UPVALUE";
     case OP_SET_UPVALUE: return "SET_UPVALUE";
     case OP_INDEX: return "INDEX";
@@ -127,6 +128,13 @@ const char *opcode_name(OpCode op)
     case OP_RETURN: return "RETURN";
     case OP_RETURN_ADD: return "RETURN_ADD";
     case OP_CALL_SELF_SUB_LOCAL_CONST: return "CALL_SELF_SUB_LC";
+    case OP_THROW: return "THROW";
+    case OP_PUSH_CATCH: return "PUSH_CATCH";
+    case OP_PUSH_FINALLY: return "PUSH_FINALLY";
+    case OP_POP_TRY: return "POP_TRY";
+    case OP_END_FINALLY: return "END_FINALLY";
+    case OP_INVOKE: return "INVOKE";
+    case OP_SELF: return "SELF";
     }
     return "?";
 }
@@ -182,6 +190,8 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
     switch (op) {
     case OP_CONSTANT:
         return constant_instruction(chunk, opcode_name(op), offset);
+    case OP_IMPORT:
+        return constant_instruction(chunk, opcode_name(op), offset);
     case OP_GET_GLOBAL:
     case OP_DEFINE_GLOBAL:
     case OP_DEFINE_GLOBAL_CONST:
@@ -236,6 +246,8 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         printf("' -> %d\n", offset + 6 + jump);
         return offset + 6;
     }
+    case OP_PUSH_CATCH:
+    case OP_PUSH_FINALLY:
     case OP_JUMP:
     case OP_JUMP_IF_FALSE:
     case OP_JUMP_IF_FALSE_POP:
@@ -253,6 +265,14 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         int count = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
         printf("%-18s %4d\n", opcode_name(op), count);
         return offset + 3;
+    }
+    case OP_INVOKE: {
+        int index = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        int count = chunk->code[offset + 3];
+        printf("%-18s %4d '", opcode_name(op), index);
+        value_print_repr(stdout, chunk->constants[index]);
+        printf("' (%d args)\n", count);
+        return offset + 4;
     }
     default:
         return simple_instruction(opcode_name(op), offset);

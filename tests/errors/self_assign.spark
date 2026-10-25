@@ -1,0 +1,4 @@
+fn test() {
+    self = 1;
+}
+test();

@@ -1,0 +1,2 @@
+exit: 70
+stderr: method call receiver must be a map, received number

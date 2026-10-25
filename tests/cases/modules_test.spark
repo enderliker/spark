@@ -1,0 +1,9 @@
+import "modules/helper.spark";
+import "modules/helper";
+import "modules/sub/deep.spark";
+import "modules/cycle_a.spark";
+
+print(helper_add(10, 20));
+print(helper_loaded_count);
+print(deep_mul(6, 7));
+print(from_a());

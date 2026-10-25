@@ -44,6 +44,7 @@ typedef struct LoopCtx {
     int *continues;
     int continue_count;
     int continue_capacity;
+    int try_depth;
 } LoopCtx;
 
 typedef struct ConstGlobal {
@@ -58,6 +59,7 @@ typedef struct {
     int column;
     bool repl_mode;
     const char *source;
+    ObjString *script_path;
     ConstGlobal *const_globals;
 } CompileContext;
 
@@ -72,6 +74,7 @@ typedef struct Compiler {
     int scope_depth;
     int column;
     LoopCtx *loop;
+    int try_depth;
     CompileContext *ctx;
 } Compiler;
 
@@ -205,6 +208,7 @@ static void init_compiler(Compiler *compiler, Compiler *enclosing, FunctionType 
     compiler->ctx = ctx;
     compiler->function = object_function();
     compiler->function->source = ctx->source;
+    compiler->function->script_path = ctx->script_path;
     compiler->scope_depth = type == FUNC_FUNCTION ? 1 : 0;
 
     /* Slot 0 holds the running closure. */
@@ -316,7 +320,8 @@ static void mark_local_initialized(Compiler *compiler)
 typedef enum {
     VAR_LOCAL,
     VAR_UPVALUE,
-    VAR_GLOBAL
+    VAR_GLOBAL,
+    VAR_SELF
 } VarKind;
 
 typedef struct {
@@ -342,6 +347,11 @@ static VarRef resolve_variable(Compiler *compiler, Text name, int line)
         ref.index = upvalue;
         return ref;
     }
+    if (compiler->type == FUNC_FUNCTION && name.length == 4 && memcmp(name.chars, "self", 4) == 0) {
+        ref.kind = VAR_SELF;
+        ref.index = 0;
+        return ref;
+    }
     ref.kind = VAR_GLOBAL;
     ref.index = 0;
     ref.name = name_constant(name);
@@ -363,6 +373,9 @@ static void emit_get(Compiler *compiler, VarRef ref, int line)
         emit_byte(compiler, OP_GET_GLOBAL, line);
         emit_global_name(compiler, ref.name, line);
         break;
+    case VAR_SELF:
+        emit_byte(compiler, OP_SELF, line);
+        break;
     }
 }
 
@@ -380,6 +393,9 @@ static void emit_set(Compiler *compiler, VarRef ref, int line)
     case VAR_GLOBAL:
         emit_byte(compiler, OP_SET_GLOBAL, line);
         emit_global_name(compiler, ref.name, line);
+        break;
+    case VAR_SELF:
+        compile_error(compiler, line, "cannot assign to 'self'");
         break;
     }
 }
@@ -419,6 +435,9 @@ static void check_mutable(Compiler *compiler, VarRef ref, Text name, int line)
     case VAR_LOCAL: is_const = compiler->locals[ref.index].is_const; break;
     case VAR_UPVALUE: is_const = compiler->upvalues[ref.index].is_const; break;
     case VAR_GLOBAL: is_const = global_is_const(compiler, ref.name); break;
+    case VAR_SELF:
+        compile_error(compiler, line, "cannot assign to 'self'");
+        return;
     }
     if (is_const) {
         compile_error(compiler, line, "cannot assign to constant '%.*s'", name.length,
@@ -694,6 +713,7 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
 
     LoopCtx *previous_loop = compiler->loop;
     loop.previous = previous_loop;
+    loop.try_depth = compiler->try_depth;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.for_in.body);
     compiler->loop = previous_loop;
@@ -739,6 +759,7 @@ static void compile_while(Compiler *compiler, Stmt *stmt, int line)
 
     LoopCtx *previous_loop = compiler->loop;
     loop.previous = previous_loop;
+    loop.try_depth = compiler->try_depth;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.while_stmt.body);
     compiler->loop = previous_loop;
@@ -767,6 +788,7 @@ static void compile_do_while(Compiler *compiler, Stmt *stmt, int line)
 
     LoopCtx *previous_loop = compiler->loop;
     loop.previous = previous_loop;
+    loop.try_depth = compiler->try_depth;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.do_while.body);
     compiler->loop = previous_loop;
@@ -813,6 +835,7 @@ static void compile_for(Compiler *compiler, Stmt *stmt, int line)
 
     LoopCtx *previous_loop = compiler->loop;
     loop.previous = previous_loop;
+    loop.try_depth = compiler->try_depth;
     compiler->loop = &loop;
     compile_statement(compiler, stmt->as.for_stmt.body);
     compiler->loop = previous_loop;
@@ -865,6 +888,7 @@ static void compile_switch(Compiler *compiler, Stmt *stmt, int line)
     ctx.is_switch = true;
     ctx.local_count = compiler->local_count;
     ctx.previous = compiler->loop;
+    ctx.try_depth = compiler->try_depth;
     compiler->loop = &ctx;
 
     for (SwitchCase *case_node = stmt->as.switch_stmt.cases; case_node;
@@ -937,6 +961,9 @@ static void compile_break(Compiler *compiler, Text label, int line)
 {
     LoopCtx *loop = find_loop(compiler, label, line, false);
 
+    for (int i = 0; i < compiler->try_depth - loop->try_depth; i++) {
+        emit_byte(compiler, OP_POP_TRY, line);
+    }
     compile_cleanup_to(compiler, loop->local_count, line);
     add_break_jump(loop, emit_jump(compiler, OP_JUMP, line));
 }
@@ -945,6 +972,9 @@ static void compile_continue(Compiler *compiler, Text label, int line)
 {
     LoopCtx *loop = find_loop(compiler, label, line, true);
 
+    for (int i = 0; i < compiler->try_depth - loop->try_depth; i++) {
+        emit_byte(compiler, OP_POP_TRY, line);
+    }
     compile_cleanup_to(compiler, loop->local_count, line);
     if (loop->continue_target >= 0) {
         emit_loop(compiler, loop->continue_target, line);
@@ -956,6 +986,190 @@ static void compile_continue(Compiler *compiler, Text label, int line)
             loop->continues = realloc(loop->continues, sizeof(int) * (size_t)loop->continue_capacity);
         }
         loop->continues[loop->continue_count++] = offset;
+    }
+}
+
+static void compile_try_catch(Compiler *compiler, Stmt *try_block, Text catch_var, Stmt *catch_block, int line)
+{
+    int catch_jump = emit_jump(compiler, OP_PUSH_CATCH, line);
+
+    compiler->try_depth++;
+    compile_statement(compiler, try_block);
+    compiler->try_depth--;
+
+    emit_byte(compiler, OP_POP_TRY, line);
+    int exit_jump = emit_jump(compiler, OP_JUMP, line);
+
+    patch_jump(compiler, catch_jump);
+    begin_scope(compiler);
+    if (catch_var.length > 0) {
+        add_local(compiler, catch_var, line);
+        mark_local_initialized(compiler);
+    } else {
+        emit_byte(compiler, OP_POP, line);
+    }
+    compile_statement(compiler, catch_block);
+    end_scope(compiler, line);
+
+    patch_jump(compiler, exit_jump);
+}
+
+static void compile_try_finally(Compiler *compiler, Stmt *try_block, Stmt *finally_block, int line)
+{
+    int finally_jump = emit_jump(compiler, OP_PUSH_FINALLY, line);
+
+    compiler->try_depth++;
+    compile_statement(compiler, try_block);
+    compiler->try_depth--;
+
+    emit_byte(compiler, OP_POP_TRY, line);
+
+    /* Normal completion: push NIL (saved_value) and 0 (action NORMAL) */
+    emit_byte(compiler, OP_NIL, line);
+    int zero_const = add_constant(compiler, INT_VAL(0), line);
+    emit_byte(compiler, OP_CONSTANT, line);
+    emit_u16(compiler, (uint16_t)zero_const, line);
+
+    int skip_jump = emit_jump(compiler, OP_JUMP, line);
+
+    patch_jump(compiler, finally_jump);
+    patch_jump(compiler, skip_jump);
+
+    compile_statement(compiler, finally_block);
+    emit_byte(compiler, OP_END_FINALLY, line);
+}
+
+static void compile_try(Compiler *compiler, Stmt *stmt, int line)
+{
+    if (stmt->as.try_stmt.has_catch && stmt->as.try_stmt.finally_block) {
+        Stmt inner_try;
+        memset(&inner_try, 0, sizeof(inner_try));
+        inner_try.kind = STMT_TRY;
+        inner_try.line = stmt->line;
+        inner_try.column = stmt->column;
+        inner_try.as.try_stmt.try_block = stmt->as.try_stmt.try_block;
+        inner_try.as.try_stmt.has_catch = true;
+        inner_try.as.try_stmt.catch_var = stmt->as.try_stmt.catch_var;
+        inner_try.as.try_stmt.catch_block = stmt->as.try_stmt.catch_block;
+        inner_try.as.try_stmt.finally_block = NULL;
+
+        compile_try_finally(compiler, &inner_try, stmt->as.try_stmt.finally_block, line);
+    } else if (stmt->as.try_stmt.has_catch) {
+        compile_try_catch(compiler, stmt->as.try_stmt.try_block, stmt->as.try_stmt.catch_var,
+                          stmt->as.try_stmt.catch_block, line);
+    } else if (stmt->as.try_stmt.finally_block) {
+        compile_try_finally(compiler, stmt->as.try_stmt.try_block, stmt->as.try_stmt.finally_block, line);
+    }
+}
+
+static void compile_class(Compiler *compiler, Stmt *stmt, int line)
+{
+    Text name = stmt->as.class_stmt.name;
+    bool is_global = compiler->scope_depth == 0;
+    ObjString *class_name = name_constant(name);
+
+    if (is_global && global_is_const(compiler, class_name)) {
+        compile_error(compiler, line, "cannot redefine constant '%.*s'", name.length, name.chars);
+    }
+
+    ClassMethod *init_method = NULL;
+    for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
+        if (m->is_init) {
+            init_method = m;
+            break;
+        }
+    }
+
+    Compiler fn;
+    init_compiler(&fn, compiler, FUNC_FUNCTION, compiler->ctx);
+    fn.function->name = object_string(name.chars, name.length);
+    fn.locals[0].name = name;
+    fn.locals[0].is_const = true;
+
+    ParamList *params = init_method ? init_method->params : NULL;
+    fn.function->arity = 0;
+    fn.function->min_arity = 0;
+    fn.function->is_varargs = false;
+
+    for (ParamList *param = params; param; param = param->next) {
+        add_local(&fn, param->name, line);
+        if (param->is_varargs) {
+            fn.function->is_varargs = true;
+        } else {
+            fn.function->arity++;
+            if (!param->default_value) {
+                fn.function->min_arity++;
+            }
+        }
+    }
+
+    int param_slot = 1;
+    for (ParamList *param = params; param; param = param->next, param_slot++) {
+        if (param->default_value) {
+            emit_byte(&fn, OP_DEFAULT_ARG, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            emit_byte(&fn, 0xff, line);
+            emit_byte(&fn, 0xff, line);
+            int jump = fn.function->chunk.count - 2;
+            compile_expression(&fn, param->default_value);
+            emit_byte(&fn, OP_SET_LOCAL, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            patch_jump(&fn, jump);
+        }
+        fn.locals[param_slot].depth = fn.scope_depth;
+    }
+
+    /* Create empty map and store in local 'self' */
+    emit_byte(&fn, OP_MAP, line);
+    emit_u16(&fn, 0, line);
+    int self_slot = add_local(&fn, (Text){"self", 4}, line);
+    fn.locals[self_slot].depth = fn.scope_depth;
+
+    /* Attach methods */
+    for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
+        if (m->is_init) continue;
+        emit_byte(&fn, OP_GET_LOCAL, line);
+        emit_byte(&fn, (uint8_t)self_slot, line);
+
+        ObjString *mname = name_constant(m->name);
+        int mname_idx = add_constant(&fn, OBJ_VAL(mname), line);
+        emit_byte(&fn, OP_CONSTANT, line);
+        emit_u16(&fn, (uint16_t)mname_idx, line);
+
+        compile_function_value(&fn, m->name, m->params, m->body, line);
+
+        emit_byte(&fn, OP_INDEX_SET, line);
+    }
+
+    /* Execute init statements if any */
+    if (init_method && init_method->body && init_method->body->kind == STMT_BLOCK) {
+        for (StmtList *s = init_method->body->as.block.statements; s; s = s->next) {
+            compile_statement(&fn, s->stmt);
+        }
+    }
+
+    /* Return self */
+    emit_byte(&fn, OP_GET_LOCAL, line);
+    emit_byte(&fn, (uint8_t)self_slot, line);
+    emit_byte(&fn, OP_RETURN, line);
+
+    int constant = chunk_add_constant(&compiler->function->chunk, OBJ_VAL(fn.function));
+    if (constant > 0xffff) {
+        compile_error(compiler, line, "too many constants in one function");
+    }
+    emit_byte(compiler, OP_CLOSURE, line);
+    emit_u16(compiler, (uint16_t)constant, line);
+    for (int i = 0; i < fn.upvalue_count; i++) {
+        emit_byte(compiler, fn.upvalues[i].is_local ? 1 : 0, line);
+        emit_byte(compiler, fn.upvalues[i].index, line);
+    }
+
+    if (is_global) {
+        emit_byte(compiler, OP_DEFINE_GLOBAL, line);
+        emit_global_name(compiler, class_name, line);
+    } else {
+        add_local(compiler, name, line);
+        mark_local_initialized(compiler);
     }
 }
 
@@ -1081,6 +1295,27 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
 
     case STMT_CONTINUE:
         compile_continue(compiler, stmt->as.jump.label, line);
+        break;
+
+    case STMT_IMPORT: {
+        ObjString *path = name_constant(stmt->as.import_stmt.path);
+        int index = add_constant(compiler, OBJ_VAL(path), line);
+        emit_byte(compiler, OP_IMPORT, line);
+        emit_u16(compiler, (uint16_t)index, line);
+        break;
+    }
+
+    case STMT_THROW:
+        compile_expression(compiler, stmt->as.throw_stmt.value);
+        emit_byte(compiler, OP_THROW, line);
+        break;
+
+    case STMT_TRY:
+        compile_try(compiler, stmt, line);
+        break;
+
+    case STMT_CLASS:
+        compile_class(compiler, stmt, line);
         break;
     }
 }
@@ -1424,6 +1659,20 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         compile_function_value(compiler, expr->as.function.name, expr->as.function.params,
                                expr->as.function.body, line);
         break;
+
+    case EXPR_METHOD_CALL: {
+        compile_expression(compiler, expr->as.method_call.receiver);
+        for (ExprList *arg = expr->as.method_call.arguments; arg; arg = arg->next) {
+            compile_expression(compiler, arg->expr);
+        }
+        ObjString *name = name_constant(expr->as.method_call.method);
+        int index = add_constant(compiler, OBJ_VAL(name), line);
+        compiler->column = expr->column;
+        emit_byte(compiler, OP_INVOKE, line);
+        emit_u16(compiler, (uint16_t)index, line);
+        emit_byte(compiler, (uint8_t)expr->as.method_call.argument_count, line);
+        break;
+    }
     }
 }
 
@@ -1451,6 +1700,7 @@ ObjFunction *compile_ast(Stmt *program, const char *name, const char *source, bo
     memset(&ctx, 0, sizeof(ctx));
     ctx.repl_mode = repl_mode;
     ctx.source = source;
+    ctx.script_path = object_string(name, (int)strlen(name));
 
     mem_pause_gc();
     if (setjmp(ctx.jump) != 0) {

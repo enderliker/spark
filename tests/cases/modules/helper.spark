@@ -1,0 +1,6 @@
+var helper_loaded_count = 0;
+helper_loaded_count += 1;
+
+fn helper_add(a, b) {
+    return a + b;
+}

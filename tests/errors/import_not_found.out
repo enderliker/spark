@@ -1,0 +1,2 @@
+exit: 70
+stderr: RuntimeError at line 3: could not open or resolve module 'non_existent_module.spark'

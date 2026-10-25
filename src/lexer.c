@@ -169,6 +169,8 @@ static TokenType identifier_type(const Lexer *lexer)
         break;
     case 'c':
         if (IS("case")) return TOKEN_CASE;
+        if (IS("catch")) return TOKEN_CATCH;
+        if (IS("class")) return TOKEN_CLASS;
         if (IS("const")) return TOKEN_CONST;
         if (IS("continue")) return TOKEN_CONTINUE;
         break;
@@ -182,14 +184,17 @@ static TokenType identifier_type(const Lexer *lexer)
         break;
     case 'f':
         if (IS("false")) return TOKEN_FALSE;
+        if (IS("finally")) return TOKEN_FINALLY;
         if (IS("fn")) return TOKEN_FN;
         if (IS("for")) return TOKEN_FOR;
         break;
     case 'i':
         if (IS("if")) return TOKEN_IF;
+        if (IS("import")) return TOKEN_IMPORT;
         if (IS("in")) return TOKEN_IN;
         break;
     case 'n':
+        if (IS("new")) return TOKEN_NEW;
         if (IS("nil")) return TOKEN_NIL;
         if (IS("not")) return TOKEN_NOT;
         break;
@@ -203,7 +208,9 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("switch")) return TOKEN_SWITCH;
         break;
     case 't':
+        if (IS("throw")) return TOKEN_THROW;
         if (IS("true")) return TOKEN_TRUE;
+        if (IS("try")) return TOKEN_TRY;
         break;
     case 'v':
         if (IS("var")) return TOKEN_VAR;
@@ -460,10 +467,13 @@ Token lexer_next(Lexer *lexer)
     case ';': return make_token(lexer, TOKEN_SEMICOLON);
     case ':': return make_token(lexer, TOKEN_COLON);
     case '.':
-        if (match(lexer, '.') && match(lexer, '.')) {
-            return make_token(lexer, TOKEN_DOT_DOT_DOT);
+        if (match(lexer, '.')) {
+            if (match(lexer, '.')) {
+                return make_token(lexer, TOKEN_DOT_DOT_DOT);
+            }
+            return error_token(lexer, "unexpected character '..'");
         }
-        return error_token(lexer, "unexpected character '.'");
+        return make_token(lexer, TOKEN_DOT);
     case '?': return make_token(lexer, match(lexer, '?') ? TOKEN_QUESTION_QUESTION : TOKEN_QUESTION);
     case '+': return make_token(lexer, match(lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
     case '-': return make_token(lexer, match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
@@ -512,6 +522,7 @@ const char *token_type_name(TokenType type)
     case TOKEN_COMMA: return "','";
     case TOKEN_SEMICOLON: return "';'";
     case TOKEN_COLON: return "':'";
+    case TOKEN_DOT: return "'.'";
     case TOKEN_DOT_DOT_DOT: return "'...'";
     case TOKEN_QUESTION: return "'?'";
     case TOKEN_QUESTION_QUESTION: return "\?\?'";
@@ -565,6 +576,13 @@ const char *token_type_name(TokenType type)
     case TOKEN_RETURN: return "'return'";
     case TOKEN_BREAK: return "'break'";
     case TOKEN_CONTINUE: return "'continue'";
+    case TOKEN_IMPORT: return "'import'";
+    case TOKEN_TRY: return "'try'";
+    case TOKEN_CATCH: return "'catch'";
+    case TOKEN_FINALLY: return "'finally'";
+    case TOKEN_THROW: return "'throw'";
+    case TOKEN_CLASS: return "'class'";
+    case TOKEN_NEW: return "'new'";
     case TOKEN_TRUE: return "'true'";
     case TOKEN_FALSE: return "'false'";
     case TOKEN_NIL: return "'nil'";

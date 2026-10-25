@@ -1,0 +1,3 @@
+// exit: 65
+// stderr: expected a module path string after 'import'
+import 123;

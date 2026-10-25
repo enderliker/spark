@@ -30,6 +30,7 @@ typedef struct {
     Value *slots;
     Value *constants;
     int argc;
+    Value self;
 } CallFrame;
 
 typedef struct {
@@ -44,6 +45,26 @@ typedef struct {
     size_t length;
 } SourceText;
 
+typedef enum {
+    MODULE_LOADING,
+    MODULE_LOADED
+} ModuleStatus;
+
+typedef struct ModuleEntry {
+    char *canonical_path;
+    ModuleStatus status;
+    struct ModuleEntry *next;
+} ModuleEntry;
+
+#define TRY_HANDLERS_MAX 512
+
+typedef struct {
+    int frame_count;
+    int stack_count;
+    uint8_t *target_ip;
+    bool is_finally;
+} TryHandler;
+
 typedef struct {
     CallFrame frames[FRAMES_MAX];
     int frame_count;
@@ -57,6 +78,11 @@ typedef struct {
     SourceText *sources;
     int source_count;
     int source_capacity;
+    ModuleEntry *modules;
+    TryHandler try_handlers[TRY_HANDLERS_MAX];
+    int try_handler_count;
+    bool has_exception;
+    Value exception_value;
     bool had_error;
 } VM;
 
@@ -87,6 +113,18 @@ static inline bool numeric_fast(Value v)
 static InterpretResult run(int base_frame);
 static bool call_callback(Value callee, int arg_count, Value *result);
 static inline bool compare_values(bool greater, Value a, Value b, bool *out);
+static bool import_module(ObjString *path_str, ObjString *importer_path);
+
+static char *duplicate_string(const char *str)
+{
+    size_t len = strlen(str);
+    char *copy = malloc(len + 1);
+
+    if (copy) {
+        memcpy(copy, str, len + 1);
+    }
+    return copy;
+}
 
 static void push(Value value)
 {
@@ -198,6 +236,7 @@ static void blacken(Obj *object)
         ObjFunction *function = (ObjFunction *)object;
 
         mark_object((Obj *)function->name);
+        mark_object((Obj *)function->script_path);
         for (int i = 0; i < function->chunk.constants_count; i++) {
             mark_value(function->chunk.constants[i]);
         }
@@ -244,6 +283,7 @@ static void mark_roots(void)
     }
     for (int i = 0; i < vm.frame_count; i++) {
         mark_object((Obj *)vm.frames[i].closure);
+        mark_value(vm.frames[i].self);
     }
     for (int i = 0; i < vm.global_count; i++) {
         mark_object((Obj *)vm.global_slots[i].name);
@@ -258,6 +298,9 @@ static void mark_roots(void)
     }
     for (ObjUpvalue *upvalue = vm.open_upvalues; upvalue; upvalue = upvalue->next) {
         mark_object((Obj *)upvalue);
+    }
+    if (vm.has_exception) {
+        mark_value(vm.exception_value);
     }
 }
 
@@ -2488,6 +2531,7 @@ static bool call_closure(ObjClosure *closure, int arg_count)
         frame->slots = vm.stack_top - (function->arity + 1) - 1;
         frame->constants = function->chunk.constants;
         frame->argc = arg_count < function->arity ? arg_count : function->arity;
+        frame->self = NIL_VAL;
         return true;
     }
 
@@ -2504,6 +2548,7 @@ static bool call_closure(ObjClosure *closure, int arg_count)
     frame->slots = vm.stack_top - function->arity - 1;
     frame->constants = function->chunk.constants;
     frame->argc = original_argc;
+    frame->self = NIL_VAL;
     return true;
 }
 
@@ -2527,6 +2572,9 @@ static bool call_value(Value callee, int arg_count)
             Value result = native->function(arg_count, native_base + 1);
 
             vm.stack_top = native_base;
+            if (vm.has_exception) {
+                return false;
+            }
             push(result);
             return true;
         }
@@ -3255,6 +3303,7 @@ static InterpretResult run(int base_frame)
                         frame->slots = sp - function->arity - 1;
                         frame->constants = function->chunk.constants;
                         frame->argc = original_argc;
+                        frame->self = NIL_VAL;
                         ip = function->chunk.code;
                         slots = frame->slots;
                         constants = frame->constants;
@@ -3347,6 +3396,9 @@ static InterpretResult run(int base_frame)
             if (__builtin_expect(frame == &vm.frames[base_frame], 0)) {
                 goto cold;
             }
+            if (__builtin_expect(vm.try_handler_count > 0, 0)) {
+                goto cold;
+            }
             result = *ip == OP_RETURN ? sp[-1] : slots[ip[1]];
             if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
                 close_upvalues(slots);
@@ -3391,6 +3443,7 @@ static InterpretResult run(int base_frame)
             frame->ip = frame->closure->function->chunk.code;
             frame->slots = sp;
             frame->constants = constants;
+            frame->self = prev->self;
             sp[0] = prev->slots[0];
             sp[1] = arg;
             sp += 2;
@@ -3421,6 +3474,9 @@ static InterpretResult run(int base_frame)
 
         do_ret_add:
             if (__builtin_expect(frame == &vm.frames[base_frame], 0)) {
+                goto cold;
+            }
+            if (__builtin_expect(vm.try_handler_count > 0, 0)) {
                 goto cold;
             }
             if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
@@ -3625,6 +3681,16 @@ cold_dispatch:
                 return INTERPRET_RUNTIME_ERROR;
             }
             global->value = pop();
+            break;
+        }
+
+        case OP_IMPORT: {
+            uint16_t slot = READ_U16();
+            ObjString *path_str = AS_STRING(frame->closure->function->chunk.constants[slot]);
+
+            if (!import_module(path_str, frame->closure->function->script_path)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
             break;
         }
 
@@ -4049,7 +4115,19 @@ cold_dispatch:
             int arg_count = READ_BYTE();
 
             if (!call_value(peek(arg_count), arg_count)) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
                 return INTERPRET_RUNTIME_ERROR;
+            }
+            if (vm.has_exception) {
+                vm.had_error = false;
+                push(vm.exception_value);
+                vm.has_exception = false;
+                goto do_throw;
             }
             if (vm.had_error) {
                 return INTERPRET_RUNTIME_ERROR;
@@ -4186,7 +4264,19 @@ cold_dispatch:
                 push(arr->items[i]);
             }
             if (!call_value(peek(count), count)) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
                 return INTERPRET_RUNTIME_ERROR;
+            }
+            if (vm.has_exception) {
+                vm.had_error = false;
+                push(vm.exception_value);
+                vm.has_exception = false;
+                goto do_throw;
             }
             if (vm.had_error) {
                 return INTERPRET_RUNTIME_ERROR;
@@ -4324,26 +4414,38 @@ cold_dispatch:
         case OP_RETURN_LOCAL: {
             uint8_t slot = READ_BYTE();
             Value result = frame->slots[slot];
-
-            close_upvalues(frame->slots);
-            vm.frame_count--;
-            if (vm.frame_count == 0) {
-                vm.stack_top = vm.stack;
-                return INTERPRET_OK;
-            }
-            if (vm.frame_count == base_frame) {
-                vm.stack_top = vm.frames[vm.frame_count].slots;
-                push(result);
-                return INTERPRET_OK;
-            }
-            vm.stack_top = vm.frames[vm.frame_count].slots;
             push(result);
-            frame = &vm.frames[vm.frame_count - 1];
-            break;
+            goto op_return_shared;
+        }
+
+        case OP_RETURN_ADD: {
+            Value b = pop();
+            Value a = pop();
+            Value result;
+            if (!add_values(a, b, &result)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(result);
+            goto op_return_shared;
         }
 
         case OP_RETURN: {
+        op_return_shared: ;
             Value result = pop();
+
+            while (vm.try_handler_count > 0 &&
+                   vm.try_handlers[vm.try_handler_count - 1].frame_count == vm.frame_count) {
+                TryHandler *h = &vm.try_handlers[--vm.try_handler_count];
+
+                if (h->is_finally) {
+                    close_upvalues(vm.stack + h->stack_count);
+                    vm.stack_top = vm.stack + h->stack_count;
+                    push(result);
+                    push(INT_VAL(1));
+                    frame->ip = h->target_ip;
+                    goto end_instruction;
+                }
+            }
 
             close_upvalues(frame->slots);
             vm.frame_count--;
@@ -4359,6 +4461,143 @@ cold_dispatch:
             vm.stack_top = vm.frames[vm.frame_count].slots;
             push(result);
             frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_PUSH_CATCH: {
+            uint16_t offset = READ_U16();
+
+            if (vm.try_handler_count == TRY_HANDLERS_MAX) {
+                vm_runtime_error(ERROR_RUNTIME, "too many nested try handlers");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            TryHandler *h = &vm.try_handlers[vm.try_handler_count++];
+            h->frame_count = vm.frame_count;
+            h->stack_count = (int)(vm.stack_top - vm.stack);
+            h->target_ip = frame->ip + offset;
+            h->is_finally = false;
+            break;
+        }
+
+        case OP_PUSH_FINALLY: {
+            uint16_t offset = READ_U16();
+
+            if (vm.try_handler_count == TRY_HANDLERS_MAX) {
+                vm_runtime_error(ERROR_RUNTIME, "too many nested try handlers");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            TryHandler *h = &vm.try_handlers[vm.try_handler_count++];
+            h->frame_count = vm.frame_count;
+            h->stack_count = (int)(vm.stack_top - vm.stack);
+            h->target_ip = frame->ip + offset;
+            h->is_finally = true;
+            break;
+        }
+
+        case OP_POP_TRY: {
+            if (vm.try_handler_count > 0) {
+                vm.try_handler_count--;
+            }
+            break;
+        }
+
+        case OP_END_FINALLY: {
+            Value action_val = pop();
+            Value saved_val = pop();
+            int action = (int)AS_INT(action_val);
+
+            if (action == 1) {
+                push(saved_val);
+                goto op_return_shared;
+            } else if (action == 2) {
+                push(saved_val);
+                goto do_throw;
+            }
+            break;
+        }
+
+        case OP_THROW: {
+        do_throw: ;
+            Value exception_val = pop();
+
+            while (vm.try_handler_count > 0) {
+                TryHandler *h = &vm.try_handlers[--vm.try_handler_count];
+
+                if (h->frame_count < base_frame) {
+                    vm.has_exception = true;
+                    vm.exception_value = exception_val;
+                    vm.had_error = true;
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+
+                while (vm.frame_count > h->frame_count) {
+                    close_upvalues(vm.frames[vm.frame_count - 1].slots);
+                    vm.frame_count--;
+                }
+
+                frame = &vm.frames[vm.frame_count - 1];
+                close_upvalues(vm.stack + h->stack_count);
+                vm.stack_top = vm.stack + h->stack_count;
+
+                if (!h->is_finally) {
+                    push(exception_val);
+                    frame->ip = h->target_ip;
+                    goto end_instruction;
+                } else {
+                    push(exception_val);
+                    push(INT_VAL(2));
+                    frame->ip = h->target_ip;
+                    goto end_instruction;
+                }
+            }
+
+            ObjString *msg = value_to_string(exception_val);
+            vm_runtime_error(ERROR_RUNTIME, "uncaught exception: %s", msg->chars);
+            return INTERPRET_RUNTIME_ERROR;
+        }
+
+        case OP_INVOKE: {
+            uint16_t name_slot = READ_U16();
+            int arg_count = READ_BYTE();
+            ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
+
+            Value receiver = peek(arg_count);
+            if (!is_obj_type(receiver, OBJ_MAP)) {
+                vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
+                                 value_type_name(receiver));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            Value method_val;
+            if (!map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            if (!is_obj_type(method_val, OBJ_CLOSURE)) {
+                vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            /* Replace receiver on stack with the closure */
+            *(vm.stack_top - arg_count - 1) = method_val;
+
+            if (!call_closure((ObjClosure *)AS_OBJ(method_val), arg_count)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            /* Bind self on the newly created frame */
+            vm.frames[vm.frame_count - 1].self = receiver;
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_SELF: {
+            if (is_nil(frame->self)) {
+                vm_runtime_error(ERROR_NAME, "'self' is not bound (not in a method call)");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            push(frame->self);
             break;
         }
 
@@ -4379,36 +4618,12 @@ cold_dispatch:
             break;
         }
 
-        case OP_RETURN_ADD: {
-            Value b = pop();
-            Value a = pop();
-            Value result;
-            if (!add_values(a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
-            }
-            close_upvalues(frame->slots);
-            vm.frame_count--;
-            if (vm.frame_count == 0) {
-                vm.stack_top = vm.stack;
-                return INTERPRET_OK;
-            }
-            if (vm.frame_count == base_frame) {
-                vm.stack_top = vm.frames[vm.frame_count].slots;
-                push(result);
-                return INTERPRET_OK;
-            }
-            vm.stack_top = vm.frames[vm.frame_count].slots;
-            push(result);
-            frame = &vm.frames[vm.frame_count - 1];
-            break;
-        }
-
-
         default:
             vm_runtime_error(ERROR_RUNTIME, "unknown instruction (%d)", instruction);
             return INTERPRET_RUNTIME_ERROR;
         }
 
+    end_instruction:
         /* The general path may have changed the frame, the stack or the ip. */
         frame = &vm.frames[vm.frame_count - 1];
         sp = vm.stack_top;
@@ -4606,6 +4821,16 @@ void vm_free(void)
     gray.items = NULL;
     gray.count = 0;
     gray.capacity = 0;
+
+    ModuleEntry *mod = vm.modules;
+    while (mod) {
+        ModuleEntry *next = mod->next;
+        free(mod->canonical_path);
+        free(mod);
+        mod = next;
+    }
+    vm.modules = NULL;
+
     memset(&vm, 0, sizeof(vm));
     vm.stack_top = vm.stack;
     vm_ready = false;
@@ -4630,6 +4855,145 @@ static const char *vm_own_source(const char *source)
     return copy;
 }
 
+static bool import_module(ObjString *path_str, ObjString *importer_path)
+{
+    char resolved[PATH_MAX];
+    char target_path[PATH_MAX * 2];
+    const char *dir = ".";
+    char dir_buf[PATH_MAX];
+
+    if (importer_path && importer_path->chars[0] != '<') {
+        const char *last_slash = strrchr(importer_path->chars, '/');
+
+        if (last_slash) {
+            size_t dirlen = (size_t)(last_slash - importer_path->chars);
+
+            if (dirlen >= sizeof(dir_buf)) {
+                dirlen = sizeof(dir_buf) - 1;
+            }
+            memcpy(dir_buf, importer_path->chars, dirlen);
+            dir_buf[dirlen] = '\0';
+            dir = dir_buf;
+        }
+    }
+
+    if (path_str->chars[0] == '/') {
+        snprintf(target_path, sizeof(target_path), "%s", path_str->chars);
+    } else {
+        snprintf(target_path, sizeof(target_path), "%s/%s", dir, path_str->chars);
+    }
+
+    bool found = false;
+
+    if (realpath(target_path, resolved) != NULL) {
+        FILE *f = fopen(resolved, "rb");
+
+        if (f) {
+            fclose(f);
+            found = true;
+        }
+    }
+
+    if (!found) {
+        size_t len = strlen(target_path);
+
+        if (len < 6 || strcmp(target_path + len - 6, ".spark") != 0) {
+            char target_spark[PATH_MAX * 2 + 16];
+
+            snprintf(target_spark, sizeof(target_spark), "%s.spark", target_path);
+            if (realpath(target_spark, resolved) != NULL) {
+                FILE *f = fopen(resolved, "rb");
+
+                if (f) {
+                    fclose(f);
+                    found = true;
+                }
+            }
+        }
+    }
+
+    if (!found) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open or resolve module '%s'", path_str->chars);
+        return false;
+    }
+
+    for (ModuleEntry *entry = vm.modules; entry; entry = entry->next) {
+        if (strcmp(entry->canonical_path, resolved) == 0) {
+            return true;
+        }
+    }
+
+    FILE *file = fopen(resolved, "rb");
+
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot read module file '%s'", resolved);
+        return false;
+    }
+    fseek(file, 0L, SEEK_END);
+    long size = ftell(file);
+    rewind(file);
+
+    char *buf = malloc((size_t)size + 1);
+
+    if (!buf) {
+        fclose(file);
+        vm_runtime_error(ERROR_MEMORY, "out of memory reading module '%s'", resolved);
+        return false;
+    }
+    size_t bytes_read = fread(buf, sizeof(char), (size_t)size, file);
+    buf[bytes_read] = '\0';
+    fclose(file);
+
+    ModuleEntry *entry = malloc(sizeof(ModuleEntry));
+
+    if (!entry) {
+        free(buf);
+        vm_runtime_error(ERROR_MEMORY, "out of memory allocating module entry");
+        return false;
+    }
+    entry->canonical_path = duplicate_string(resolved);
+    entry->status = MODULE_LOADING;
+    entry->next = vm.modules;
+    vm.modules = entry;
+
+    Arena arena;
+    Stmt *program = NULL;
+    char error[256];
+    int error_line = 0;
+    int error_column = 0;
+    const char *owned = vm_own_source(buf);
+    free(buf);
+
+    arena_init(&arena);
+    if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line, &error_column)) {
+        error_print(ERROR_SYNTAX, error_line, error_column, owned, error);
+        arena_free(&arena);
+        vm.had_error = true;
+        return false;
+    }
+
+    ObjFunction *function = compile_ast(program, resolved, owned, false, error,
+                                        sizeof(error), &error_line, &error_column);
+    arena_free(&arena);
+    if (!function) {
+        error_print(ERROR_COMPILE, error_line, error_column, owned, error);
+        vm.had_error = true;
+        return false;
+    }
+
+    push(OBJ_VAL(function));
+    ObjClosure *closure = object_closure(function);
+    pop();
+
+    Value res = NIL_VAL;
+    if (!call_callback(OBJ_VAL(closure), 0, &res) || vm.had_error) {
+        return false;
+    }
+
+    entry->status = MODULE_LOADED;
+    return true;
+}
+
 InterpretResult vm_interpret(const char *source, const char *script_name, bool repl_mode)
 {
     Arena arena;
@@ -4638,6 +5002,20 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
     int error_line = 0;
     int error_column = 0;
     const char *owned = vm_own_source(source);
+    char canonical_main[PATH_MAX];
+    ModuleEntry *main_entry = NULL;
+
+    if (script_name && script_name[0] != '<') {
+        if (realpath(script_name, canonical_main) != NULL) {
+            main_entry = malloc(sizeof(ModuleEntry));
+            if (main_entry) {
+                main_entry->canonical_path = duplicate_string(canonical_main);
+                main_entry->status = MODULE_LOADING;
+                main_entry->next = vm.modules;
+                vm.modules = main_entry;
+            }
+        }
+    }
 
     arena_init(&arena);
     if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line,
@@ -4666,16 +5044,26 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
         vm.stack_top = vm.stack;
         vm.frame_count = 0;
         vm.open_upvalues = NULL;
+        vm.try_handler_count = 0;
+        vm.has_exception = false;
+        vm.exception_value = NIL_VAL;
         vm.had_error = false;
         return INTERPRET_RUNTIME_ERROR;
     }
 
     InterpretResult result = run(0);
 
+    if (main_entry) {
+        main_entry->status = MODULE_LOADED;
+    }
+
     close_upvalues(vm.stack);
     vm.stack_top = vm.stack;
     vm.frame_count = 0;
     vm.open_upvalues = NULL;
+    vm.try_handler_count = 0;
+    vm.has_exception = false;
+    vm.exception_value = NIL_VAL;
     vm.had_error = false;
     return result;
 }

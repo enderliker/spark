@@ -1,0 +1,5 @@
+// exit: 65
+// stderr: expected 'catch' or 'finally' after 'try' block
+try {
+    var x = 1;
+}

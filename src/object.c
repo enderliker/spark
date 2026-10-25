@@ -506,6 +506,7 @@ ObjFunction *object_function(void)
     function->is_varargs = false;
     function->upvalue_count = 0;
     function->name = NULL;
+    function->script_path = NULL;
     chunk_init(&function->chunk);
     return function;
 }
