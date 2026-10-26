@@ -12,6 +12,7 @@
 
 #include "ast.h"
 #include "buf.h"
+#include "bytecode.h"
 #include "chunk.h"
 #include "compiler.h"
 #include "json.h"
@@ -21,8 +22,9 @@
 #include "regex.h"
 #include "table.h"
 
-#define STACK_MAX 131072
-#define FRAMES_MAX 256
+#define FRAMES_MAX 4096
+#define STACK_INITIAL_CAPACITY 2048
+#define STACK_MAX_LIMIT (4 * 1024 * 1024)
 
 typedef struct {
     ObjClosure *closure;
@@ -68,7 +70,8 @@ typedef struct {
 typedef struct {
     CallFrame frames[FRAMES_MAX];
     int frame_count;
-    Value stack[STACK_MAX];
+    Value *stack;
+    int stack_capacity;
     Value *stack_top;
     Table global_names;
     GlobalSlot *global_slots;
@@ -126,8 +129,56 @@ static char *duplicate_string(const char *str)
     return copy;
 }
 
+static bool grow_stack(int needed)
+{
+    int old_capacity = vm.stack_capacity;
+    int new_capacity = old_capacity < STACK_INITIAL_CAPACITY ? STACK_INITIAL_CAPACITY : old_capacity * 2;
+    while (new_capacity < needed) {
+        new_capacity *= 2;
+    }
+    if (new_capacity > STACK_MAX_LIMIT) {
+        if (needed > STACK_MAX_LIMIT) {
+            vm_runtime_error(ERROR_RECURSION, "stack overflow (exceeded maximum stack size)");
+            return false;
+        }
+        new_capacity = STACK_MAX_LIMIT;
+    }
+
+    Value *old_stack = vm.stack;
+    Value *new_stack = mem_realloc(old_stack,
+                                   (size_t)old_capacity * sizeof(Value),
+                                   (size_t)new_capacity * sizeof(Value));
+    if (!new_stack) {
+        vm_runtime_error(ERROR_RUNTIME, "out of memory growing stack");
+        return false;
+    }
+
+    ptrdiff_t delta = new_stack - old_stack;
+    vm.stack = new_stack;
+    vm.stack_capacity = new_capacity;
+    vm.stack_top += delta;
+
+    for (int i = 0; i < vm.frame_count; i++) {
+        vm.frames[i].slots += delta;
+    }
+    for (ObjUpvalue *upvalue = vm.open_upvalues; upvalue; upvalue = upvalue->next) {
+        upvalue->location += delta;
+    }
+    return true;
+}
+
+static inline bool ensure_stack(int extra)
+{
+    int current = (int)(vm.stack_top - vm.stack);
+    if (__builtin_expect(current + extra > vm.stack_capacity, 0)) {
+        return grow_stack(current + extra);
+    }
+    return true;
+}
+
 static void push(Value value)
 {
+    ensure_stack(1);
     *vm.stack_top++ = value;
 }
 
@@ -333,12 +384,22 @@ static void collect_garbage(void)
     if (mem_gc_paused()) {
         return;
     }
+    size_t before = mem_allocated();
+
     mark_roots();
     trace_references();
     intern_remove_unmarked();
     sweep();
 
-    size_t threshold = mem_allocated() * 2;
+    size_t after = mem_allocated();
+    double live_ratio = before > 0 ? (double)after / (double)before : 0.5;
+    double factor = 2.0;
+    if (live_ratio > 0.7) {
+        factor = 2.5;
+    } else if (live_ratio < 0.3) {
+        factor = 1.5;
+    }
+    size_t threshold = (size_t)((double)after * factor);
 
     if (threshold < 1024u * 1024u) {
         threshold = 1024u * 1024u;
@@ -511,6 +572,14 @@ static Value native_type(int arg_count, Value *args)
         name = value_type_name(args[0]);
     }
     return OBJ_VAL(object_string(name, (int)strlen(name)));
+}
+
+static Value native_gc(int arg_count, Value *args)
+{
+    (void)arg_count;
+    (void)args;
+    collect_garbage();
+    return NIL_VAL;
 }
 
 static Value native_clock(int arg_count, Value *args)
@@ -2377,10 +2446,54 @@ bool vm_global_is_const(ObjString *name)
 
 const char *vm_global_slot_name(int slot)
 {
-    if (slot < 0 || slot >= vm.global_count) {
+    if (slot < 0 || slot >= vm.global_count || !vm.global_slots[slot].name) {
         return "?";
     }
     return vm.global_slots[slot].name->chars;
+}
+
+int vm_global_count(void)
+{
+    return vm.global_count;
+}
+
+ObjString *vm_global_slot_obj_name(int slot)
+{
+    if (slot >= 0 && slot < vm.global_count) {
+        return vm.global_slots[slot].name;
+    }
+    return NULL;
+}
+
+void vm_register_global_slot(int slot, ObjString *name)
+{
+    if (!vm_ready) {
+        vm_init();
+    }
+    while (slot >= vm.global_capacity) {
+        int capacity = vm.global_capacity < 16 ? 16 : vm.global_capacity * 2;
+        vm.global_slots = mem_realloc(vm.global_slots,
+                                      sizeof(GlobalSlot) * (size_t)vm.global_capacity,
+                                      sizeof(GlobalSlot) * (size_t)capacity);
+        for (int i = vm.global_capacity; i < capacity; i++) {
+            vm.global_slots[i].name = NULL;
+            vm.global_slots[i].value = NIL_VAL;
+            vm.global_slots[i].defined = false;
+            vm.global_slots[i].is_const = false;
+        }
+        vm.global_capacity = capacity;
+    }
+    if (slot >= vm.global_count) {
+        for (int i = vm.global_count; i <= slot; i++) {
+            vm.global_slots[i].name = NULL;
+            vm.global_slots[i].value = NIL_VAL;
+            vm.global_slots[i].defined = false;
+            vm.global_slots[i].is_const = false;
+        }
+        vm.global_count = slot + 1;
+    }
+    vm.global_slots[slot].name = name;
+    table_set(&vm.global_names, name, NUMBER_VAL((double)slot));
 }
 
 static void define_native(const char *name, NativeFn function, int arity)
@@ -2507,6 +2620,9 @@ static bool call_closure(ObjClosure *closure, int arg_count)
     }
     if (vm.frame_count == FRAMES_MAX) {
         vm_runtime_error(ERROR_RECURSION, "too much call depth (possible infinite recursion)");
+        return false;
+    }
+    if (!ensure_stack(function->arity + 256)) {
         return false;
     }
 
@@ -2851,6 +2967,8 @@ static InterpretResult run(int base_frame)
         [OP_POP] = &&op_OP_POP,
         [OP_GET_LOCAL] = &&op_OP_GET_LOCAL,
         [OP_SET_LOCAL] = &&op_OP_SET_LOCAL,
+        [OP_GET_LOCAL_16] = &&op_OP_GET_LOCAL_16,
+        [OP_SET_LOCAL_16] = &&op_OP_SET_LOCAL_16,
         [OP_GET_GLOBAL] = &&op_OP_GET_GLOBAL,
         [OP_ADD] = &&op_OP_ADD,
         [OP_SUBTRACT] = &&op_OP_SUBTRACT,
@@ -2920,6 +3038,16 @@ static InterpretResult run(int base_frame)
         TARGET(OP_SET_LOCAL):
             slots[ip[1]] = *--sp;
             ip += 2;
+            DISPATCH();
+
+        TARGET(OP_GET_LOCAL_16):
+            *sp++ = slots[U16_AT(ip + 1)];
+            ip += 3;
+            DISPATCH();
+
+        TARGET(OP_SET_LOCAL_16):
+            slots[U16_AT(ip + 1)] = *--sp;
+            ip += 3;
             DISPATCH();
 
         TARGET(OP_GET_GLOBAL): {
@@ -3281,6 +3409,10 @@ static InterpretResult run(int base_frame)
             int arg_count = ip[1];
             Value callee = sp[-1 - arg_count];
 
+            if (__builtin_expect(sp + 256 >= vm.stack + vm.stack_capacity, 0)) {
+                goto cold;
+            }
+
             /* Fast path: a closure or native called with the right number of arguments.
              * Everything else (arity errors, non-callables) goes through the general path. */
             if (callee.type == VAL_OBJ) {
@@ -3433,7 +3565,8 @@ static InterpretResult run(int base_frame)
             goto cold;
 
         do_call_self:
-            if (__builtin_expect(frame >= &vm.frames[FRAMES_MAX - 1], 0)) {
+            if (__builtin_expect(frame >= &vm.frames[FRAMES_MAX - 1], 0) ||
+                __builtin_expect(sp + 256 >= vm.stack + vm.stack_capacity, 0)) {
                 goto cold;
             }
             frame->ip = ip + 4;
@@ -3624,6 +3757,20 @@ cold_dispatch:
 
         case OP_SET_LOCAL: {
             uint8_t slot = READ_BYTE();
+
+            frame->slots[slot] = pop();
+            break;
+        }
+
+        case OP_GET_LOCAL_16: {
+            uint16_t slot = READ_U16();
+
+            push(frame->slots[slot]);
+            break;
+        }
+
+        case OP_SET_LOCAL_16: {
+            uint16_t slot = READ_U16();
 
             frame->slots[slot] = pop();
             break;
@@ -4256,8 +4403,7 @@ cold_dispatch:
             }
             ObjArray *arr = AS_ARRAY(args);
             int count = arr->count;
-            if (count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
-                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+            if (!ensure_stack(count + 256)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
             for (int i = 0; i < count; i++) {
@@ -4294,8 +4440,7 @@ cold_dispatch:
             }
             ObjArray *arr = AS_ARRAY(args);
             int arg_count = arr->count;
-            if (arg_count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
-                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+            if (!ensure_stack(arg_count + 256)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
             for (int i = 0; i < arg_count; i++) {
@@ -4633,8 +4778,7 @@ cold_dispatch:
 
             ObjArray *arr = AS_ARRAY(args_val);
             int count = arr->count;
-            if (count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
-                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+            if (!ensure_stack(count + 256)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
 
@@ -4689,7 +4833,7 @@ cold_dispatch:
             Value b = READ_CONSTANT();
             Value a = frame->slots[slot];
             Value arg;
-            if (!arithmetic_values(TOKEN_MINUS, a, b, &arg)) {
+            if (!arithmetic_values(OP_SUBTRACT, a, b, &arg)) {
                 return INTERPRET_RUNTIME_ERROR;
             }
             push(frame->slots[0]);
@@ -4725,7 +4869,11 @@ cold_dispatch:
  * stores its return value in *result. Used by higher-order natives. */
 static bool call_callback(Value callee, int arg_count, Value *result)
 {
-    Value *args = vm.stack_top - arg_count;
+    if (!ensure_stack(arg_count + 256)) {
+        return false;
+    }
+    int args_offset = (int)(vm.stack_top - vm.stack) - arg_count;
+    Value *args = vm.stack + args_offset;
 
     if (is_obj_type(callee, OBJ_NATIVE)) {
         ObjNative *native = (ObjNative *)AS_OBJ(callee);
@@ -4736,7 +4884,7 @@ static bool call_callback(Value callee, int arg_count, Value *result)
             return false;
         }
         *result = native->function(arg_count, args);
-        vm.stack_top = args;
+        vm.stack_top = vm.stack + args_offset;
         return true;
     }
     if (!is_obj_type(callee, OBJ_CLOSURE)) {
@@ -4755,7 +4903,7 @@ static bool call_callback(Value callee, int arg_count, Value *result)
     int base_frame = vm.frame_count;
 
     if (!call_closure((ObjClosure *)AS_OBJ(callee), arg_count)) {
-        vm.stack_top = args;
+        vm.stack_top = vm.stack + args_offset;
         return false;
     }
 
@@ -4778,6 +4926,8 @@ void vm_init(void)
         return;
     }
     memset(&vm, 0, sizeof(vm));
+    vm.stack_capacity = STACK_INITIAL_CAPACITY;
+    vm.stack = mem_realloc(NULL, 0, (size_t)vm.stack_capacity * sizeof(Value));
     vm.stack_top = vm.stack;
     table_init(&vm.global_names);
     mem_set_collector(collect_garbage);
@@ -4796,6 +4946,7 @@ void vm_init(void)
     define_native("is_nan", native_is_nan, 1);
     define_native("type", native_type, 1);
     define_native("clock", native_clock, 0);
+    define_native("gc", native_gc, 0);
     define_native("assert", native_assert, -1);
     define_native("has", native_has, 2);
     define_native("del", native_del, 2);
@@ -4914,6 +5065,13 @@ void vm_free(void)
     }
     vm.modules = NULL;
 
+    if (vm.stack) {
+        mem_realloc(vm.stack, (size_t)vm.stack_capacity * sizeof(Value), 0);
+        vm.stack = NULL;
+        vm.stack_capacity = 0;
+        vm.stack_top = NULL;
+    }
+
     memset(&vm, 0, sizeof(vm));
     vm.stack_top = vm.stack;
     vm_ready = false;
@@ -4936,6 +5094,17 @@ static const char *vm_own_source(const char *source)
     vm.sources[vm.source_count].length = length;
     vm.source_count++;
     return copy;
+}
+
+const char *vm_add_source(const char *source)
+{
+    if (!source) return NULL;
+    for (int i = 0; i < vm.source_count; i++) {
+        if (strcmp(vm.sources[i].text, source) == 0) {
+            return vm.sources[i].text;
+        }
+    }
+    return vm_own_source(source);
 }
 
 static bool import_module(ObjString *path_str, ObjString *importer_path)
@@ -5002,6 +5171,24 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
     }
 
     if (!found) {
+        size_t len = strlen(target_path);
+
+        if (len < 7 || strcmp(target_path + len - 7, ".sparkc") != 0) {
+            char target_sparkc[PATH_MAX * 2 + 16];
+
+            snprintf(target_sparkc, sizeof(target_sparkc), "%s.sparkc", target_path);
+            if (realpath(target_sparkc, resolved) != NULL) {
+                FILE *f = fopen(resolved, "rb");
+
+                if (f) {
+                    fclose(f);
+                    found = true;
+                }
+            }
+        }
+    }
+
+    if (!found) {
         vm_runtime_error(ERROR_RUNTIME, "could not open or resolve module '%s'", path_str->chars);
         return false;
     }
@@ -5010,6 +5197,49 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
         if (strcmp(entry->canonical_path, resolved) == 0) {
             return true;
         }
+    }
+
+    if (bytecode_is_bytecode_file(resolved)) {
+        ModuleEntry *entry = malloc(sizeof(ModuleEntry));
+        if (!entry) {
+            vm_runtime_error(ERROR_MEMORY, "out of memory allocating module entry");
+            return false;
+        }
+        entry->canonical_path = duplicate_string(resolved);
+        if (!entry->canonical_path) {
+            free(entry);
+            vm_runtime_error(ERROR_MEMORY, "out of memory allocating module path");
+            return false;
+        }
+        entry->status = MODULE_LOADING;
+        entry->next = vm.modules;
+        vm.modules = entry;
+
+        char err[256];
+        ObjFunction *function = bytecode_load(resolved, err, sizeof(err));
+        if (!function) {
+            vm_runtime_error(ERROR_RUNTIME, "%s", err);
+            vm.modules = entry->next;
+            free(entry->canonical_path);
+            free(entry);
+            return false;
+        }
+        push(OBJ_VAL(function));
+        ObjClosure *closure = object_closure(function);
+        pop();
+        push(OBJ_VAL(closure));
+        if (!call_closure(closure, 0)) {
+            vm.modules = entry->next;
+            free(entry->canonical_path);
+            free(entry);
+            return false;
+        }
+        InterpretResult result = run(vm.frame_count - 1);
+        if (result != INTERPRET_OK) {
+            return false;
+        }
+        entry->status = MODULE_LOADED;
+        return true;
     }
 
     FILE *file = fopen(resolved, "rb");
@@ -5098,14 +5328,8 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
     return true;
 }
 
-InterpretResult vm_interpret(const char *source, const char *script_name, bool repl_mode)
+InterpretResult vm_run_function(ObjFunction *function, const char *script_name)
 {
-    Arena arena;
-    Stmt *program = NULL;
-    char error[256];
-    int error_line = 0;
-    int error_column = 0;
-    const char *owned = vm_own_source(source);
     char canonical_main[PATH_MAX];
     ModuleEntry *main_entry = NULL;
 
@@ -5124,23 +5348,6 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
                 }
             }
         }
-    }
-
-    arena_init(&arena);
-    if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line,
-                      &error_column)) {
-        error_print(ERROR_SYNTAX, error_line, error_column, owned, error);
-        arena_free(&arena);
-        return INTERPRET_COMPILE_ERROR;
-    }
-
-    ObjFunction *function = compile_ast(program, script_name, owned, repl_mode, error,
-                                        sizeof(error), &error_line, &error_column);
-
-    arena_free(&arena);
-    if (!function) {
-        error_print(ERROR_COMPILE, error_line, error_column, owned, error);
-        return INTERPRET_COMPILE_ERROR;
     }
 
     push(OBJ_VAL(function));
@@ -5175,4 +5382,33 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
     vm.exception_value = NIL_VAL;
     vm.had_error = false;
     return result;
+}
+
+InterpretResult vm_interpret(const char *source, const char *script_name, bool repl_mode)
+{
+    Arena arena;
+    Stmt *program = NULL;
+    char error[256];
+    int error_line = 0;
+    int error_column = 0;
+    const char *owned = vm_own_source(source);
+
+    arena_init(&arena);
+    if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line,
+                      &error_column)) {
+        error_print(ERROR_SYNTAX, error_line, error_column, owned, error);
+        arena_free(&arena);
+        return INTERPRET_COMPILE_ERROR;
+    }
+
+    ObjFunction *function = compile_ast(program, script_name, owned, repl_mode, error,
+                                        sizeof(error), &error_line, &error_column);
+
+    arena_free(&arena);
+    if (!function) {
+        error_print(ERROR_COMPILE, error_line, error_column, owned, error);
+        return INTERPRET_COMPILE_ERROR;
+    }
+
+    return vm_run_function(function, script_name);
 }

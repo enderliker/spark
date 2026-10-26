@@ -1,0 +1,30 @@
+// Test constant folding & dead code elimination
+var a = 1 + 2 * 3;
+print(a);
+
+var s = "hello " + "world";
+print(s);
+
+var b = !false and (10 < 20);
+print(b);
+
+var bits = (1 << 4) | (7 & 3);
+print(bits);
+
+var ternary = true ? "first" : "second";
+print(ternary);
+
+var coal = nil ?? "default";
+print(coal);
+
+fn test_dce() {
+    if (false) {
+        print("dead branch");
+    } else {
+        print("alive branch");
+    }
+    return "done";
+    print("unreachable");
+}
+
+print(test_dce());

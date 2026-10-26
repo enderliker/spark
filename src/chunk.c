@@ -71,6 +71,8 @@ const char *opcode_name(OpCode op)
     case OP_DUP2: return "DUP2";
     case OP_GET_LOCAL: return "GET_LOCAL";
     case OP_SET_LOCAL: return "SET_LOCAL";
+    case OP_GET_LOCAL_16: return "GET_LOCAL_16";
+    case OP_SET_LOCAL_16: return "SET_LOCAL_16";
     case OP_GET_GLOBAL: return "GET_GLOBAL";
     case OP_DEFINE_GLOBAL: return "DEFINE_GLOBAL";
     case OP_DEFINE_GLOBAL_CONST: return "DEFINE_GLOBAL_CONST";
@@ -212,6 +214,12 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
             next += 2;
         }
         return next;
+    }
+    case OP_GET_LOCAL_16:
+    case OP_SET_LOCAL_16: {
+        int slot = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        printf("%-18s %4d\n", opcode_name(op), slot);
+        return offset + 3;
     }
     case OP_GET_LOCAL:
     case OP_SET_LOCAL:

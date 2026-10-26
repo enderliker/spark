@@ -476,6 +476,7 @@ print(upper("hola"), trim("  x  "));
 | `regex_match(pattern, text)` | Whether `pattern` matches `text`. |
 | `regex_find(pattern, text)` | Array of all non-overlapping matches of `pattern` in `text`. |
 | `regex_replace(pattern, repl, text)` | Replaces non-overlapping matches with `repl`. |
+| `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
 
 The script arguments are accessible through the global array `argv`, where `argv[0]`
 is the script file path and subsequent elements are arguments passed on the command line
@@ -483,7 +484,7 @@ is the script file path and subsequent elements are arguments passed on the comm
 
 The higher-order natives (`map`, `filter`, `reduce`, `each`, `sort_by`) accept a
 callback that may be a closure or another native (for example `map(a, str)`). `sort`
-and `sort_by` use a stable insertion sort; `sort_by`'s comparator `fn(x, y)` returns a
+and `sort_by` use a stable merge sort ($O(n \log n)$); `sort_by`'s comparator `fn(x, y)` returns a
 truthy value when `x` must come before `y`.
 
 ## 11. Errors
@@ -624,11 +625,25 @@ automatically holds the result of the last evaluated expression statement. Type
 `salir`, `exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
 unclosed braces, so multi-line functions can be defined.
 
-## 16. Limits
+## 16. Precompiled bytecode (`.sparkc`)
+
+Source programs can be precompiled into binary bytecode files using `--compile`:
+
+```bash
+spark --compile script.spark              # writes script.sparkc
+spark --compile script.spark -o out.sparkc # writes to custom output
+spark script.sparkc                       # runs precompiled file directly
+```
+
+- Bytecode files begin with the 4-byte magic signature `SPRK` followed by the binary format version.
+- Precompiled files execute with zero parse/compile overhead and can be imported directly or resolved automatically via `import`.
+
+## 17. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.
-- 256 local variables per function.
-- 256 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).
-- 16-bit constant index per function.
+- Up to 1024 local variables per function (slots beyond 255 use 16-bit local instructions).
+- 4096 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).
+- Dynamic operand value stack that automatically expands from 2,048 up to 4,194,304 items (64 MB).
+- 16-bit constant index per function (up to 65,536 constants per chunk).
 - No native threads or green coroutines.

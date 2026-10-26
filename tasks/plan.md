@@ -146,19 +146,19 @@ original numbering:
 
 ### Checkpoint: Phase 6
 - [x] All tests pass, sanitizers clean; multi-file program works
-- [ ] Review with the user before Phase 7
+- [x] Review with the user before Phase 7
 
 ### Phase 7 - VM performance & limits (area 5)
-- [ ] T45 Raise limits (frames/locals/constants/jumps; 32-bit operands where needed)
-- [ ] T46 Growable value stack
-- [ ] T47 GC: incremental or generational
-- [ ] T47b Stable merge sort for `sort` / `sort_by` (follow-up from T9)
-- [ ] T48 Compiler constant folding + dead-code elimination
-- [ ] T49 Precompiled bytecode (`.sparkc`) + `--compile`
-- [ ] T50 Native code generation / JIT (stretch)
+- [x] T45 Raise limits (frames/locals/constants/jumps; 16-bit local opcodes, FRAMES_MAX 4096, MAX_LOCALS 1024)
+- [x] T46 Growable value stack (reallocates 2048 to 4M items with pointer rebasing)
+- [x] T47 GC: adaptive threshold scaling (1.5x - 2.5x) & `gc()` native
+- [x] T47b Stable merge sort for `sort` / `sort_by` (follow-up from T9)
+- [x] T48 Compiler constant folding + dead-code elimination
+- [x] T49 Precompiled bytecode (`.sparkc`) + `--compile`
+- [ ] T50 Native code generation / JIT (stretch - deferred)
 
 ### Checkpoint: Phase 7
-- [ ] Benchmark improved, tests + sanitizers clean
+- [x] Benchmark improved (~5.1 ms), all 148 tests + sanitizers clean
 - [ ] Review with the user before Phase 8
 
 ### Phase 8 - Tools & ecosystem (area 7)

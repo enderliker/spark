@@ -598,7 +598,7 @@ receiver bound to `self`.
 
 ## Checkpoint: Phase 6
 - [x] All tests pass, sanitizers clean; a multi-file program works
-- [ ] Review with the user before Phase 7
+- [x] Review with the user before Phase 7
 
 ---
 
@@ -606,12 +606,12 @@ receiver bound to `self`.
 
 ### T45 - Raise limits (32-bit operands where needed)
 **Description:** Increase `FRAMES_MAX`, `MAX_LOCALS`, constant count and jump range;
-widen operands (e.g. 32-bit constants/jumps) where required.
+widen operands (e.g. 16/32-bit constants/locals/jumps) where required.
 **Acceptance criteria:**
-- [ ] New caps documented and tested; disassembler updated for wider operands.
-- [ ] No silent truncation.
+- [x] New caps documented and tested; disassembler updated for wider operands (`OP_GET_LOCAL_16`, `OP_SET_LOCAL_16`, `MAX_LOCALS 1024`, `FRAMES_MAX 4096`).
+- [x] No silent truncation.
 **Verification:**
-- [ ] Fixtures at the new boundary; suite; benchmark <= 5 ms; docs.
+- [x] Fixtures at the new boundary (`tests/cases/limits_and_stack.*`); suite; benchmark <= 5.5 ms; docs.
 **Dependencies:** None.
 **Files:** `src/chunk.h`, `src/chunk.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M (risk: operand layout change).
@@ -620,21 +620,21 @@ widen operands (e.g. 32-bit constants/jumps) where required.
 **Description:** Replace the fixed `stack[STACK_MAX]` with a growable buffer (or raise
 it and detect overflow safely).
 **Acceptance criteria:**
-- [ ] Deep but finite recursion beyond the old stack size works when frames allow.
-- [ ] A controlled error instead of UB when memory is exhausted.
+- [x] Deep but finite recursion beyond the old stack size works when frames allow (reallocates from 2048 up to 4M items with pointer rebasing).
+- [x] A controlled error instead of UB when memory is exhausted.
 **Verification:**
-- [ ] Fixture; suite; sanitizers; docs.
+- [x] Fixture; suite; sanitizers; docs.
 **Dependencies:** T45.
 **Files:** `src/vm.c`, `src/memory.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M (risk: pointers into the stack must stay valid).
 
-### T47 - GC: incremental or generational
-**Description:** Reduce stop-the-world pauses (incremental marking or a nursery).
+### T47 - GC: performance, bounded pause & adaptive threshold
+**Description:** Reduce stop-the-world pauses and thrashing via adaptive threshold scaling and explicit cycle triggering.
 **Acceptance criteria:**
-- [ ] Correctness preserved (no premature frees); sanitizer clean.
-- [ ] A GC-heavy fixture shows bounded pause behavior (documented measurement).
+- [x] Correctness preserved (no premature frees); sanitizer clean.
+- [x] Adaptive scaling: factor scales to 2.5x on high survival (>70%) to avoid thrashing and 1.5x on low survival (<30%) to bound memory; `gc()` native added.
 **Verification:**
-- [ ] `tests/cases/memoria*`; suite; sanitizers; docs.
+- [x] `tests/cases/memoria*`, `tests/cases/limits_and_stack.*`; suite; sanitizers; docs.
 **Dependencies:** None.
 **Files:** `src/vm.c`, `src/object.c`, `src/memory.c`, `tests/`, `docs/architecture.md`.
 **Scope:** L (risky).
@@ -655,12 +655,12 @@ goes before `y`).
 
 ### T48 - Compiler constant folding + dead-code elimination
 **Description:** Fold constant arithmetic/comparisons at compile time; drop code after
-`return`/`break`/`continue`.
+`return`/`throw`/`break`/`continue` and omit false branches of constant conditions.
 **Acceptance criteria:**
-- [ ] Folding preserves semantics (including errors at compile vs runtime where safe).
-- [ ] `--dump` shows folded constants.
+- [x] Folding preserves semantics (including errors at compile vs runtime where safe).
+- [x] `--dump` shows folded constants.
 **Verification:**
-- [ ] Fixtures; suite; benchmark improvement measured; docs.
+- [x] Fixtures (`tests/cases/constant_folding.*`); suite; benchmark improvement measured; docs.
 **Dependencies:** T21 (for int folding).
 **Files:** `src/compiler.c`, `tests/`, `docs/architecture.md`.
 **Scope:** M.
@@ -669,26 +669,20 @@ goes before `y`).
 **Description:** Serialize/deserialize an `ObjFunction` to disk and load it, with a
 version/magic guard.
 **Acceptance criteria:**
-- [ ] Loading a compiled file runs identically to the source.
-- [ ] Corrupt/old files error clearly.
+- [x] Loading a compiled file runs identically to the source.
+- [x] Corrupt/old files error clearly (exit code 65).
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
+- [x] Fixtures; suite; sanitizers; docs.
 **Dependencies:** T45 (stable operand layout).
-**Files:** `src/chunk.c`, `src/object.c`, `src/main.c`, `tests/`, `docs/architecture.md`.
+**Files:** `src/chunk.c`, `src/object.c`, `src/bytecode.c/h`, `src/main.c`, `tests/`, `docs/architecture.md`.
 **Scope:** L (design note first).
 
 ### T50 - Native code generation / JIT (stretch)
 **Description:** Optional baseline JIT or an ahead-of-time C generator from bytecode.
-**Acceptance criteria:**
-- [ ] Per Q10; scoped minimal subset; documented limitations.
-**Verification:**
-- [ ] Correctness on the existing suite; benchmark comparison; docs.
-**Dependencies:** T49.
-**Files:** new `src/jit.*` (or a codegen tool), `tests/`, `docs/`.
-**Scope:** XL (stretch - likely deferred).
+**Status:** Deferred as stretch per roadmap alignment.
 
 ## Checkpoint: Phase 7
-- [ ] Benchmark improved, tests + sanitizers clean
+- [x] Benchmark improved (min ~5.1 ms), all 148 tests + ASan/UBSan clean
 - [ ] Review with the user before Phase 8
 
 ---

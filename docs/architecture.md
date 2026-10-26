@@ -93,7 +93,7 @@ The VM is a stack machine. The main instructions:
 | Group | Instructions |
 | --- | --- |
 | Constants and stack | `CONSTANT`, `NIL`, `TRUE`, `FALSE`, `POP`, `DUP`, `DUP2` |
-| Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `DEFINE_GLOBAL_CONST`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
+| Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_LOCAL_16`, `SET_LOCAL_16`, `GET_GLOBAL`, `DEFINE_GLOBAL`, `DEFINE_GLOBAL_CONST`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
 | Collections | `ARRAY n`, `ARRAY_PUSH`, `ARRAY_EXTEND`, `MAP n`, `INDEX`, `INDEX_SET`, `LEN`, `TO_STRING`, `ITER_KEYS` |
 | Arithmetic and logic | `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `MODULO`, `INT_DIVIDE`, `BIT_AND`, `BIT_OR`, `BIT_XOR`, `SHL`, `SHR`, `EQUAL`, `GREATER`, `LESS`, `NOT`, `NEGATE`, `BIT_NOT` |
 | Superinstructions | `ADD_LOCAL_CONST`, `SUBTRACT_LOCAL_CONST`, `MULTIPLY_LOCAL_CONST`, `DIVIDE_LOCAL_CONST`, `LESS_LOCAL_CONST`, `GREATER_LOCAL_CONST`, `JUMP_IF_NOT_LESS_LOCAL_CONST`, `JUMP_IF_NOT_GREATER_LOCAL_CONST`, `RETURN_LOCAL`, `RETURN_ADD`, `CALL_SELF_SUB_LOCAL_CONST` |
@@ -142,6 +142,10 @@ counter.
 - **Tail-call optimization**: When a `return` returns a function call (including branches of a ternary), the compiler emits `OP_TAIL_CALL` or `OP_TAIL_CALL_SPREAD`. The VM closes open upvalues for the current frame, copies the new arguments into the current frame's slots (`frame->slots`), reinitializes the instruction pointer and constants pool, and executes the target function without allocating a new `CallFrame`.
 - **Default parameters**: Functions track `min_arity` alongside `arity`. Calling a function with `argc < arity` pads the stack with `nil` and records `frame->argc`. The function preamble contains `OP_DEFAULT_ARG slot offset` for each parameter with a default; if `frame->argc >= slot`, it skips evaluation, otherwise it compiles the default expression and writes it into the local parameter slot.
 - **Varargs and spread**: Functions with `...rest` have `is_varargs = true`. Any arguments beyond `arity` are collected into a newly allocated `ObjArray` placed in slot `arity + 1`. Spread calls (`f(...items)`) or spread array literals (`[...items]`) dynamically build and flatten the argument array via `OP_ARRAY_PUSH` and `OP_ARRAY_EXTEND`, followed by `OP_CALL_SPREAD` or `OP_TAIL_CALL_SPREAD`.
+- **Constant folding & dead-code elimination**:
+  - The compiler statically evaluates constant expressions involving arithmetic (`+`, `-`, `*`, `/`, `%`), bitwise shifts/operations (`<<`, `>>`, `&`, `|`, `^`), unary operators (`-`, `!`, `~`), comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`), string concatenation, ternary operators (`?:`), and null-coalescing (`??`). Potential runtime errors like division by zero or negative shift amounts safely bypass folding to produce precise runtime exceptions.
+  - Constant folding also enables superinstruction fusion when the right-hand operand of an expression folds to a numeric constant.
+  - Dead code following unconditional control transfers (`return`, `throw`, `break`, `continue`) is dropped without emitting unreachable instructions. Similarly, `if` and `while` statements with constant boolean conditions emit only the active branch, omitting unreachable blocks and jump instructions entirely.
 
 ### Superinstructions
 
@@ -185,8 +189,16 @@ iterative loops within the register-threaded dispatch path.
 
 ## Stack and frames
 
-The value stack is a fixed array of `STACK_MAX` (131072) `Value`. A frame stores the
-closure, the instruction pointer, the base slot and the cached constant pool:
+The value stack is a dynamically growable buffer (`Value *vm.stack`). It starts at
+`STACK_INITIAL_CAPACITY` (2048 values) and automatically doubles on demand up to
+`STACK_MAX_LIMIT` (4,194,304 values / 64 MB). When the stack is reallocated, all interior
+pointers into the stack (`vm.stack_top`, each `vm.frames[i].slots`, and open upvalues
+`upvalue->location`) are safely updated via pointer rebasing (`delta = new_stack - old_stack`).
+Recursion depth is bounded by `FRAMES_MAX` (4096 frames), and each function supports up to
+`MAX_LOCALS` (1024 local variables), using 16-bit operand instructions (`OP_GET_LOCAL_16` and
+`OP_SET_LOCAL_16`) for local slots beyond 255.
+
+A frame stores the closure, the instruction pointer, the base slot, and the cached constant pool:
 
 ```c
 typedef struct {
@@ -205,7 +217,7 @@ For a call to `fn f(a, b)` the stack looks like:
 ```
 
 On return, `OP_RETURN` closes the frame's open upvalues, discards the stack down to
-`slots`, pushes the result and resumes the caller frame. There is a maximum of 256
+`slots`, pushes the result and resumes the caller frame. There is a maximum of 4096
 frames.
 
 ### Re-entrant calls from natives
@@ -245,11 +257,12 @@ It is a non-compacting *mark & sweep*:
    array elements, map entries, upvalues, names).
 3. Before sweeping, unmarked strings are removed from the interning table.
 4. `sweep` walks the object list, unlinks the unmarked ones and calls `object_free`.
-5. The threshold is recomputed as twice the live size, with a 1 MiB minimum.
+5. The threshold is adaptively recomputed based on the survival ratio: if high (>70% survival), the factor scales to 2.5x to avoid thrashing; if low (<30% survival), the factor contracts to 1.5x to bound memory footprint; otherwise 2.0x, with a 1 MiB minimum. Manual cycles can be triggered via `gc()`.
 
 The GC is paused during compilation (freshly created objects have no root yet) and
 around the constructions that allocate several blocks before the object becomes
-visible. The stack does not move, so pointers to slots are stable.
+visible. The value stack grows dynamically, rebasing stack pointers and open upvalues
+when reallocation occurs.
 
 A fresh object is only protected while it is reachable from a root. Code that creates
 an object and then hands it to a container (`array_push`, `map_set`) must root it
@@ -302,6 +315,14 @@ Spark uses a prototype-inspired model with class syntactic sugar:
 - Inside method functions, references to `self` resolve to `OP_SELF`, which retrieves `frame->self`. If `frame->self` is not set (e.g. standalone call), a runtime `NameError` is raised.
 - `class Name { init(...) { ... } method() { ... } }` desugars into a constructor function named `Name`. Calling `new Name(...)` or `Name(...)` creates a map instance, attaches the class's method closures, runs `init(...)` with `self` bound, and returns the instance.
 
+## Precompiled bytecode (`.sparkc`)
+
+Programs can be serialized to disk via `spark --compile <file> [-o <out>]`:
+- Format starts with 4-byte magic `SPRK` and a 32-bit version number.
+- Active global variable names are saved to preserve global slot mappings across modules.
+- Recursively serializes the chunk bytecode, line/column tables, and constant values (including nested functions and closures).
+- When loaded, bytecode is executed directly via `vm_run_function()` without invoking the lexer or parser.
+
 ## Tests
 
 `tests/run_tests.py`:
@@ -309,9 +330,9 @@ Spark uses a prototype-inspired model with class syntactic sugar:
 - runs the programs in `tests/cases` and compares stdout exactly;
 - runs the ones in `tests/errors` and checks the exit code and a `stderr` fragment;
 - tests the REPL (expressions, persistence, blocks and error recovery);
-- tests `--version`, `--help`, `--dump` and a missing file.
+- tests `--version`, `--help`, `--dump`, `--compile` and bytecode execution, and error cases.
 
-There are 103 tests. During development the project was also compiled with
+There are 148 tests. During development the project was also compiled with
 `-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the

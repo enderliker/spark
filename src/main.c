@@ -5,6 +5,7 @@
 
 #include "ast.h"
 #include "buf.h"
+#include "bytecode.h"
 #include "chunk.h"
 #include "compiler.h"
 #include "error.h"
@@ -17,11 +18,13 @@ static void print_help(void)
 {
     printf("Spark %s - an interpreted programming language with a virtual machine.\n\n",
            SPARK_VERSION);
-    printf("Usage: spark [options] [file.spark]\n\n");
+    printf("Usage: spark [options] [file.spark | file.sparkc]\n\n");
     printf("Options:\n");
-    printf("  --dump      compile and show the bytecode without running\n");
-    printf("  --help      show this help\n");
-    printf("  --version   show the version\n\n");
+    printf("  --compile <file>  compile source to bytecode file (.sparkc)\n");
+    printf("  -o <output>       output file for --compile (defaults to <file>.sparkc)\n");
+    printf("  --dump            compile and show the bytecode without running\n");
+    printf("  --help            show this help\n");
+    printf("  --version         show the version\n\n");
     printf("Without a file an interactive REPL opens. Type 'salir' to exit.\n");
 }
 
@@ -114,8 +117,72 @@ static bool source_is_incomplete(const char *source)
     return braces > 0 || in_string || in_block_comment;
 }
 
+static int compile_to_file(const char *in_path, const char *out_path)
+{
+    size_t size = 0;
+    char *source = read_file(in_path, &size);
+    if (!source) {
+        return 74;
+    }
+
+    Arena arena;
+    Stmt *program = NULL;
+    char error[256];
+    int error_line = 0;
+    int error_column = 0;
+    int status = 0;
+
+    arena_init(&arena);
+    if (!parse_source(source, &arena, &program, error, sizeof(error), &error_line, &error_column)) {
+        error_print(ERROR_SYNTAX, error_line, error_column, source, error);
+        status = 65;
+    } else {
+        ObjFunction *function = compile_ast(program, in_path, source, false, error,
+                                            sizeof(error), &error_line, &error_column);
+        if (!function) {
+            error_print(ERROR_COMPILE, error_line, error_column, source, error);
+            status = 65;
+        } else {
+            char default_out[4096];
+            if (!out_path) {
+                size_t len = strlen(in_path);
+                if (len > 6 && strcmp(in_path + len - 6, ".spark") == 0) {
+                    snprintf(default_out, sizeof(default_out), "%.*s.sparkc", (int)(len - 6), in_path);
+                } else {
+                    snprintf(default_out, sizeof(default_out), "%s.sparkc", in_path);
+                }
+                out_path = default_out;
+            }
+            if (!bytecode_save(function, out_path, error, sizeof(error))) {
+                fprintf(stderr, "spark: %s\n", error);
+                status = 74;
+            }
+        }
+    }
+
+    arena_free(&arena);
+    free(source);
+    return status;
+}
+
 static int run_file(const char *path, bool dump)
 {
+    if (bytecode_is_bytecode_file(path) ||
+        (strlen(path) > 7 && strcmp(path + strlen(path) - 7, ".sparkc") == 0)) {
+        char error[256];
+        ObjFunction *function = bytecode_load(path, error, sizeof(error));
+        if (!function) {
+            fprintf(stderr, "spark: %s\n", error);
+            return 65;
+        }
+        if (dump) {
+            chunk_disassemble_function(function);
+            return 0;
+        }
+        InterpretResult result = vm_run_function(function, path);
+        return result == INTERPRET_OK ? 0 : (result == INTERPRET_COMPILE_ERROR ? 65 : 70);
+    }
+
     size_t size = 0;
     char *source = read_file(path, &size);
 
@@ -217,6 +284,8 @@ static void repl(void)
 int main(int argc, char **argv)
 {
     const char *file = NULL;
+    const char *compile_file = NULL;
+    const char *output_file = NULL;
     bool dump = false;
     int script_arg_index = argc;
 
@@ -233,6 +302,22 @@ int main(int argc, char **argv)
             dump = true;
             continue;
         }
+        if (strcmp(argv[i], "--compile") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "spark: --compile requires a file argument\n");
+                return 64;
+            }
+            compile_file = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "spark: -o requires a file argument\n");
+                return 64;
+            }
+            output_file = argv[++i];
+            continue;
+        }
         if (argv[i][0] == '-' && argv[i][1] != '\0') {
             fprintf(stderr, "spark: unknown option '%s' (try --help)\n", argv[i]);
             return 64;
@@ -240,6 +325,13 @@ int main(int argc, char **argv)
         file = argv[i];
         script_arg_index = i;
         break;
+    }
+
+    if (compile_file) {
+        vm_init();
+        int status = compile_to_file(compile_file, output_file);
+        vm_free();
+        return status;
     }
 
     if (dump && !file) {

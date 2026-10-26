@@ -16,6 +16,8 @@ typedef enum {
     OP_DUP2,          /* duplicates the two top values */
     OP_GET_LOCAL,     /* u8: slot */
     OP_SET_LOCAL,     /* u8: slot */
+    OP_GET_LOCAL_16,  /* u16: slot */
+    OP_SET_LOCAL_16,  /* u16: slot */
     OP_GET_GLOBAL,    /* u16: constant with the name */
     OP_DEFINE_GLOBAL, /* u16 */
     OP_DEFINE_GLOBAL_CONST, /* u16; defines the slot and marks it constant */

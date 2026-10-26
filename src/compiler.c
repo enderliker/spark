@@ -8,9 +8,10 @@
 #include <string.h>
 
 #include "memory.h"
+#include "object.h"
 #include "vm.h"
 
-#define MAX_LOCALS 256
+#define MAX_LOCALS 1024
 #define MAX_UPVALUES 256
 
 typedef struct {
@@ -82,6 +83,8 @@ typedef struct Compiler {
 static void compile_statement(Compiler *compiler, Stmt *stmt);
 static void compile_expression(Compiler *compiler, Expr *expr);
 static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column);
+static bool eval_constant_expr(Compiler *compiler, Expr *expr, Value *out_val);
+static bool stmt_is_terminator(const Stmt *stmt);
 
 static void compile_error(Compiler *compiler, int line, const char *fmt, ...)
 {
@@ -364,8 +367,13 @@ static void emit_get(Compiler *compiler, VarRef ref, int line)
 {
     switch (ref.kind) {
     case VAR_LOCAL:
-        emit_byte(compiler, OP_GET_LOCAL, line);
-        emit_byte(compiler, (uint8_t)ref.index, line);
+        if (ref.index <= 0xff) {
+            emit_byte(compiler, OP_GET_LOCAL, line);
+            emit_byte(compiler, (uint8_t)ref.index, line);
+        } else {
+            emit_byte(compiler, OP_GET_LOCAL_16, line);
+            emit_u16(compiler, (uint16_t)ref.index, line);
+        }
         break;
     case VAR_UPVALUE:
         emit_byte(compiler, OP_GET_UPVALUE, line);
@@ -385,8 +393,13 @@ static void emit_set(Compiler *compiler, VarRef ref, int line)
 {
     switch (ref.kind) {
     case VAR_LOCAL:
-        emit_byte(compiler, OP_SET_LOCAL, line);
-        emit_byte(compiler, (uint8_t)ref.index, line);
+        if (ref.index <= 0xff) {
+            emit_byte(compiler, OP_SET_LOCAL, line);
+            emit_byte(compiler, (uint8_t)ref.index, line);
+        } else {
+            emit_byte(compiler, OP_SET_LOCAL_16, line);
+            emit_u16(compiler, (uint16_t)ref.index, line);
+        }
         break;
     case VAR_UPVALUE:
         emit_byte(compiler, OP_SET_UPVALUE, line);
@@ -649,6 +662,16 @@ static int emit_condition_jump(Compiler *compiler, Expr *condition, int line)
 
 static void compile_if(Compiler *compiler, Stmt *stmt, int line)
 {
+    Value cond_val;
+    if (eval_constant_expr(compiler, stmt->as.if_stmt.condition, &cond_val)) {
+        if (!value_is_falsey(cond_val)) {
+            compile_statement(compiler, stmt->as.if_stmt.then_branch);
+        } else if (stmt->as.if_stmt.else_branch) {
+            compile_statement(compiler, stmt->as.if_stmt.else_branch);
+        }
+        return;
+    }
+
     int then_jump = emit_condition_jump(compiler, stmt->as.if_stmt.condition, line);
 
     compile_statement(compiler, stmt->as.if_stmt.then_branch);
@@ -748,6 +771,12 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
 
 static void compile_while(Compiler *compiler, Stmt *stmt, int line)
 {
+    Value cond_val;
+    if (eval_constant_expr(compiler, stmt->as.while_stmt.condition, &cond_val) &&
+        value_is_falsey(cond_val)) {
+        return;
+    }
+
     int loop_start = compiler->function->chunk.count;
     LoopCtx loop;
 
@@ -909,6 +938,9 @@ static void compile_switch(Compiler *compiler, Stmt *stmt, int line)
         begin_scope(compiler);
         for (StmtList *list = case_node->body; list; list = list->next) {
             compile_statement(compiler, list->stmt);
+            if (stmt_is_terminator(list->stmt)) {
+                break;
+            }
         }
         end_scope(compiler, line);
 
@@ -920,6 +952,9 @@ static void compile_switch(Compiler *compiler, Stmt *stmt, int line)
         begin_scope(compiler);
         for (StmtList *list = default_case->body; list; list = list->next) {
             compile_statement(compiler, list->stmt);
+            if (stmt_is_terminator(list->stmt)) {
+                break;
+            }
         }
         end_scope(compiler, line);
     }
@@ -1175,6 +1210,13 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
     }
 }
 
+static bool stmt_is_terminator(const Stmt *stmt)
+{
+    if (!stmt) return false;
+    return stmt->kind == STMT_RETURN || stmt->kind == STMT_THROW ||
+           stmt->kind == STMT_BREAK || stmt->kind == STMT_CONTINUE;
+}
+
 static void compile_statement(Compiler *compiler, Stmt *stmt)
 {
     int line = stmt->line;
@@ -1233,6 +1275,9 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         begin_scope(compiler);
         for (StmtList *list = stmt->as.block.statements; list; list = list->next) {
             compile_statement(compiler, list->stmt);
+            if (stmt_is_terminator(list->stmt)) {
+                break;
+            }
         }
         end_scope(compiler, line);
         break;
@@ -1398,7 +1443,7 @@ static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int co
     }
     if (expr->kind == EXPR_VARIABLE) {
         int slot = resolve_local(compiler, expr->as.variable, line);
-        if (slot >= 0) {
+        if (slot >= 0 && slot <= 0xff) {
             emit_byte(compiler, OP_RETURN_LOCAL, line);
             emit_byte(compiler, (uint8_t)slot, line);
             return;
@@ -1449,11 +1494,314 @@ static void compile_binary_operator(Compiler *compiler, TokenType op, int line)
     }
 }
 
+static void emit_constant_value(Compiler *compiler, Value val, int line)
+{
+    if (is_nil(val)) {
+        emit_byte(compiler, OP_NIL, line);
+    } else if (is_bool(val)) {
+        emit_byte(compiler, AS_BOOL(val) ? OP_TRUE : OP_FALSE, line);
+    } else {
+        emit_constant(compiler, val, line);
+    }
+}
+
+static bool eval_constant_expr(Compiler *compiler, Expr *expr, Value *out_val)
+{
+    if (!expr) return false;
+
+    switch (expr->kind) {
+    case EXPR_NUMBER:
+        *out_val = expr_number_value(expr);
+        return true;
+
+    case EXPR_STRING:
+        *out_val = OBJ_VAL(object_string(expr->as.string.chars, expr->as.string.length));
+        return true;
+
+    case EXPR_BOOL:
+        *out_val = BOOL_VAL(expr->as.boolean);
+        return true;
+
+    case EXPR_NIL:
+        *out_val = NIL_VAL;
+        return true;
+
+    case EXPR_UNARY: {
+        Value operand;
+        if (!eval_constant_expr(compiler, expr->as.unary.operand, &operand)) return false;
+        switch (expr->as.unary.op) {
+        case TOKEN_BANG:
+            *out_val = BOOL_VAL(value_is_falsey(operand));
+            return true;
+        case TOKEN_MINUS:
+            if (is_int(operand)) {
+                int64_t val = AS_INT(operand);
+                if (val == INT64_MIN) {
+                    *out_val = NUMBER_VAL(-(double)INT64_MIN);
+                } else {
+                    *out_val = INT_VAL(-val);
+                }
+                return true;
+            }
+            if (is_number(operand)) {
+                *out_val = NUMBER_VAL(-AS_NUMBER(operand));
+                return true;
+            }
+            return false;
+        case TOKEN_TILDE:
+            if (is_int(operand)) {
+                *out_val = INT_VAL(~AS_INT(operand));
+                return true;
+            }
+            return false;
+        default:
+            return false;
+        }
+    }
+
+    case EXPR_BINARY: {
+        Value left, right;
+        if (!eval_constant_expr(compiler, expr->as.binary.left, &left)) return false;
+        if (!eval_constant_expr(compiler, expr->as.binary.right, &right)) return false;
+
+        if (is_obj_type(left, OBJ_STRING) && is_obj_type(right, OBJ_STRING)) {
+            if (expr->as.binary.op == TOKEN_PLUS) {
+                *out_val = OBJ_VAL(object_string_concat(AS_STRING(left), AS_STRING(right)));
+                return true;
+            }
+            return false;
+        }
+
+        switch (expr->as.binary.op) {
+        case TOKEN_PLUS:
+            if (is_int(left) && is_int(right)) {
+                int64_t res;
+                if (!int_add_overflow(AS_INT(left), AS_INT(right), &res)) {
+                    *out_val = INT_VAL(res);
+                } else {
+                    *out_val = NUMBER_VAL((double)AS_INT(left) + (double)AS_INT(right));
+                }
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = NUMBER_VAL(value_as_double(left) + value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_MINUS:
+            if (is_int(left) && is_int(right)) {
+                int64_t res;
+                if (!int_sub_overflow(AS_INT(left), AS_INT(right), &res)) {
+                    *out_val = INT_VAL(res);
+                } else {
+                    *out_val = NUMBER_VAL((double)AS_INT(left) - (double)AS_INT(right));
+                }
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = NUMBER_VAL(value_as_double(left) - value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_STAR:
+            if (is_int(left) && is_int(right)) {
+                int64_t res;
+                if (!int_mul_overflow(AS_INT(left), AS_INT(right), &res)) {
+                    *out_val = INT_VAL(res);
+                } else {
+                    *out_val = NUMBER_VAL((double)AS_INT(left) * (double)AS_INT(right));
+                }
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = NUMBER_VAL(value_as_double(left) * value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_SLASH:
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                double r = value_as_double(right);
+                if (r == 0.0) return false;
+                *out_val = NUMBER_VAL(value_as_double(left) / r);
+                return true;
+            }
+            return false;
+
+        case TOKEN_DIV:
+            if (is_int(left) && is_int(right)) {
+                int64_t b = AS_INT(right);
+                if (b == 0) return false;
+                int64_t a = AS_INT(left);
+                if (a == INT64_MIN && b == -1) return false;
+                *out_val = INT_VAL(a / b);
+                return true;
+            }
+            return false;
+
+        case TOKEN_PERCENT:
+            if (is_int(left) && is_int(right)) {
+                int64_t b = AS_INT(right);
+                if (b == 0) return false;
+                int64_t a = AS_INT(left);
+                if (a == INT64_MIN && b == -1) return false;
+                *out_val = INT_VAL(a % b);
+                return true;
+            }
+            return false;
+
+        case TOKEN_AMPERSAND:
+            if (is_int(left) && is_int(right)) {
+                *out_val = INT_VAL(AS_INT(left) & AS_INT(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_PIPE:
+            if (is_int(left) && is_int(right)) {
+                *out_val = INT_VAL(AS_INT(left) | AS_INT(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_CARET:
+            if (is_int(left) && is_int(right)) {
+                *out_val = INT_VAL(AS_INT(left) ^ AS_INT(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_LESS_LESS:
+            if (is_int(left) && is_int(right)) {
+                int64_t shift = AS_INT(right);
+                if (shift < 0 || shift >= 64) return false;
+                *out_val = INT_VAL((uint64_t)AS_INT(left) << shift);
+                return true;
+            }
+            return false;
+
+        case TOKEN_GREATER_GREATER:
+            if (is_int(left) && is_int(right)) {
+                int64_t shift = AS_INT(right);
+                if (shift < 0 || shift >= 64) return false;
+                *out_val = INT_VAL(AS_INT(left) >> shift);
+                return true;
+            }
+            return false;
+
+        case TOKEN_EQUAL_EQUAL:
+            *out_val = BOOL_VAL(values_equal(left, right));
+            return true;
+
+        case TOKEN_BANG_EQUAL:
+            *out_val = BOOL_VAL(!values_equal(left, right));
+            return true;
+
+        case TOKEN_LESS:
+            if (is_int(left) && is_int(right)) {
+                *out_val = BOOL_VAL(AS_INT(left) < AS_INT(right));
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = BOOL_VAL(value_as_double(left) < value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_LESS_EQUAL:
+            if (is_int(left) && is_int(right)) {
+                *out_val = BOOL_VAL(AS_INT(left) <= AS_INT(right));
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = BOOL_VAL(value_as_double(left) <= value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_GREATER:
+            if (is_int(left) && is_int(right)) {
+                *out_val = BOOL_VAL(AS_INT(left) > AS_INT(right));
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = BOOL_VAL(value_as_double(left) > value_as_double(right));
+                return true;
+            }
+            return false;
+
+        case TOKEN_GREATER_EQUAL:
+            if (is_int(left) && is_int(right)) {
+                *out_val = BOOL_VAL(AS_INT(left) >= AS_INT(right));
+                return true;
+            }
+            if (value_is_numeric(left) && value_is_numeric(right)) {
+                *out_val = BOOL_VAL(value_as_double(left) >= value_as_double(right));
+                return true;
+            }
+            return false;
+
+        default:
+            return false;
+        }
+    }
+
+    case EXPR_LOGICAL: {
+        Value lval;
+        if (!eval_constant_expr(compiler, expr->as.logical.left, &lval)) return false;
+        if (expr->as.logical.op == TOKEN_AND) {
+            if (value_is_falsey(lval)) {
+                *out_val = lval;
+                return true;
+            }
+            return eval_constant_expr(compiler, expr->as.logical.right, out_val);
+        } else {
+            if (!value_is_falsey(lval)) {
+                *out_val = lval;
+                return true;
+            }
+            return eval_constant_expr(compiler, expr->as.logical.right, out_val);
+        }
+    }
+
+    case EXPR_TERNARY: {
+        Value cval;
+        if (!eval_constant_expr(compiler, expr->as.ternary.condition, &cval)) return false;
+        if (!value_is_falsey(cval)) {
+            return eval_constant_expr(compiler, expr->as.ternary.then_branch, out_val);
+        } else {
+            return eval_constant_expr(compiler, expr->as.ternary.else_branch, out_val);
+        }
+    }
+
+    case EXPR_COALESCE: {
+        Value lval;
+        if (!eval_constant_expr(compiler, expr->as.coalesce.left, &lval)) return false;
+        if (!is_nil(lval)) {
+            *out_val = lval;
+            return true;
+        }
+        return eval_constant_expr(compiler, expr->as.coalesce.right, out_val);
+    }
+
+    default:
+        return false;
+    }
+}
+
 static void compile_expression(Compiler *compiler, Expr *expr)
 {
     int line = expr->line;
 
     compiler->column = expr->column;
+
+    Value const_val;
+    if (eval_constant_expr(compiler, expr, &const_val)) {
+        emit_constant_value(compiler, const_val, line);
+        return;
+    }
     switch (expr->kind) {
     case EXPR_NUMBER:
         emit_constant(compiler, expr_number_value(expr), line);
@@ -1488,19 +1836,22 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         Expr *left = expr->as.binary.left;
         Expr *right = expr->as.binary.right;
 
-        if (left->kind == EXPR_VARIABLE && right->kind == EXPR_NUMBER) {
-            int fused = fused_local_const_opcode(expr->as.binary.op);
+        if (left->kind == EXPR_VARIABLE) {
+            Value rval;
+            if (eval_constant_expr(compiler, right, &rval) && value_is_numeric(rval)) {
+                int fused = fused_local_const_opcode(expr->as.binary.op);
 
-            if (fused >= 0) {
-                int slot = resolve_local(compiler, left->as.variable, line);
+                if (fused >= 0) {
+                    int slot = resolve_local(compiler, left->as.variable, line);
 
-                if (slot >= 0) {
-                    int index = add_constant(compiler, expr_number_value(right), line);
+                    if (slot >= 0 && slot <= 0xff) {
+                        int index = add_constant(compiler, rval, line);
 
-                    emit_byte(compiler, (uint8_t)fused, line);
-                    emit_byte(compiler, (uint8_t)slot, line);
-                    emit_u16(compiler, (uint16_t)index, line);
-                    break;
+                        emit_byte(compiler, (uint8_t)fused, line);
+                        emit_byte(compiler, (uint8_t)slot, line);
+                        emit_u16(compiler, (uint16_t)index, line);
+                        break;
+                    }
                 }
             }
         }
@@ -1746,6 +2097,9 @@ ObjFunction *compile_ast(Stmt *program, const char *name, const char *source, bo
 
     for (StmtList *list = program->as.block.statements; list; list = list->next) {
         compile_statement(&compiler, list->stmt);
+        if (stmt_is_terminator(list->stmt)) {
+            break;
+        }
     }
     compiler.column = program->column;
     emit_byte(&compiler, OP_NIL, program->line);

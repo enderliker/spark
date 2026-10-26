@@ -227,6 +227,58 @@ def test_cli() -> None:
         if argv_script.exists():
             argv_script.unlink()
 
+    # Precompiled bytecode tests (.sparkc)
+    hello_src = CASES / "hola.spark"
+    default_sparkc = CASES / "hola.sparkc"
+    custom_sparkc = ROOT / "tests" / "custom.sparkc"
+    try:
+        c1 = run(["--compile", str(hello_src)])
+        report("--compile generates .sparkc file",
+               c1.returncode == 0 and default_sparkc.exists(),
+               c1.stdout + c1.stderr)
+
+        r1 = run([str(default_sparkc)])
+        report("running .sparkc file produces expected output",
+               r1.returncode == 0 and "Hello, world!" in r1.stdout,
+               r1.stdout + r1.stderr)
+
+        c2 = run(["--compile", str(hello_src), "-o", str(custom_sparkc)])
+        report("--compile -o generates custom bytecode file",
+               c2.returncode == 0 and custom_sparkc.exists(),
+               c2.stdout + c2.stderr)
+
+        r2 = run([str(custom_sparkc)])
+        report("running custom .sparkc file produces expected output",
+               r2.returncode == 0 and "Hello, world!" in r2.stdout,
+               r2.stdout + r2.stderr)
+    finally:
+        if default_sparkc.exists():
+            default_sparkc.unlink()
+        if custom_sparkc.exists():
+            custom_sparkc.unlink()
+
+    bad_magic = ROOT / "tests" / "bad_magic.sparkc"
+    bad_magic.write_bytes(b"BADM\x01\x00\x00\x00")
+    try:
+        bm = run([str(bad_magic)])
+        report(".sparkc with invalid magic exits with code 65",
+               bm.returncode == 65 and "incorrect magic header" in bm.stderr,
+               bm.stdout + bm.stderr)
+    finally:
+        if bad_magic.exists():
+            bad_magic.unlink()
+
+    bad_version = ROOT / "tests" / "bad_version.sparkc"
+    bad_version.write_bytes(b"SPRK\x99\x00\x00\x00")
+    try:
+        bv = run([str(bad_version)])
+        report(".sparkc with unsupported version exits with code 65",
+               bv.returncode == 65 and "unsupported bytecode version" in bv.stderr,
+               bv.stdout + bv.stderr)
+    finally:
+        if bad_version.exists():
+            bad_version.unlink()
+
 
 def main() -> int:
     if not BINARY.exists():
