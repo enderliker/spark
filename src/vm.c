@@ -4574,21 +4574,104 @@ cold_dispatch:
                 return INTERPRET_RUNTIME_ERROR;
             }
 
-            if (!is_obj_type(method_val, OBJ_CLOSURE)) {
+            /* Replace receiver on stack with the method */
+            *(vm.stack_top - arg_count - 1) = method_val;
+
+            if (is_obj_type(method_val, OBJ_CLOSURE)) {
+                if (!call_closure((ObjClosure *)AS_OBJ(method_val), arg_count)) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                /* Bind self on the newly created frame */
+                vm.frames[vm.frame_count - 1].self = receiver;
+                frame = &vm.frames[vm.frame_count - 1];
+            } else if (is_obj_type(method_val, OBJ_NATIVE)) {
+                if (!call_value(method_val, arg_count)) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+            } else {
                 vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
                 return INTERPRET_RUNTIME_ERROR;
             }
+            break;
+        }
 
-            /* Replace receiver on stack with the closure */
-            *(vm.stack_top - arg_count - 1) = method_val;
+        case OP_INVOKE_SPREAD: {
+            uint16_t name_slot = READ_U16();
+            ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
 
-            if (!call_closure((ObjClosure *)AS_OBJ(method_val), arg_count)) {
+            Value args_val = pop();
+            if (!is_obj_type(args_val, OBJ_ARRAY)) {
+                vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
+                                 value_type_name(args_val));
                 return INTERPRET_RUNTIME_ERROR;
             }
 
-            /* Bind self on the newly created frame */
-            vm.frames[vm.frame_count - 1].self = receiver;
-            frame = &vm.frames[vm.frame_count - 1];
+            Value receiver = peek(0);
+            if (!is_obj_type(receiver, OBJ_MAP)) {
+                vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
+                                 value_type_name(receiver));
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            Value method_val;
+            if (!map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            ObjArray *arr = AS_ARRAY(args_val);
+            int count = arr->count;
+            if (count >= STACK_MAX - (int)(vm.stack_top - vm.stack)) {
+                vm_runtime_error(ERROR_MEMORY, "stack overflow");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+
+            /* Replace receiver on stack with the method */
+            vm.stack_top[-1] = method_val;
+
+            for (int i = 0; i < count; i++) {
+                push(arr->items[i]);
+            }
+
+            if (is_obj_type(method_val, OBJ_CLOSURE)) {
+                if (!call_closure((ObjClosure *)AS_OBJ(method_val), count)) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                /* Bind self on the newly created frame */
+                vm.frames[vm.frame_count - 1].self = receiver;
+                frame = &vm.frames[vm.frame_count - 1];
+            } else if (is_obj_type(method_val, OBJ_NATIVE)) {
+                if (!call_value(method_val, count)) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+            } else {
+                vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
+                return INTERPRET_RUNTIME_ERROR;
+            }
             break;
         }
 
@@ -4868,17 +4951,23 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
         if (last_slash) {
             size_t dirlen = (size_t)(last_slash - importer_path->chars);
 
-            if (dirlen >= sizeof(dir_buf)) {
-                dirlen = sizeof(dir_buf) - 1;
+            if (dirlen == 0) {
+                dir = "/";
+            } else {
+                if (dirlen >= sizeof(dir_buf)) {
+                    dirlen = sizeof(dir_buf) - 1;
+                }
+                memcpy(dir_buf, importer_path->chars, dirlen);
+                dir_buf[dirlen] = '\0';
+                dir = dir_buf;
             }
-            memcpy(dir_buf, importer_path->chars, dirlen);
-            dir_buf[dirlen] = '\0';
-            dir = dir_buf;
         }
     }
 
     if (path_str->chars[0] == '/') {
         snprintf(target_path, sizeof(target_path), "%s", path_str->chars);
+    } else if (strcmp(dir, "/") == 0) {
+        snprintf(target_path, sizeof(target_path), "/%s", path_str->chars);
     } else {
         snprintf(target_path, sizeof(target_path), "%s/%s", dir, path_str->chars);
     }
@@ -4952,6 +5041,12 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
         return false;
     }
     entry->canonical_path = duplicate_string(resolved);
+    if (!entry->canonical_path) {
+        free(buf);
+        free(entry);
+        vm_runtime_error(ERROR_MEMORY, "out of memory allocating module path");
+        return false;
+    }
     entry->status = MODULE_LOADING;
     entry->next = vm.modules;
     vm.modules = entry;
@@ -4968,6 +5063,9 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
     if (!parse_source(owned, &arena, &program, error, sizeof(error), &error_line, &error_column)) {
         error_print(ERROR_SYNTAX, error_line, error_column, owned, error);
         arena_free(&arena);
+        vm.modules = entry->next;
+        free(entry->canonical_path);
+        free(entry);
         vm.had_error = true;
         return false;
     }
@@ -4977,6 +5075,9 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
     arena_free(&arena);
     if (!function) {
         error_print(ERROR_COMPILE, error_line, error_column, owned, error);
+        vm.modules = entry->next;
+        free(entry->canonical_path);
+        free(entry);
         vm.had_error = true;
         return false;
     }
@@ -4987,6 +5088,9 @@ static bool import_module(ObjString *path_str, ObjString *importer_path)
 
     Value res = NIL_VAL;
     if (!call_callback(OBJ_VAL(closure), 0, &res) || vm.had_error) {
+        vm.modules = entry->next;
+        free(entry->canonical_path);
+        free(entry);
         return false;
     }
 
@@ -5010,9 +5114,14 @@ InterpretResult vm_interpret(const char *source, const char *script_name, bool r
             main_entry = malloc(sizeof(ModuleEntry));
             if (main_entry) {
                 main_entry->canonical_path = duplicate_string(canonical_main);
-                main_entry->status = MODULE_LOADING;
-                main_entry->next = vm.modules;
-                vm.modules = main_entry;
+                if (main_entry->canonical_path) {
+                    main_entry->status = MODULE_LOADING;
+                    main_entry->next = vm.modules;
+                    vm.modules = main_entry;
+                } else {
+                    free(main_entry);
+                    main_entry = NULL;
+                }
             }
         }
     }

@@ -85,3 +85,32 @@ class Rectangle {
 
 var rect = new Rectangle(4, 5);
 print(rect.describe());
+
+// Native function stored in map
+var native_map = {"output": print};
+native_map.output("native method call");
+
+// Method call with spread arguments
+class MathHelper {
+    add(a, b, c) {
+        return a + b + c;
+    }
+}
+var math = new MathHelper();
+var nums = [10, 20, 30];
+print(math.add(...nums));
+
+// Constructor with early return
+class EarlyExit {
+    init(flag) {
+        self.val = "initial";
+        if (flag) {
+            return;
+        }
+        self.val = "modified";
+    }
+}
+var e1 = new EarlyExit(true);
+var e2 = new EarlyExit(false);
+print(e1.val);
+print(e2.val);

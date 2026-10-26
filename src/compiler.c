@@ -28,7 +28,8 @@ typedef struct {
 
 typedef enum {
     FUNC_SCRIPT,
-    FUNC_FUNCTION
+    FUNC_FUNCTION,
+    FUNC_INITIALIZER
 } FunctionType;
 
 typedef struct LoopCtx {
@@ -209,7 +210,7 @@ static void init_compiler(Compiler *compiler, Compiler *enclosing, FunctionType 
     compiler->function = object_function();
     compiler->function->source = ctx->source;
     compiler->function->script_path = ctx->script_path;
-    compiler->scope_depth = type == FUNC_FUNCTION ? 1 : 0;
+    compiler->scope_depth = type != FUNC_SCRIPT ? 1 : 0;
 
     /* Slot 0 holds the running closure. */
     compiler->locals[0].name.chars = "";
@@ -347,7 +348,8 @@ static VarRef resolve_variable(Compiler *compiler, Text name, int line)
         ref.index = upvalue;
         return ref;
     }
-    if (compiler->type == FUNC_FUNCTION && name.length == 4 && memcmp(name.chars, "self", 4) == 0) {
+    if ((compiler->type == FUNC_FUNCTION || compiler->type == FUNC_INITIALIZER) &&
+        name.length == 4 && memcmp(name.chars, "self", 4) == 0) {
         ref.kind = VAR_SELF;
         ref.index = 0;
         return ref;
@@ -1081,7 +1083,7 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
     }
 
     Compiler fn;
-    init_compiler(&fn, compiler, FUNC_FUNCTION, compiler->ctx);
+    init_compiler(&fn, compiler, FUNC_INITIALIZER, compiler->ctx);
     fn.function->name = object_string(name.chars, name.length);
     fn.locals[0].name = name;
     fn.locals[0].is_const = true;
@@ -1346,6 +1348,17 @@ static void compile_spread_arguments(Compiler *compiler, ExprList *arguments, in
 
 static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column)
 {
+    if (compiler->type == FUNC_INITIALIZER) {
+        if (expr) {
+            compile_error(compiler, line, "cannot return a value from a constructor");
+        }
+        int slot = resolve_local(compiler, (Text){"self", 4}, line);
+        emit_byte(compiler, OP_GET_LOCAL, line);
+        emit_byte(compiler, (uint8_t)slot, line);
+        compiler->column = column;
+        emit_byte(compiler, OP_RETURN, line);
+        return;
+    }
     if (!expr) {
         emit_byte(compiler, OP_NIL, line);
         compiler->column = column;
@@ -1662,15 +1675,25 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 
     case EXPR_METHOD_CALL: {
         compile_expression(compiler, expr->as.method_call.receiver);
-        for (ExprList *arg = expr->as.method_call.arguments; arg; arg = arg->next) {
-            compile_expression(compiler, arg->expr);
+        if (expr_list_has_spread(expr->as.method_call.arguments)) {
+            compile_spread_arguments(compiler, expr->as.method_call.arguments,
+                                     expr->as.method_call.argument_count, line);
+            ObjString *name = name_constant(expr->as.method_call.method);
+            int index = add_constant(compiler, OBJ_VAL(name), line);
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_INVOKE_SPREAD, line);
+            emit_u16(compiler, (uint16_t)index, line);
+        } else {
+            for (ExprList *arg = expr->as.method_call.arguments; arg; arg = arg->next) {
+                compile_expression(compiler, arg->expr);
+            }
+            ObjString *name = name_constant(expr->as.method_call.method);
+            int index = add_constant(compiler, OBJ_VAL(name), line);
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_INVOKE, line);
+            emit_u16(compiler, (uint16_t)index, line);
+            emit_byte(compiler, (uint8_t)expr->as.method_call.argument_count, line);
         }
-        ObjString *name = name_constant(expr->as.method_call.method);
-        int index = add_constant(compiler, OBJ_VAL(name), line);
-        compiler->column = expr->column;
-        emit_byte(compiler, OP_INVOKE, line);
-        emit_u16(compiler, (uint16_t)index, line);
-        emit_byte(compiler, (uint8_t)expr->as.method_call.argument_count, line);
         break;
     }
     }

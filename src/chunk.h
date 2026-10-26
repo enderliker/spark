@@ -80,7 +80,8 @@ typedef enum {
     OP_PUSH_FINALLY, /* u16: offset to finally block */
     OP_POP_TRY,
     OP_END_FINALLY,
-    OP_INVOKE,       /* u16: constant method name, u8: arg count */
+    OP_INVOKE,        /* u16: constant method name, u8: arg count */
+    OP_INVOKE_SPREAD, /* u16: constant method name */
     OP_SELF
 } OpCode;
 

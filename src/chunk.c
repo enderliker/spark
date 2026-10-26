@@ -134,6 +134,7 @@ const char *opcode_name(OpCode op)
     case OP_POP_TRY: return "POP_TRY";
     case OP_END_FINALLY: return "END_FINALLY";
     case OP_INVOKE: return "INVOKE";
+    case OP_INVOKE_SPREAD: return "INVOKE_SPREAD";
     case OP_SELF: return "SELF";
     }
     return "?";
@@ -273,6 +274,13 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         value_print_repr(stdout, chunk->constants[index]);
         printf("' (%d args)\n", count);
         return offset + 4;
+    }
+    case OP_INVOKE_SPREAD: {
+        int index = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        printf("%-18s %4d '", opcode_name(op), index);
+        value_print_repr(stdout, chunk->constants[index]);
+        printf("' (spread)\n");
+        return offset + 3;
     }
     default:
         return simple_instruction(opcode_name(op), offset);

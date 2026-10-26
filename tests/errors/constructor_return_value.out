@@ -1,0 +1,2 @@
+exit: 65
+stderr: cannot return a value from a constructor
