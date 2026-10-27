@@ -1,0 +1,23 @@
+adehjk bdegil bcfgjk
+adehjk bdegil bcfgjk
+name matches
+name differs
+local name matches
+local name differs
+local flag set
+local nothing is nil
+above const
+above local
+indeed above local
+flag set
+nothing is nil
+6
+3
+6
+nan <= is false
+nan >= is false
+nan < is false
+nan > is false
+nan negation agrees
+big int differs from rounded double
+big int inequality

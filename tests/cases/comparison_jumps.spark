@@ -1,0 +1,193 @@
+// The fused comparison-and-jump superinstructions: every operator must take
+// the same branch as the generic comparison in if/while conditions.
+
+fn first(n) {
+    var limit = 3;
+    var out = "";
+    if (n < 3) {
+        out += "a";
+    } else {
+        out += "b";
+    }
+    if (n > 3) {
+        out += "c";
+    } else {
+        out += "d";
+    }
+    if (n <= limit) {
+        out += "e";
+    } else {
+        out += "f";
+    }
+    if (n >= limit) {
+        out += "g";
+    } else {
+        out += "h";
+    }
+    if (n == 3) {
+        out += "i";
+    } else {
+        out += "j";
+    }
+    if (n != limit) {
+        out += "k";
+    } else {
+        out += "l";
+    }
+    return out;
+}
+
+fn second(n) {
+    var limit = 3;
+    var out = "";
+    if (n < limit) {
+        out += "a";
+    } else {
+        out += "b";
+    }
+    if (n > limit) {
+        out += "c";
+    } else {
+        out += "d";
+    }
+    if (n <= 3) {
+        out += "e";
+    } else {
+        out += "f";
+    }
+    if (n >= 3) {
+        out += "g";
+    } else {
+        out += "h";
+    }
+    if (n == limit) {
+        out += "i";
+    } else {
+        out += "j";
+    }
+    if (n != 3) {
+        out += "k";
+    } else {
+        out += "l";
+    }
+    return out;
+}
+
+print(first(2), first(3), first(4));
+print(second(2), second(3), second(4));
+
+var name = "spark";
+if (name == "spark") {
+    print("name matches");
+}
+if (name != "other") {
+    print("name differs");
+}
+
+fn text_checks() {
+    var local_name = "spark";
+    if (local_name == "spark") {
+        print("local name matches");
+    }
+    if (local_name != "other") {
+        print("local name differs");
+    }
+    var local_flag = true;
+    if (local_flag == true) {
+        print("local flag set");
+    }
+    var local_nothing = nil;
+    if (local_nothing == nil) {
+        print("local nothing is nil");
+    }
+}
+text_checks();
+
+var ratio = 2.5;
+var ceiling = 2.0;
+if (ratio > 1.5) {
+    print("above const");
+}
+if (ratio > ceiling) {
+    print("above local");
+}
+if (ratio <= ceiling) {
+    print("not above local");
+} else {
+    print("indeed above local");
+}
+
+var flag = true;
+if (flag == true) {
+    print("flag set");
+}
+var nothing = nil;
+if (nothing == nil) {
+    print("nothing is nil");
+}
+
+// Loops use the local-local form when the bound is a variable and the
+// local-const form when it is a literal.
+var total = 0;
+var bound = 4;
+for (var i = 0; i < bound; i++) {
+    total += i;
+}
+print(total);
+
+var countdown = 3;
+var steps = 0;
+while (countdown != 0) {
+    countdown -= 1;
+    steps += 1;
+}
+print(steps);
+
+var evens = 0;
+var up_to = 10;
+for (var i = 0; i <= up_to; i++) {
+    if (i % 2 == 0) {
+        evens += 1;
+    }
+}
+print(evens);
+
+// NaN must take the same branches as the generic comparison path, and mixed
+// int/number equality must stay exact beyond 2^53.
+fn edge_cases() {
+    var not_a_number = nan;
+    if (not_a_number <= 1.0) {
+        print("bad nan <= ");
+    } else {
+        print("nan <= is false");
+    }
+    if (not_a_number >= 1.0) {
+        print("bad nan >=");
+    } else {
+        print("nan >= is false");
+    }
+    if (not_a_number < 1.0) {
+        print("bad nan <");
+    } else {
+        print("nan < is false");
+    }
+    if (not_a_number > 1.0) {
+        print("bad nan >");
+    } else {
+        print("nan > is false");
+    }
+    if (!(not_a_number <= 1.0)) {
+        print("nan negation agrees");
+    }
+
+    var big = 9007199254740993;
+    if (big == 9007199254740992.0) {
+        print("bad big equality");
+    } else {
+        print("big int differs from rounded double");
+    }
+    if (big != 9007199254740992.0) {
+        print("big int inequality");
+    }
+}
+edge_cases();
