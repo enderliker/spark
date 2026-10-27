@@ -37,6 +37,8 @@ typedef enum {
     OP_EQUAL,
     OP_GREATER,
     OP_LESS,
+    OP_GREATER_OR_EQUAL,
+    OP_LESS_OR_EQUAL,
     OP_ADD,
     OP_SUBTRACT,
     OP_MULTIPLY,
@@ -92,6 +94,18 @@ typedef enum {
     OP_END_FINALLY,
     OP_INVOKE,        /* u16: constant method name, u8: arg count */
     OP_INVOKE_SPREAD, /* u16: constant method name */
+    /* Comparison-and-jump superinstructions. The branch is taken when the
+     * condition is false, matching the "jump over the then-branch" shape. */
+    OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST,    /* u8: slot, u16: const, u16: offset */
+    OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST, /* u8: slot, u16: const, u16: offset */
+    OP_JUMP_IF_EQUAL_LOCAL_CONST,                /* u8: slot, u16: const, u16: offset */
+    OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST,            /* u8: slot, u16: const, u16: offset */
+    OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL,             /* u8: slot a, u8: slot b, u16: offset */
+    OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL,          /* u8: slot a, u8: slot b, u16: offset */
+    OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL,    /* u8: slot a, u8: slot b, u16: offset */
+    OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL, /* u8: slot a, u8: slot b, u16: offset */
+    OP_JUMP_IF_EQUAL_LOCAL_LOCAL,                /* u8: slot a, u8: slot b, u16: offset */
+    OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL,            /* u8: slot a, u8: slot b, u16: offset */
     OP_SELF
 } OpCode;
 

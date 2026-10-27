@@ -117,6 +117,9 @@ bool array_pop(ObjArray *array, Value *out);
 
 ObjMap *object_map(void);
 bool map_get(ObjMap *map, Value key, Value *out);
+/* Same as map_get, but also reports the entry index so callers can cache the
+ * probe location (the method inline cache in the VM does this). */
+bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index);
 bool map_set(ObjMap *map, Value key, Value value);
 bool map_delete(ObjMap *map, Value key);
 

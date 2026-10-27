@@ -733,33 +733,77 @@ static void compile_cleanup_to(Compiler *compiler, int target_local_count, int l
     }
 }
 
-/* Emits the condition of an if/while/for. If it is "local <op> constant" it
- * uses a comparison-and-jump superinstruction; returns the offset to patch. */
+/* Maps a comparison operator to the matching "jump when false" opcode. A zero
+ * result means there is no fused form for it. */
+static uint8_t comparison_jump_local_const(TokenType op)
+{
+    switch (op) {
+    case TOKEN_LESS: return OP_JUMP_IF_NOT_LESS_LOCAL_CONST;
+    case TOKEN_GREATER: return OP_JUMP_IF_NOT_GREATER_LOCAL_CONST;
+    case TOKEN_LESS_EQUAL: return OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST;
+    case TOKEN_GREATER_EQUAL: return OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST;
+    case TOKEN_EQUAL_EQUAL: return OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST;
+    case TOKEN_BANG_EQUAL: return OP_JUMP_IF_EQUAL_LOCAL_CONST;
+    default: return 0;
+    }
+}
+
+static uint8_t comparison_jump_local_local(TokenType op)
+{
+    switch (op) {
+    case TOKEN_LESS: return OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL;
+    case TOKEN_GREATER: return OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL;
+    case TOKEN_LESS_EQUAL: return OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL;
+    case TOKEN_GREATER_EQUAL: return OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL;
+    case TOKEN_EQUAL_EQUAL: return OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL;
+    case TOKEN_BANG_EQUAL: return OP_JUMP_IF_EQUAL_LOCAL_LOCAL;
+    default: return 0;
+    }
+}
+
+static bool is_equality_operator(TokenType op)
+{
+    return op == TOKEN_EQUAL_EQUAL || op == TOKEN_BANG_EQUAL;
+}
+
+/* Emits the condition of an if/while/for. If it is "local <op> local" or
+ * "local <op> constant" it uses a comparison-and-jump superinstruction;
+ * returns the offset to patch. */
 static int emit_condition_jump(Compiler *compiler, Expr *condition, int line)
 {
-    if (condition->kind == EXPR_BINARY && condition->as.binary.left->kind == EXPR_VARIABLE &&
-        condition->as.binary.right->kind == EXPR_NUMBER) {
+    if (condition->kind == EXPR_BINARY && condition->as.binary.left->kind == EXPR_VARIABLE) {
+        Expr *right = condition->as.binary.right;
         TokenType op = condition->as.binary.op;
-        uint8_t branch = 0;
+        int slot = resolve_local(compiler, condition->as.binary.left->as.variable, line);
 
-        if (op == TOKEN_LESS) {
-            branch = OP_JUMP_IF_NOT_LESS_LOCAL_CONST;
-        } else if (op == TOKEN_GREATER) {
-            branch = OP_JUMP_IF_NOT_GREATER_LOCAL_CONST;
-        }
-        if (branch) {
-            int slot = resolve_local(compiler, condition->as.binary.left->as.variable, line);
+        if (slot >= 0 && slot <= 0xff) {
+            if (right->kind == EXPR_VARIABLE) {
+                uint8_t branch = comparison_jump_local_local(op);
+                int right_slot = resolve_local(compiler, right->as.variable, line);
 
-            if (slot >= 0) {
-                int index =
-                    add_constant(compiler, expr_number_value(condition->as.binary.right), line);
+                if (branch && right_slot >= 0 && right_slot <= 0xff) {
+                    emit_byte(compiler, branch, line);
+                    emit_byte(compiler, (uint8_t)slot, line);
+                    emit_byte(compiler, (uint8_t)right_slot, line);
+                    emit_byte(compiler, 0xff, line);
+                    emit_byte(compiler, 0xff, line);
+                    return compiler->function->chunk.count - 2;
+                }
+            } else {
+                uint8_t branch = comparison_jump_local_const(op);
+                Value constant;
 
-                emit_byte(compiler, branch, line);
-                emit_byte(compiler, (uint8_t)slot, line);
-                emit_u16(compiler, (uint16_t)index, line);
-                emit_byte(compiler, 0xff, line);
-                emit_byte(compiler, 0xff, line);
-                return compiler->function->chunk.count - 2;
+                if (branch && eval_constant_expr(compiler, right, &constant) &&
+                    (value_is_numeric(constant) || is_equality_operator(op))) {
+                    int index = add_constant(compiler, constant, line);
+
+                    emit_byte(compiler, branch, line);
+                    emit_byte(compiler, (uint8_t)slot, line);
+                    emit_u16(compiler, (uint16_t)index, line);
+                    emit_byte(compiler, 0xff, line);
+                    emit_byte(compiler, 0xff, line);
+                    return compiler->function->chunk.count - 2;
+                }
             }
         }
     }
@@ -1660,15 +1704,9 @@ static void compile_binary_operator(Compiler *compiler, TokenType op, int line)
         emit_byte(compiler, OP_NOT, line);
         break;
     case TOKEN_GREATER: emit_byte(compiler, OP_GREATER, line); break;
-    case TOKEN_GREATER_EQUAL:
-        emit_byte(compiler, OP_LESS, line);
-        emit_byte(compiler, OP_NOT, line);
-        break;
+    case TOKEN_GREATER_EQUAL: emit_byte(compiler, OP_GREATER_OR_EQUAL, line); break;
     case TOKEN_LESS: emit_byte(compiler, OP_LESS, line); break;
-    case TOKEN_LESS_EQUAL:
-        emit_byte(compiler, OP_GREATER, line);
-        emit_byte(compiler, OP_NOT, line);
-        break;
+    case TOKEN_LESS_EQUAL: emit_byte(compiler, OP_LESS_OR_EQUAL, line); break;
     default:
         break;
     }

@@ -128,6 +128,30 @@ static bool call_callback(Value callee, int arg_count, Value *result);
 static inline bool compare_values(bool greater, Value a, Value b, bool *out);
 static bool import_module(ObjString *path_str, ObjString *importer_path);
 
+/* Method inline cache. It remembers the probe location of a method on a map so
+ * repeated calls skip hashing and linear probing. An entry is only a hint: the
+ * hot path verifies the map still owns the same entry array with the same
+ * capacity and that the slot still holds the requested key, so rehashing,
+ * deletion, clearing and address reuse all degrade to a cache miss instead of
+ * a stale read. The cached location is revalidated, never the method value, so
+ * the cache does not need to participate in garbage collection. */
+enum { METHOD_CACHE_SIZE = 512 };
+
+typedef struct {
+    ObjString *name;
+    MapEntry *entries;
+    int capacity;
+    int index;
+} MethodCacheEntry;
+
+static MethodCacheEntry method_cache[METHOD_CACHE_SIZE];
+
+static inline uint32_t method_cache_slot(ObjString *name, const ObjMap *map)
+{
+    return (name->hash ^ (uint32_t)(uintptr_t)map->entries) & (METHOD_CACHE_SIZE - 1);
+}
+
+
 static char *duplicate_string(const char *str)
 {
     size_t len = strlen(str);
@@ -3722,6 +3746,134 @@ static inline bool compare_values(bool greater, Value a, Value b, bool *out)
     return false;
 }
 
+/* Fast path for the comparison-and-jump superinstructions. Returns false when
+ * the operands need the general path (non-numeric ordering); equality is
+ * always decided here because it cannot fail. `*jump` is the branch decision. */
+static inline bool fused_comparison_jump(OpCode op, Value a, Value b, bool *jump)
+{
+    if (a.type == VAL_INT && b.type == VAL_INT) {
+        int64_t x = AS_INT(a);
+        int64_t y = AS_INT(b);
+
+        switch (op) {
+        case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
+            *jump = x >= y;
+            return true;
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+            *jump = x <= y;
+            return true;
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+            *jump = x > y;
+            return true;
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
+            *jump = x < y;
+            return true;
+        case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+            *jump = x == y;
+            return true;
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL:
+            *jump = x != y;
+            return true;
+        default:
+            return false;
+        }
+    }
+    if (value_is_numeric(a) && value_is_numeric(b)) {
+        double x = value_as_double(a);
+        double y = value_as_double(b);
+
+        switch (op) {
+        case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
+            *jump = !(x < y);
+            return true;
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+            *jump = !(x > y);
+            return true;
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+            /* `a <= b` is false for NaN, so the branch must be taken. */
+            *jump = !(x <= y);
+            return true;
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
+            *jump = !(x >= y);
+            return true;
+        case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+            /* Mixed int/number equality has to stay exact for magnitudes that
+             * a double cannot represent (2^53 and beyond). */
+            *jump = values_equal(a, b);
+            return true;
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL:
+            *jump = !values_equal(a, b);
+            return true;
+        default:
+            return false;
+        }
+    }
+    switch (op) {
+    case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+        *jump = values_equal(a, b);
+        return true;
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL:
+        *jump = !values_equal(a, b);
+        return true;
+    default:
+        return false;
+    }
+}
+
+/* General path for the ordering variants: reports a runtime error when the
+ * operands are not comparable. */
+static bool slow_comparison_jump(OpCode op, Value a, Value b, bool *jump)
+{
+    bool greater;
+    bool negate;
+
+    switch (op) {
+    case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
+        greater = false;
+        negate = true;
+        break;
+    case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+        greater = true;
+        negate = true;
+        break;
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+        greater = true;
+        negate = false;
+        break;
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
+        greater = false;
+        negate = false;
+        break;
+    default:
+        return false;
+    }
+
+    bool result;
+    if (!compare_values(greater, a, b, &result)) {
+        return false;
+    }
+    *jump = negate ? !result : result;
+    return true;
+}
+
 static inline bool arithmetic_values(uint8_t op, Value a, Value b, Value *out)
 {
     if (!value_is_numeric(a) || !value_is_numeric(b)) {
@@ -3932,6 +4084,36 @@ static bool index_to_position(Value index, int *out)
 #define TARGET(op) case op
 #endif
 
+/* Comparison-and-jump superinstructions: both operands compare with a fused
+ * fast path; anything it cannot decide goes through the cold implementation. */
+#define FUSED_JUMP_LOCAL_CONST(opname)                                        \
+    TARGET(opname) :                                                          \
+    {                                                                         \
+        Value cmp_a = slots[ip[1]];                                           \
+        Value cmp_b = constants[U16_AT(ip + 2)];                              \
+        bool cmp_jump;                                                        \
+        if (__builtin_expect(fused_comparison_jump(opname, cmp_a, cmp_b,      \
+                                                   &cmp_jump), 1)) {          \
+            ip += cmp_jump ? 6 + U16_AT(ip + 4) : 6;                          \
+            DISPATCH();                                                       \
+        }                                                                     \
+        goto cold;                                                            \
+    }
+
+#define FUSED_JUMP_LOCAL_LOCAL(opname)                                        \
+    TARGET(opname) :                                                          \
+    {                                                                         \
+        Value cmp_a = slots[ip[1]];                                           \
+        Value cmp_b = slots[ip[2]];                                           \
+        bool cmp_jump;                                                        \
+        if (__builtin_expect(fused_comparison_jump(opname, cmp_a, cmp_b,      \
+                                                   &cmp_jump), 1)) {          \
+            ip += cmp_jump ? 5 + U16_AT(ip + 3) : 5;                          \
+            DISPATCH();                                                       \
+        }                                                                     \
+        goto cold;                                                            \
+    }
+
 /* The loop has two paths. The hot path below keeps `ip` and `sp` in local
  * variables (so the compiler can keep them in registers) and only handles the
  * common, error-free, allocation-free cases. Anything else jumps to `cold`
@@ -3967,6 +4149,8 @@ static InterpretResult run(int base_frame)
         [OP_MULTIPLY] = &&op_OP_MULTIPLY,
         [OP_LESS] = &&op_OP_LESS,
         [OP_GREATER] = &&op_OP_GREATER,
+        [OP_GREATER_OR_EQUAL] = &&op_OP_GREATER_OR_EQUAL,
+        [OP_LESS_OR_EQUAL] = &&op_OP_LESS_OR_EQUAL,
         [OP_ADD_LOCAL_CONST] = &&op_OP_ADD_LOCAL_CONST,
         [OP_SUBTRACT_LOCAL_CONST] = &&op_OP_SUBTRACT_LOCAL_CONST,
         [OP_MULTIPLY_LOCAL_CONST] = &&op_OP_MULTIPLY_LOCAL_CONST,
@@ -3977,9 +4161,22 @@ static InterpretResult run(int base_frame)
         [OP_JUMP_IF_FALSE_POP] = &&op_OP_JUMP_IF_FALSE_POP,
         [OP_JUMP_IF_NOT_LESS_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_LESS_LOCAL_CONST,
         [OP_JUMP_IF_NOT_GREATER_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_GREATER_LOCAL_CONST,
+        [OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST,
+        [OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST] =
+            &&op_OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST,
+        [OP_JUMP_IF_EQUAL_LOCAL_CONST] = &&op_OP_JUMP_IF_EQUAL_LOCAL_CONST,
+        [OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST] = &&op_OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST,
+        [OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL] = &&op_OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL,
+        [OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL] = &&op_OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL,
+        [OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL] = &&op_OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL,
+        [OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL] =
+            &&op_OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL,
+        [OP_JUMP_IF_EQUAL_LOCAL_LOCAL] = &&op_OP_JUMP_IF_EQUAL_LOCAL_LOCAL,
+        [OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL] = &&op_OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL,
         [OP_LOOP] = &&op_OP_LOOP,
         [OP_DEFAULT_ARG] = &&op_OP_DEFAULT_ARG,
         [OP_CALL] = &&op_OP_CALL,
+        [OP_INVOKE] = &&op_OP_INVOKE,
         [OP_TAIL_CALL] = &&op_OP_TAIL_CALL,
         [OP_RETURN_LOCAL] = &&op_OP_RETURN_LOCAL,
         [OP_RETURN] = &&op_OP_RETURN,
@@ -4199,6 +4396,56 @@ static InterpretResult run(int base_frame)
             DISPATCH();
         }
 
+        TARGET(OP_LESS_OR_EQUAL): {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_INT(a) <= AS_INT(b));
+                ip += 1;
+                DISPATCH();
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_NUMBER(a) <= AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
+            }
+            if (!numeric_fast(a) || !numeric_fast(b)) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = BOOL_VAL(value_as_double(a) <= value_as_double(b));
+            ip += 1;
+            DISPATCH();
+        }
+
+        TARGET(OP_GREATER_OR_EQUAL): {
+            Value a = sp[-2];
+            Value b = sp[-1];
+
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_INT(a) >= AS_INT(b));
+                ip += 1;
+                DISPATCH();
+            }
+            if (a.type == VAL_NUMBER && b.type == VAL_NUMBER) {
+                sp--;
+                sp[-1] = BOOL_VAL(AS_NUMBER(a) >= AS_NUMBER(b));
+                ip += 1;
+                DISPATCH();
+            }
+            if (!numeric_fast(a) || !numeric_fast(b)) {
+                goto cold;
+            }
+            sp--;
+            sp[-1] = BOOL_VAL(value_as_double(a) >= value_as_double(b));
+            ip += 1;
+            DISPATCH();
+        }
+
         TARGET(OP_ADD_LOCAL_CONST): {
             Value a = slots[ip[1]];
             Value b = constants[U16_AT(ip + 2)];
@@ -4388,6 +4635,18 @@ static InterpretResult run(int base_frame)
             DISPATCH();
         }
 
+        FUSED_JUMP_LOCAL_CONST(OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST)
+        FUSED_JUMP_LOCAL_CONST(OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST)
+        FUSED_JUMP_LOCAL_CONST(OP_JUMP_IF_EQUAL_LOCAL_CONST)
+        FUSED_JUMP_LOCAL_CONST(OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST)
+
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL)
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL)
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL)
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL)
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_EQUAL_LOCAL_LOCAL)
+        FUSED_JUMP_LOCAL_LOCAL(OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL)
+
         TARGET(OP_LOOP):
             ip += 3 - U16_AT(ip + 1);
             DISPATCH();
@@ -4455,6 +4714,58 @@ static InterpretResult run(int base_frame)
                             DISPATCH();
                         }
                         goto handle_runtime_error;
+                    }
+                }
+            }
+            goto cold;
+        }
+
+        TARGET(OP_INVOKE): {
+            ObjString *method_name = AS_STRING(constants[U16_AT(ip + 1)]);
+            int arg_count = ip[3];
+            Value receiver = sp[-(arg_count + 1)];
+
+            if (receiver.type == VAL_OBJ && receiver.as.obj->type == OBJ_MAP) {
+                ObjMap *map = (ObjMap *)receiver.as.obj;
+                MethodCacheEntry *cache = &method_cache[method_cache_slot(method_name, map)];
+
+                if (cache->name == method_name && cache->entries == map->entries &&
+                    cache->capacity == map->capacity && cache->index < map->capacity) {
+                    MapEntry *entry = &map->entries[cache->index];
+
+                    if (entry->state == 1 && entry->key.type == VAL_OBJ &&
+                        entry->key.as.obj == (Obj *)method_name && entry->value.type == VAL_OBJ) {
+                        Obj *method_obj = entry->value.as.obj;
+
+                        if (method_obj->type == OBJ_CLOSURE) {
+                            ObjClosure *closure = (ObjClosure *)method_obj;
+                            ObjFunction *function = closure->function;
+
+                            if (!function->is_varargs && !function->is_constructor &&
+                                arg_count >= function->min_arity &&
+                                arg_count <= function->arity &&
+                                frame < &vm.frames[FRAMES_MAX - 1]) {
+                                int original_argc = arg_count;
+
+                                sp[-(arg_count + 1)] = entry->value;
+                                while (arg_count < function->arity) {
+                                    *sp++ = NIL_VAL;
+                                    arg_count++;
+                                }
+                                frame->ip = ip + 4;
+                                frame++;
+                                frame->closure = closure;
+                                frame->ip = function->chunk.code;
+                                frame->slots = sp - function->arity - 1;
+                                frame->constants = function->chunk.constants;
+                                frame->argc = original_argc;
+                                frame->self = receiver;
+                                ip = function->chunk.code;
+                                slots = frame->slots;
+                                constants = frame->constants;
+                                DISPATCH();
+                            }
+                        }
                     }
                 }
             }
@@ -5190,6 +5501,35 @@ cold_dispatch:
             break;
         }
 
+        case OP_LESS_OR_EQUAL:
+        case OP_GREATER_OR_EQUAL: {
+            Value b = pop();
+            Value a = pop();
+            bool result;
+
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                result = instruction == OP_LESS_OR_EQUAL
+                             ? AS_INT(a) <= AS_INT(b)
+                             : AS_INT(a) >= AS_INT(b);
+                push(BOOL_VAL(result));
+                break;
+            }
+            if (value_is_numeric(a) && value_is_numeric(b)) {
+                result = instruction == OP_LESS_OR_EQUAL
+                             ? value_as_double(a) <= value_as_double(b)
+                             : value_as_double(a) >= value_as_double(b);
+                push(BOOL_VAL(result));
+                break;
+            }
+            /* Strings have a total order, so `a <= b` is `!(a > b)` and
+             * `a >= b` is `!(a < b)`; anything else is a type error. */
+            if (!compare_values(instruction == OP_LESS_OR_EQUAL, a, b, &result)) {
+                goto handle_runtime_error;
+            }
+            push(BOOL_VAL(!result));
+            break;
+        }
+
         case OP_ADD_LOCAL_CONST: {
             uint8_t slot = READ_BYTE();
             Value b = frame->closure->function->chunk.constants[READ_U16()];
@@ -5514,17 +5854,44 @@ cold_dispatch:
         }
 
         case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
-        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: {
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST: {
             uint8_t slot = READ_BYTE();
             Value b = frame->closure->function->chunk.constants[READ_U16()];
             uint16_t offset = READ_U16();
-            bool result;
+            bool jump;
 
-            if (!compare_values(instruction == OP_JUMP_IF_NOT_GREATER_LOCAL_CONST,
-                                frame->slots[slot], b, &result)) {
+            if (!fused_comparison_jump((OpCode)instruction, frame->slots[slot], b, &jump) &&
+                !slow_comparison_jump((OpCode)instruction, frame->slots[slot], b, &jump)) {
                 goto handle_runtime_error;
             }
-            if (!result) {
+            if (jump) {
+                frame->ip += offset;
+            }
+            break;
+        }
+
+        case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
+        case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+        case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+        case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
+        case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+        case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL: {
+            uint8_t slot_a = READ_BYTE();
+            uint8_t slot_b = READ_BYTE();
+            uint16_t offset = READ_U16();
+            Value a = frame->slots[slot_a];
+            Value b = frame->slots[slot_b];
+            bool jump;
+
+            if (!fused_comparison_jump((OpCode)instruction, a, b, &jump) &&
+                !slow_comparison_jump((OpCode)instruction, a, b, &jump)) {
+                goto handle_runtime_error;
+            }
+            if (jump) {
                 frame->ip += offset;
             }
             break;
@@ -6094,8 +6461,20 @@ cold_dispatch:
             Value receiver = peek(arg_count);
 
             if (is_obj_type(receiver, OBJ_MAP)) {
+                ObjMap *receiver_map = AS_MAP(receiver);
                 Value method_val;
-                if (map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
+                int method_index;
+
+                if (map_get_index(receiver_map, OBJ_VAL(method_name), &method_val,
+                                  &method_index)) {
+                    MethodCacheEntry *cache =
+                        &method_cache[method_cache_slot(method_name, receiver_map)];
+
+                    cache->name = method_name;
+                    cache->entries = receiver_map->entries;
+                    cache->capacity = receiver_map->capacity;
+                    cache->index = method_index;
+
                     /* Replace receiver on stack with the method */
                     *(vm.stack_top - arg_count - 1) = method_val;
 

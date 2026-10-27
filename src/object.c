@@ -329,7 +329,7 @@ ObjMap *object_map(void)
     return map;
 }
 
-bool map_get(ObjMap *map, Value key, Value *out)
+bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index)
 {
     if (map->capacity == 0 || map->count == 0) {
         return false;
@@ -352,6 +352,9 @@ bool map_get(ObjMap *map, Value key, Value *out)
             if (entry->state == 1 && entry->hash == hash && entry->key.type == VAL_OBJ &&
                 entry->key.as.obj == key_obj) {
                 *out = entry->value;
+                if (out_index) {
+                    *out_index = (int)index;
+                }
                 return true;
             }
             index = (index + 1) & mask;
@@ -368,10 +371,18 @@ bool map_get(ObjMap *map, Value key, Value *out)
         }
         if (entry->state == 1 && entry->hash == hash && keys_equal(entry->key, key)) {
             *out = entry->value;
+            if (out_index) {
+                *out_index = (int)index;
+            }
             return true;
         }
         index = (index + 1) & mask;
     }
+}
+
+bool map_get(ObjMap *map, Value key, Value *out)
+{
+    return map_get_index(map, key, out, NULL);
 }
 
 bool map_set(ObjMap *map, Value key, Value value)

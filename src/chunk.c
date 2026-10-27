@@ -2,6 +2,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "memory.h"
 #include "object.h"
@@ -48,6 +49,26 @@ void chunk_write(Chunk *chunk, uint8_t byte, int line, int column)
 
 int chunk_add_constant(Chunk *chunk, Value value)
 {
+    /* Deduplicate constants with the same type and value: repeated numeric or
+     * text literals then share one slot, which shrinks both the in-memory
+     * constant table and the serialized .sparkc file. Numbers compare by bits
+     * so 0.0 and -0.0 keep their distinct representations. */
+    for (int i = 0; i < chunk->constants_count; i++) {
+        Value existing = chunk->constants[i];
+
+        if (existing.type != value.type) {
+            continue;
+        }
+        if (value.type == VAL_NUMBER) {
+            if (memcmp(&existing.as.number, &value.as.number, sizeof(double)) == 0) {
+                return i;
+            }
+            continue;
+        }
+        if (values_equal(existing, value)) {
+            return i;
+        }
+    }
     if (chunk->constants_count + 1 > chunk->constants_capacity) {
         int capacity = chunk->constants_capacity < 8 ? 8 : chunk->constants_capacity * 2;
         chunk->constants = mem_realloc(chunk->constants,
@@ -92,6 +113,8 @@ const char *opcode_name(OpCode op)
     case OP_EQUAL: return "EQUAL";
     case OP_GREATER: return "GREATER";
     case OP_LESS: return "LESS";
+    case OP_GREATER_OR_EQUAL: return "GREATER_OR_EQUAL";
+    case OP_LESS_OR_EQUAL: return "LESS_OR_EQUAL";
     case OP_ADD: return "ADD";
     case OP_SUBTRACT: return "SUBTRACT";
     case OP_MULTIPLY: return "MULTIPLY";
@@ -145,6 +168,16 @@ const char *opcode_name(OpCode op)
     case OP_END_FINALLY: return "END_FINALLY";
     case OP_INVOKE: return "INVOKE";
     case OP_INVOKE_SPREAD: return "INVOKE_SPREAD";
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST: return "JUMP_IF_NOT_LE_LC";
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST: return "JUMP_IF_NOT_GE_LC";
+    case OP_JUMP_IF_EQUAL_LOCAL_CONST: return "JUMP_IF_EQ_LC";
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST: return "JUMP_IF_NE_LC";
+    case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL: return "JUMP_IF_NOT_LESS_LL";
+    case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL: return "JUMP_IF_NOT_GREATER_LL";
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL: return "JUMP_IF_NOT_LE_LL";
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL: return "JUMP_IF_NOT_GE_LL";
+    case OP_JUMP_IF_EQUAL_LOCAL_LOCAL: return "JUMP_IF_EQ_LL";
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL: return "JUMP_IF_NE_LL";
     case OP_SELF: return "SELF";
     }
     return "?";
@@ -255,7 +288,11 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         return offset + 4;
     }
     case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
-    case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST: {
+    case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST: {
         int slot = chunk->code[offset + 1];
         int index = (chunk->code[offset + 2] << 8) | chunk->code[offset + 3];
         int jump = (chunk->code[offset + 4] << 8) | chunk->code[offset + 5];
@@ -264,6 +301,19 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         value_print_repr(stdout, chunk->constants[index]);
         printf("' -> %d\n", offset + 6 + jump);
         return offset + 6;
+    }
+    case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
+    case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+    case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+    case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
+    case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL: {
+        int a = chunk->code[offset + 1];
+        int b = chunk->code[offset + 2];
+        int jump = (chunk->code[offset + 3] << 8) | chunk->code[offset + 4];
+
+        printf("%-18s %4d %4d -> %d\n", opcode_name(op), a, b, offset + 5 + jump);
+        return offset + 5;
     }
     case OP_PUSH_CATCH:
     case OP_PUSH_FINALLY:

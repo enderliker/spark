@@ -56,6 +56,43 @@ static bool write_double(FILE *f, double val)
     return write_u64(f, bits);
 }
 
+/* Zigzag-encoded LEB128 varint. Line and column deltas are usually zero or
+ * small, so this uses one byte where the old encoding used four. */
+static bool write_varint(FILE *f, int64_t value)
+{
+    uint64_t bits = (uint64_t)value;
+    uint64_t zigzag = (bits << 1) ^ (value < 0 ? UINT64_MAX : 0);
+
+    while (zigzag >= 0x80) {
+        if (!write_u8(f, (uint8_t)(zigzag | 0x80))) {
+            return false;
+        }
+        zigzag >>= 7;
+    }
+    return write_u8(f, (uint8_t)zigzag);
+}
+
+static bool read_varint(FILE *f, int64_t *out)
+{
+    uint64_t result = 0;
+    int shift = 0;
+
+    for (;;) {
+        int byte = fgetc(f);
+
+        if (byte == EOF || shift > 63) {
+            return false;
+        }
+        result |= (uint64_t)(byte & 0x7f) << shift;
+        if ((byte & 0x80) == 0) {
+            break;
+        }
+        shift += 7;
+    }
+    *out = (int64_t)((result >> 1) ^ (uint64_t)-((int64_t)(result & 1)));
+    return true;
+}
+
 static bool write_string_data(FILE *f, const char *chars, uint32_t len)
 {
     if (!write_u32(f, len)) return false;
@@ -101,9 +138,16 @@ static bool serialize_function(FILE *f, const ObjFunction *fn)
     if (!write_u32(f, code_count)) return false;
     if (code_count > 0) {
         if (fwrite(fn->chunk.code, 1, code_count, f) != code_count) return false;
+        int64_t previous_line = 0;
+        int64_t previous_column = 0;
         for (uint32_t i = 0; i < code_count; i++) {
-            if (!write_u32(f, (uint32_t)fn->chunk.lines[i])) return false;
-            if (!write_u32(f, (uint32_t)fn->chunk.columns[i])) return false;
+            int64_t line = fn->chunk.lines[i];
+            int64_t column = fn->chunk.columns[i];
+
+            if (!write_varint(f, line - previous_line)) return false;
+            if (!write_varint(f, column - previous_column)) return false;
+            previous_line = line;
+            previous_column = column;
         }
     }
 
@@ -316,11 +360,16 @@ static ObjFunction *deserialize_function(FILE *f)
         fn->chunk.columns = malloc(code_count * sizeof(int));
         if (!fn->chunk.code || !fn->chunk.lines || !fn->chunk.columns) return NULL;
         if (fread(fn->chunk.code, 1, code_count, f) != code_count) return NULL;
+        int64_t line = 0;
+        int64_t column = 0;
         for (uint32_t i = 0; i < code_count; i++) {
-            uint32_t line, col;
-            if (!read_u32(f, &line) || !read_u32(f, &col)) return NULL;
+            int64_t line_delta, column_delta;
+
+            if (!read_varint(f, &line_delta) || !read_varint(f, &column_delta)) return NULL;
+            line += line_delta;
+            column += column_delta;
             fn->chunk.lines[i] = (int)line;
-            fn->chunk.columns[i] = (int)col;
+            fn->chunk.columns[i] = (int)column;
         }
     }
 
