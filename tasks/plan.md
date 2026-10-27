@@ -166,7 +166,45 @@ original numbering:
 - [x] T52 Formatter
 - [x] T53 Linter
 - [x] T54 CI + coverage + sanitizer job
-- [ ] T55 Concurrency (`spawn`/`yield`/channels) - stretch (deferred per Q6/Q10)
+- [ ] T55 Concurrency (`spawn`/`yield`/channels) - moved to Phase 14
+
+### Phase 9 - Catchable Runtime Errors & String Optimization
+- [ ] T56 Catchable runtime errors in `try`/`catch` (`ZeroDivisionError`, `TypeError`, `IndexError`, etc. caught as map)
+- [ ] T57 Amortized string concatenation / String builder (`s += "x"` in O(N))
+
+### Phase 10 - Standard Library Additions
+- [ ] T58 Math natives (`sin`, `cos`, `log`, `exp`, `pi`, `min`/`max` array support)
+- [ ] T59 Time natives (`time`, `sleep`)
+- [ ] T60 Text natives & unicode escapes (`chr`, `ord`, `pad_start`, `pad_end`, `\uXXXX`)
+- [ ] T61 Utility natives (`sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`)
+- [ ] T62 System & File natives (`list_dir`, `mkdir`, `exec`)
+
+### Phase 11 - Negative Indices & Slices
+- [ ] T63 Negative indexing for arrays and strings (`a[-1]`)
+- [ ] T64 Slice native supporting negative bounds (`slice(str, start, end)`)
+- [ ] T65 Slice syntax `expr[start:end]` and `expr[start:end:step]`
+
+### Phase 12 - Native Methods & Syntactic Sugar
+- [ ] T66 Methods on native types (`"abc".upper()`, `[1, 2].len()`, `str.split(sep)`)
+- [ ] T67 Increment / decrement operators (`i++`, `i--`, `++i`, `--i`)
+- [ ] T68 Short lambdas (`fn(x) => x * 2`)
+- [ ] T69 Binary `in` operator (`item in collection`)
+- [ ] T70 Power operator `**`, optional chaining `?.`, unary `+`
+- [ ] T71 Multiline strings (`"""..."""`)
+- [ ] T72 `for (var i, v in arr)` syntax
+- [ ] T73 Per-iteration loop binding for closures
+- [ ] T74 Destructuring (`var [a, b] = arr`, `var {x, y} = map`)
+
+### Phase 13 - Full Classes & OOP
+- [ ] T75 First-class `ObjClass` and `ObjInstance` (`type(inst) == "ClassName"`)
+- [ ] T76 Inheritance with `class Sub extends Super` and `super(...)` / `super.method(...)`
+- [ ] T77 Class field declarations `var x = 3;` and `static` methods
+- [ ] T78 `instanceof` operator
+- [ ] T79 Custom string representation hook `to_string()`
+- [ ] T80 Operator overloading (`__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.)
+
+### Phase 14 - Concurrency (T55)
+- [ ] T81 Green-thread coroutines (`spawn`, `yield`, `channel`)
 
 ### Checkpoint: Complete
 - [x] All acceptance criteria met

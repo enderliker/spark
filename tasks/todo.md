@@ -735,17 +735,136 @@ benchmark; publish coverage.
 **Files:** `.github/workflows/ci.yml`, `Makefile`, `README.md`.
 **Scope:** S.
 
-### T55 - Concurrency (`spawn`/`yield`/channels) - stretch
-**Description:** VM green-thread coroutines with `spawn`, `yield` and channels, per Q6.
-**Status:** Deferred as stretch per roadmap alignment (Q6/Q10).
+### T55 - Concurrency (`spawn`/`yield`/channels) - moved to Phase 14
+
+## Phase 9 - Catchable Runtime Errors & String Optimization
+
+### T56 - Catchable runtime errors in `try`/`catch`
+**Description:** Enable `try { ... } catch (e) { ... }` to catch VM runtime errors (e.g. `1/0`, `[1][5]`, `sqrt(-1)`), constructing an error map `{type, message, line, column}` and unwinding active handlers.
 **Acceptance criteria:**
-- [ ] Cooperative scheduling; deterministic test with channels.
-- [ ] GC handles suspended coroutine stacks.
+- [ ] Active `try` handler intercepts runtime errors and populates `e` with structured map.
+- [ ] Without `try`, uncaught runtime errors keep printing to stderr and exit as before.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers; docs.
-**Dependencies:** Q6 answered.
-**Files:** `src/vm.c`, `src/object.c/h`, `tests/`, `docs/`.
-**Scope:** XL (stretch - likely deferred).
+- [ ] Tests in `tests/cases/exceptions_runtime.spark`; suite clean; sanitizers clean.
+**Dependencies:** None.
+**Files:** `src/vm.c`, `tests/cases/exceptions_runtime.spark`, `docs/language.md`.
+**Scope:** M.
+
+### T57 - Amortized string concatenation / String builder
+**Description:** Optimize repeated string appends `s += "x"` to be amortized O(N) rather than O(N^2).
+**Acceptance criteria:**
+- [ ] 20,000 appends completes in < 5 ms (down from ~66 ms).
+**Verification:**
+- [ ] Microbenchmark + test suite.
+**Dependencies:** None.
+**Files:** `src/vm.c`, `src/object.c/h`.
+**Scope:** M.
+
+## Phase 10 - Standard Library Additions
+
+### T58 - Math natives
+**Description:** Add `sin`, `cos`, `log`, `exp`, `pi`, and multi-arg / array support for `min`/`max`.
+**Scope:** S.
+
+### T59 - Time natives
+**Description:** Add `time()` and `sleep(ms)`.
+**Scope:** S.
+
+### T60 - Text natives & unicode escapes
+**Description:** Add `chr`, `ord`, `pad_start`, `pad_end`, and `\uXXXX` string escapes.
+**Scope:** M.
+
+### T61 - Utility natives
+**Description:** Add `sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`.
+**Scope:** M.
+
+### T62 - System & File natives
+**Description:** Add `list_dir`, `mkdir`, `exec`.
+**Scope:** M.
+
+## Phase 11 - Negative Indices & Slices
+
+### T63 - Negative indexing for arrays and strings
+**Description:** Support `a[-1]` in arrays and strings.
+**Scope:** S.
+
+### T64 - Slice native supporting negative bounds
+**Description:** Update `slice()` native to support negative indices.
+**Scope:** S.
+
+### T65 - Slice syntax `expr[start:end]`
+**Description:** Add `[start:end]` and `[start:end:step]` slice syntax to the grammar.
+**Scope:** M.
+
+## Phase 12 - Native Methods & Syntactic Sugar
+
+### T66 - Methods on native types
+**Description:** Allow `"abc".upper()`, `[1, 2].len()`, etc. via type method dispatch.
+**Scope:** M.
+
+### T67 - Increment / decrement (`++` / `--`)
+**Description:** Postfix and prefix `++` and `--`.
+**Scope:** M.
+
+### T68 - Short lambdas (`fn(x) => expr`)
+**Description:** Expression-bodied anonymous functions.
+**Scope:** S.
+
+### T69 - Binary `in` operator
+**Description:** `item in collection` expression.
+**Scope:** S.
+
+### T70 - Power operator `**`, optional chaining `?.`, unary `+`
+**Description:** `a ** b`, `obj?.field`, `+x`.
+**Scope:** M.
+
+### T71 - Multiline strings
+**Description:** Triple-quoted multiline strings `"""..."""`.
+**Scope:** S.
+
+### T72 - `for (var i, v in arr)` syntax
+**Description:** Destructured index and value in `for..in` loops.
+**Scope:** M.
+
+### T73 - Per-iteration loop binding for closures
+**Description:** Fresh scope binding for loop variables in `for` loops.
+**Scope:** M.
+
+### T74 - Destructuring
+**Description:** `var [a, b] = arr` and `var {x, y} = map`.
+**Scope:** M.
+
+## Phase 13 - Full Classes & OOP
+
+### T75 - First-class `ObjClass` and `ObjInstance`
+**Description:** Distinct class and instance objects with `type(inst) == "ClassName"`.
+**Scope:** M.
+
+### T76 - Inheritance with `extends` & `super`
+**Description:** `class Sub extends Super` and `super(...)` / `super.method(...)`.
+**Scope:** L.
+
+### T77 - Class field declarations and `static` methods
+**Description:** `var x = 3;` in class body, static methods.
+**Scope:** M.
+
+### T78 - `instanceof` operator
+**Description:** Check if instance is an instance of class or subclass.
+**Scope:** S.
+
+### T79 - Custom string representation (`to_string()`)
+**Description:** Hook `to_string()` method into `str()` and `print()`.
+**Scope:** S.
+
+### T80 - Operator overloading
+**Description:** `__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.
+**Scope:** M.
+
+## Phase 14 - Concurrency (T55)
+
+### T81 - Green-thread coroutines (`spawn`, `yield`, `channel`)
+**Description:** VM green-thread coroutines with cooperative scheduling and channels.
+**Scope:** XL.
 
 ## Checkpoint: Complete
 - [x] All acceptance criteria met

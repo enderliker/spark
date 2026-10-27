@@ -74,7 +74,7 @@ project directory and run `make` and `./spark`. On Linux and macOS it works nati
 ./spark --format -w file.spark    # formats file in-place
 ./spark --lint file.spark         # runs static analysis (unused vars, unreachable code, shadowing)
 ./spark --compile file.spark      # compiles source to .sparkc bytecode
-./spark --dump examples/hola.spark # shows the bytecode without running
+./spark --dump examples/hello.spark # shows the bytecode without running
 ./spark --help
 ./spark --version
 ```
