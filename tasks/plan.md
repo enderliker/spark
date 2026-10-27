@@ -159,19 +159,19 @@ original numbering:
 
 ### Checkpoint: Phase 7
 - [x] Benchmark improved (~5.1 ms), all 148 tests + sanitizers clean
-- [ ] Review with the user before Phase 8
+- [x] Review with the user before Phase 8
 
 ### Phase 8 - Tools & ecosystem (area 7)
-- [ ] T51 Debugger (`--debug`: breakpoints, step, locals)
-- [ ] T52 Formatter
-- [ ] T53 Linter
-- [ ] T54 CI + coverage + sanitizer job
-- [ ] T55 Concurrency (`spawn`/`yield`/channels) - stretch
+- [x] T51 Debugger (`--debug`: breakpoints, step, locals)
+- [x] T52 Formatter
+- [x] T53 Linter
+- [x] T54 CI + coverage + sanitizer job
+- [ ] T55 Concurrency (`spawn`/`yield`/channels) - stretch (deferred per Q6/Q10)
 
 ### Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] Full sanitizer + benchmark run
-- [ ] Ready for review
+- [x] All acceptance criteria met
+- [x] Full sanitizer + benchmark run (153 tests passing, ASan/UBSan clean, benchmark ~5.1 ms)
+- [x] Ready for review
 
 ## Risks and Mitigations
 

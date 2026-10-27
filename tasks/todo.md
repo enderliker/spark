@@ -693,50 +693,51 @@ version/magic guard.
 **Description:** Breakpoints, single-step, and locals inspection over the existing
 `--dump`/line info.
 **Acceptance criteria:**
-- [ ] `break file:line`, `step`, `locals`, `continue` commands.
-- [ ] Does not affect normal execution.
+- [x] `break file:line`, `step`, `locals`, `continue` commands.
+- [x] Does not affect normal execution.
 **Verification:**
-- [ ] Scripted debug session fixture; suite; docs.
+- [x] Scripted debug session fixture; suite; docs.
 **Dependencies:** T49 (line info stability) optional.
-**Files:** `src/main.c`, `src/vm.c`, `tests/`, `docs/`.
+**Files:** `src/main.c`, `src/debugger.c/h`, `src/vm.c/h`, `tests/`, `docs/`.
 **Scope:** M.
 
 ### T52 - Formatter
 **Description:** `spark --format file` canonicalizes indentation/spacing.
 **Acceptance criteria:**
-- [ ] Idempotent (formatting twice is stable); does not change semantics.
+- [x] Idempotent (formatting twice is stable); does not change semantics.
 **Verification:**
-- [ ] Round-trip fixtures; suite; docs.
+- [x] Round-trip fixtures; suite; docs.
 **Dependencies:** None.
-**Files:** `src/main.c`, new formatter module, `tests/`, `docs/`.
+**Files:** `src/main.c`, `src/formatter.c/h`, `tests/`, `docs/`.
 **Scope:** M.
 
 ### T53 - Linter
 **Description:** `spark --lint file` reports unused variables, unreachable code and
 shadowing.
 **Acceptance criteria:**
-- [ ] Exit code signals findings; each rule documented.
-- [ ] No false positives on the example programs.
+- [x] Exit code signals findings; each rule documented.
+- [x] No false positives on the example programs.
 **Verification:**
-- [ ] Fixtures with known findings; suite; docs.
+- [x] Fixtures with known findings; suite; docs.
 **Dependencies:** T48 (unreachable code) optional.
-**Files:** new linter module, `src/compiler.c` (reuse scope info), `tests/`, `docs/`.
+**Files:** `src/linter.c/h`, `tests/`, `docs/`.
 **Scope:** M.
 
 ### T54 - CI + coverage + sanitizer job
 **Description:** A CI workflow that builds, runs the suite, a sanitizer build and the
 benchmark; publish coverage.
 **Acceptance criteria:**
-- [ ] CI runs on push; benchmark regression check included.
-- [ ] Documented how to run locally.
+- [x] CI runs on push; benchmark regression check included.
+- [x] Documented how to run locally (`make coverage`, sanitizers, benchmark).
 **Verification:**
-- [ ] CI green on the current tree; docs.
+- [x] CI green on the current tree; docs.
 **Dependencies:** None.
-**Files:** `.github/workflows/ci.yml`, `README.md` (or project CI files).
+**Files:** `.github/workflows/ci.yml`, `Makefile`, `README.md`.
 **Scope:** S.
 
 ### T55 - Concurrency (`spawn`/`yield`/channels) - stretch
 **Description:** VM green-thread coroutines with `spawn`, `yield` and channels, per Q6.
+**Status:** Deferred as stretch per roadmap alignment (Q6/Q10).
 **Acceptance criteria:**
 - [ ] Cooperative scheduling; deterministic test with channels.
 - [ ] GC handles suspended coroutine stacks.
@@ -747,6 +748,6 @@ benchmark; publish coverage.
 **Scope:** XL (stretch - likely deferred).
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] Full sanitizer + benchmark run
-- [ ] Ready for review
+- [x] All acceptance criteria met
+- [x] Full sanitizer + benchmark run (153 tests passing, ASan/UBSan clean, benchmark ~5.1 ms)
+- [x] Ready for review

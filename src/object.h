@@ -37,6 +37,13 @@ typedef struct {
     int capacity;
 } ObjMap;
 
+typedef struct {
+    int slot;
+    ObjString *name;
+    int start_pc;
+    int end_pc;
+} DebugLocal;
+
 typedef struct ObjFunction {
     Obj obj;
     int arity;
@@ -47,6 +54,9 @@ typedef struct ObjFunction {
     ObjString *name;
     ObjString *script_path;
     const char *source; /* borrowed from the VM; used to show error snippets */
+    DebugLocal *debug_locals;
+    int debug_local_count;
+    int debug_local_capacity;
 } ObjFunction;
 
 typedef struct ObjUpvalue {

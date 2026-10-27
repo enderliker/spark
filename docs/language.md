@@ -638,7 +638,62 @@ spark script.sparkc                       # runs precompiled file directly
 - Bytecode files begin with the 4-byte magic signature `SPRK` followed by the binary format version.
 - Precompiled files execute with zero parse/compile overhead and can be imported directly or resolved automatically via `import`.
 
-## 17. Limits
+## 17. Developer Tooling
+
+Spark provides built-in tools for debugging, formatting, and static analysis:
+
+### Interactive Debugger (`--debug`)
+
+Run any script with `--debug` to start an interactive debugging session:
+
+```bash
+spark --debug script.spark
+```
+
+Available debugger commands:
+- `break <[file:]line>` (or `b`): Set a breakpoint at a source line or file:line.
+- `delete <id>` (or `d`): Delete a breakpoint by its number.
+- `list`: List all active breakpoints.
+- `step` (or `s`): Step into the next source line.
+- `next` (or `n`): Step over the next line (skipping into called functions).
+- `continue` (or `c`): Resume execution until the next breakpoint or program end.
+- `locals` (or `l`): Inspect local variables in the current call frame.
+- `stack` (or `bt`): Print call stack backtrace.
+- `help` (or `h`): Display available debugger commands.
+- `quit` (or `q`): Terminate execution immediately.
+
+### Code Formatter (`--format`)
+
+Format source code canonically with `--format`:
+
+```bash
+spark --format file.spark       # outputs formatted source to stdout
+spark --format -w file.spark    # formats file in-place
+```
+
+Formatting rules:
+- Indentation: 4 spaces per nesting level.
+- Semicolons followed by newline (except within `for` loop headers).
+- Binary and assignment operators surrounded by spaces.
+- Commas followed by a single space.
+- Comments (`//` and `/* ... */`) and string interpolations preserved verbatim.
+- Fully idempotent: running the formatter multiple times produces identical output.
+
+### Linter (`--lint`)
+
+Analyze source code statically for potential issues:
+
+```bash
+spark --lint file.spark
+```
+
+Linter rules:
+- `unused-variable`: Warns when local variables or parameters are declared but never referenced. Names beginning with an underscore (`_`) are intentionally ignored.
+- `unreachable-code`: Warns when statements appear after a terminator (`return`, `throw`, `break`, `continue`) in the same block.
+- `shadowed-variable`: Warns when a variable declaration in an inner scope shadows a variable declared in an enclosing scope.
+- Returns exit code `0` when clean, `1` when warnings are found, `65` on syntax errors, and `74` if the file cannot be read.
+
+## 18. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.

@@ -58,6 +58,7 @@ third-party dependencies.
 ```bash
 make            # builds the ./spark binary
 make test       # runs the test suite (needs python3)
+make coverage   # runs tests and reports gcov code coverage
 ```
 
 On **Windows** the recommended path is WSL (Ubuntu): open a WSL terminal, enter the
@@ -66,9 +67,14 @@ project directory and run `make` and `./spark`. On Linux and macOS it works nati
 ## Usage
 
 ```bash
-./spark                       # opens the REPL
+./spark                           # opens the REPL
 ./spark examples/fibonacci.spark
-./spark --dump examples/hola.spark   # shows the bytecode without running
+./spark --debug file.spark        # runs file under the interactive debugger
+./spark --format file.spark       # outputs canonical formatted code to stdout
+./spark --format -w file.spark    # formats file in-place
+./spark --lint file.spark         # runs static analysis (unused vars, unreachable code, shadowing)
+./spark --compile file.spark      # compiles source to .sparkc bytecode
+./spark --dump examples/hola.spark # shows the bytecode without running
 ./spark --help
 ./spark --version
 ```

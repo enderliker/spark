@@ -49,3 +49,21 @@ jobs:
       # strict 10-15 ms budget is checked locally; this is a coarse regression guard.
       - name: Measure fib(27)
         run: python3 benchmarks/run.py --max-ms 100
+
+  coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with coverage instrumentation
+        run: >-
+          make
+          CFLAGS="-std=c11 -O0 -g --coverage -Wall -Wextra -Wpedantic -Werror"
+          LDFLAGS="--coverage"
+
+      - name: Run the test suite
+        run: python3 tests/run_tests.py
+
+      - name: Generate coverage summary
+        run: gcov src/*.c

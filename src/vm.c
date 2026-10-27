@@ -1,3 +1,6 @@
+#define _POSIX_C_SOURCE 200809L
+#define _XOPEN_SOURCE 700
+
 #include "vm.h"
 
 #include <errno.h>
@@ -15,6 +18,7 @@
 #include "bytecode.h"
 #include "chunk.h"
 #include "compiler.h"
+#include "debugger.h"
 #include "json.h"
 #include "memory.h"
 #include "object.h"
@@ -26,14 +30,14 @@
 #define STACK_INITIAL_CAPACITY 2048
 #define STACK_MAX_LIMIT (4 * 1024 * 1024)
 
-typedef struct {
+struct CallFrame {
     ObjClosure *closure;
     uint8_t *ip;
     Value *slots;
     Value *constants;
     int argc;
     Value self;
-} CallFrame;
+};
 
 typedef struct {
     ObjString *name;
@@ -87,6 +91,7 @@ typedef struct {
     bool has_exception;
     Value exception_value;
     bool had_error;
+    bool debug_mode;
 } VM;
 
 static VM vm;
@@ -288,6 +293,9 @@ static void blacken(Obj *object)
 
         mark_object((Obj *)function->name);
         mark_object((Obj *)function->script_path);
+        for (int i = 0; i < function->debug_local_count; i++) {
+            mark_object((Obj *)function->debug_locals[i].name);
+        }
         for (int i = 0; i < function->chunk.constants_count; i++) {
             mark_value(function->chunk.constants[i]);
         }
@@ -3000,9 +3008,15 @@ static InterpretResult run(int base_frame)
         [OP_INDEX_SET] = &&op_OP_INDEX_SET,
         [OP_DUP] = &&op_OP_DUP,
     };
+    if (__builtin_expect(vm.debug_mode, 0)) {
+        goto cold;
+    }
     DISPATCH();
 #else
     for (;;) {
+        if (__builtin_expect(vm.debug_mode, 0)) {
+            goto cold;
+        }
         switch (*ip) {
 #endif
         TARGET(OP_CONSTANT):
@@ -3714,6 +3728,16 @@ cold_dispatch:
         vm.frame_count = (int)(frame - vm.frames) + 1;
         frame->ip = ip;
         vm.stack_top = sp;
+        if (__builtin_expect(vm.debug_mode, 0)) {
+            int offset = (int)(ip - frame->closure->function->chunk.code);
+            int line = (offset >= 0 && offset < frame->closure->function->chunk.count) ?
+                       frame->closure->function->chunk.lines[offset] : 1;
+            const char *file = frame->closure->function->script_path ?
+                               frame->closure->function->script_path->chars : "<script>";
+            debugger_check_stop(file, line, frame);
+            ip = frame->ip;
+            sp = vm.stack_top;
+        }
         instruction = READ_BYTE();
 
         switch (instruction) {
@@ -4855,6 +4879,9 @@ cold_dispatch:
         frame = &vm.frames[vm.frame_count - 1];
         sp = vm.stack_top;
         LOAD_FRAME();
+        if (__builtin_expect(vm.debug_mode, 0)) {
+            goto cold;
+        }
 #ifdef SPARK_COMPUTED_GOTO
         DISPATCH();
 #else
@@ -4926,6 +4953,7 @@ void vm_init(void)
         return;
     }
     memset(&vm, 0, sizeof(vm));
+    debugger_init();
     vm.stack_capacity = STACK_INITIAL_CAPACITY;
     vm.stack = mem_realloc(NULL, 0, (size_t)vm.stack_capacity * sizeof(Value));
     vm.stack_top = vm.stack;
@@ -5072,9 +5100,98 @@ void vm_free(void)
         vm.stack_top = NULL;
     }
 
+    debugger_free();
+
     memset(&vm, 0, sizeof(vm));
     vm.stack_top = vm.stack;
     vm_ready = false;
+}
+
+void vm_set_debug_mode(bool debug)
+{
+    vm.debug_mode = debug;
+}
+
+bool vm_get_debug_mode(void)
+{
+    return vm.debug_mode;
+}
+
+int vm_frame_count(void)
+{
+    return vm.frame_count;
+}
+
+CallFrame *vm_current_frame(void)
+{
+    return vm.frame_count > 0 ? &vm.frames[vm.frame_count - 1] : NULL;
+}
+
+const char *vm_frame_source(CallFrame *frame)
+{
+    if (!frame || !frame->closure || !frame->closure->function) {
+        return NULL;
+    }
+    return frame->closure->function->source;
+}
+
+void vm_print_frame_locals(CallFrame *frame)
+{
+    if (!frame) {
+        printf("  (no active frame)\n");
+        return;
+    }
+    ObjFunction *fn = frame->closure->function;
+    int stack_slots = (int)(vm.stack_top - frame->slots);
+    int current_pc = (frame->ip && fn->chunk.code) ? (int)(frame->ip - fn->chunk.code) : 0;
+    bool printed = false;
+
+    printf("Locals:\n");
+    for (int i = 0; i < fn->debug_local_count; i++) {
+        DebugLocal *dl = &fn->debug_locals[i];
+        if (current_pc >= dl->start_pc && current_pc < dl->end_pc) {
+            int slot = dl->slot;
+            if (slot >= 0 && slot < stack_slots) {
+                printf("  %s = ", dl->name->chars);
+                value_print(stdout, frame->slots[slot]);
+                printf("\n");
+                printed = true;
+            }
+        }
+    }
+    if (vm.frame_count == 1 && vm.global_count > 0) {
+        for (int i = 0; i < vm.global_count; i++) {
+            if (vm.global_slots[i].defined &&
+                !is_obj_type(vm.global_slots[i].value, OBJ_NATIVE) &&
+                strcmp(vm.global_slots[i].name->chars, "_") != 0 &&
+                strcmp(vm.global_slots[i].name->chars, "nan") != 0) {
+                printf("  %s = ", vm.global_slots[i].name->chars);
+                value_print(stdout, vm.global_slots[i].value);
+                printf("\n");
+                printed = true;
+            }
+        }
+    }
+    if (!printed) {
+        printf("  (no local variables)\n");
+    }
+}
+
+void vm_print_stack_backtrace(void)
+{
+    printf("Call stack:\n");
+    for (int i = vm.frame_count - 1; i >= 0; i--) {
+        CallFrame *frame = &vm.frames[i];
+        ObjFunction *fn = frame->closure->function;
+        const char *fn_name = fn->name ? fn->name->chars : "<script>";
+        const char *path = fn->script_path ? fn->script_path->chars : "<unknown>";
+        int offset = (int)(frame->ip - fn->chunk.code);
+        if (offset > 0 && offset <= fn->chunk.count) {
+            offset--;
+        }
+        int line = (offset >= 0 && offset < fn->chunk.count) ? fn->chunk.lines[offset] : 1;
+        printf("  #%d %s() at %s:%d\n", i, fn_name, path, line);
+    }
 }
 
 static const char *vm_own_source(const char *source)
@@ -5365,6 +5482,10 @@ InterpretResult vm_run_function(ObjFunction *function, const char *script_name)
         vm.exception_value = NIL_VAL;
         vm.had_error = false;
         return INTERPRET_RUNTIME_ERROR;
+    }
+
+    if (__builtin_expect(vm.debug_mode, 0)) {
+        debugger_on_start(function);
     }
 
     InterpretResult result = run(0);

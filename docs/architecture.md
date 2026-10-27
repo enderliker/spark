@@ -323,6 +323,30 @@ Programs can be serialized to disk via `spark --compile <file> [-o <out>]`:
 - Recursively serializes the chunk bytecode, line/column tables, and constant values (including nested functions and closures).
 - When loaded, bytecode is executed directly via `vm_run_function()` without invoking the lexer or parser.
 
+## Developer tooling architecture
+
+Spark provides native tools without external dependencies:
+
+### Interactive Debugger (`src/debugger.c`, `src/debugger.h`)
+- Zero overhead in normal execution: VM computed-goto fast path is unmodified; debug mode routes execution through `cold:` dispatch where instruction/line boundaries check breakpoints, step mode, and next mode.
+- Local names are recorded in `ObjFunction.debug_locals` during AST compilation.
+- Breakpoints support line numbers and `file:line` filters.
+- Interactive prompt supports `break`, `delete`, `list`, `continue`, `step`, `next`, `locals`, `stack`, `help`, and `quit`.
+
+### Formatter (`src/formatter.c`, `src/formatter.h`)
+- Syntax validation via `parse_source()`.
+- Token scanner preserves comments (`//` and `/*...*/`) and string interpolations while normalizing whitespace.
+- Generates canonical 4-space indentation and spacing around operators and punctuation.
+- Verified idempotent: formatting twice produces byte-identical output without altering semantics.
+- Supports stdout emission or in-place `-w` / `--write`.
+
+### Linter (`src/linter.c`, `src/linter.h`)
+- Single-pass AST analysis traversing statements and expressions.
+- Checks `unused-variable` on local and function parameter symbols (names starting with `_` ignored).
+- Checks `unreachable-code` after block terminators (`return`, `throw`, `break`, `continue`).
+- Checks `shadowed-variable` when inner declarations shadow enclosing local/param declarations.
+- Returns exit code `1` when warnings exist, `0` when clean.
+
 ## Tests
 
 `tests/run_tests.py`:
@@ -330,10 +354,11 @@ Programs can be serialized to disk via `spark --compile <file> [-o <out>]`:
 - runs the programs in `tests/cases` and compares stdout exactly;
 - runs the ones in `tests/errors` and checks the exit code and a `stderr` fragment;
 - tests the REPL (expressions, persistence, blocks and error recovery);
-- tests `--version`, `--help`, `--dump`, `--compile` and bytecode execution, and error cases.
+- tests `--version`, `--help`, `--dump`, `--compile`, `--debug`, `--format`, `--lint` and bytecode execution, and error cases.
 
-There are 148 tests. During development the project was also compiled with
-`-fsanitize=address,undefined` and the whole suite ran with no errors or leaks.
+There are 153 tests. During development the project was also compiled with
+`-fsanitize=address,undefined` and the whole suite ran with no errors or leaks. Coverage
+can be measured locally with `make coverage`.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the
 minimum and median.

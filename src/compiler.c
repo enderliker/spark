@@ -1,5 +1,6 @@
 #include "compiler.h"
 
+#include <limits.h>
 #include <setjmp.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@ typedef struct {
     int depth;
     bool captured;
     bool is_const;
+    int debug_index;
 } Local;
 
 typedef struct {
@@ -220,7 +222,27 @@ static void init_compiler(Compiler *compiler, Compiler *enclosing, FunctionType 
     compiler->locals[0].name.length = 0;
     compiler->locals[0].depth = 0;
     compiler->locals[0].captured = false;
+    compiler->locals[0].is_const = false;
+    compiler->locals[0].debug_index = -1;
     compiler->local_count = 1;
+}
+
+static int function_add_debug_local(ObjFunction *function, int slot, ObjString *name)
+{
+    if (function->debug_local_count == function->debug_local_capacity) {
+        int old_cap = function->debug_local_capacity;
+        int new_cap = old_cap < 8 ? 8 : old_cap * 2;
+        function->debug_locals = mem_realloc(function->debug_locals,
+                                             sizeof(DebugLocal) * (size_t)old_cap,
+                                             sizeof(DebugLocal) * (size_t)new_cap);
+        function->debug_local_capacity = new_cap;
+    }
+    int index = function->debug_local_count++;
+    function->debug_locals[index].slot = slot;
+    function->debug_locals[index].name = name;
+    function->debug_locals[index].start_pc = INT_MAX;
+    function->debug_locals[index].end_pc = INT_MAX;
+    return index;
 }
 
 static int add_local(Compiler *compiler, Text name, int line)
@@ -228,12 +250,22 @@ static int add_local(Compiler *compiler, Text name, int line)
     if (compiler->local_count == MAX_LOCALS) {
         compile_error(compiler, line, "too many local variables in one function");
     }
-    Local *local = &compiler->locals[compiler->local_count];
+    int slot = compiler->local_count;
+    Local *local = &compiler->locals[slot];
 
     local->name = name;
     local->depth = -1;
     local->captured = false;
     local->is_const = false;
+    local->debug_index = -1;
+
+    if (name.length > 0 && name.chars[0] != '<' && name.chars[0] != ' ') {
+        ObjString *debug_name = name_constant(name);
+        local->debug_index = function_add_debug_local(compiler->function, slot, debug_name);
+        if (compiler->scope_depth == 0) {
+            compiler->function->debug_locals[local->debug_index].start_pc = 0;
+        }
+    }
     return compiler->local_count++;
 }
 
@@ -303,9 +335,14 @@ static void begin_scope(Compiler *compiler)
 static void end_scope(Compiler *compiler, int line)
 {
     compiler->scope_depth--;
+    int current_pc = compiler->function->chunk.count;
     while (compiler->local_count > 0 &&
            compiler->locals[compiler->local_count - 1].depth > compiler->scope_depth) {
-        if (compiler->locals[compiler->local_count - 1].captured) {
+        Local *local = &compiler->locals[compiler->local_count - 1];
+        if (local->debug_index >= 0 && local->debug_index < compiler->function->debug_local_count) {
+            compiler->function->debug_locals[local->debug_index].end_pc = current_pc;
+        }
+        if (local->captured) {
             emit_byte(compiler, OP_CLOSE_UPVALUE, line);
         } else {
             emit_byte(compiler, OP_POP, line);
@@ -316,8 +353,12 @@ static void end_scope(Compiler *compiler, int line)
 
 static void mark_local_initialized(Compiler *compiler)
 {
-    if (compiler->scope_depth > 0) {
-        compiler->locals[compiler->local_count - 1].depth = compiler->scope_depth;
+    if (compiler->scope_depth > 0 && compiler->local_count > 0) {
+        Local *local = &compiler->locals[compiler->local_count - 1];
+        local->depth = compiler->scope_depth;
+        if (local->debug_index >= 0 && local->debug_index < compiler->function->debug_local_count) {
+            compiler->function->debug_locals[local->debug_index].start_pc = compiler->function->chunk.count;
+        }
     }
 }
 
@@ -502,6 +543,9 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
             patch_jump(&fn, jump);
         }
         fn.locals[param_slot].depth = fn.scope_depth;
+        if (fn.locals[param_slot].debug_index >= 0) {
+            fn.function->debug_locals[fn.locals[param_slot].debug_index].start_pc = 0;
+        }
     }
 
     if (body->kind != STMT_BLOCK) {
@@ -1154,6 +1198,9 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
             patch_jump(&fn, jump);
         }
         fn.locals[param_slot].depth = fn.scope_depth;
+        if (fn.locals[param_slot].debug_index >= 0) {
+            fn.function->debug_locals[fn.locals[param_slot].debug_index].start_pc = 0;
+        }
     }
 
     /* Create empty map and store in local 'self' */
@@ -1161,6 +1208,9 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
     emit_u16(&fn, 0, line);
     int self_slot = add_local(&fn, (Text){"self", 4}, line);
     fn.locals[self_slot].depth = fn.scope_depth;
+    if (fn.locals[self_slot].debug_index >= 0) {
+        fn.function->debug_locals[fn.locals[self_slot].debug_index].start_pc = fn.function->chunk.count;
+    }
 
     /* Attach methods */
     for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
@@ -1322,9 +1372,9 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
             emit_global_name(compiler, name, line);
         } else {
             add_local(compiler, stmt->as.function.name, line);
-            mark_local_initialized(compiler);
             compile_function_value(compiler, stmt->as.function.name, stmt->as.function.params,
                                    stmt->as.function.body, line);
+            mark_local_initialized(compiler);
         }
         break;
     }

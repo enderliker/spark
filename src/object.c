@@ -507,6 +507,10 @@ ObjFunction *object_function(void)
     function->upvalue_count = 0;
     function->name = NULL;
     function->script_path = NULL;
+    function->source = NULL;
+    function->debug_locals = NULL;
+    function->debug_local_count = 0;
+    function->debug_local_capacity = 0;
     chunk_init(&function->chunk);
     return function;
 }
@@ -588,6 +592,7 @@ void object_free(Obj *obj)
     case OBJ_FUNCTION: {
         ObjFunction *function = (ObjFunction *)obj;
         chunk_free(&function->chunk);
+        mem_realloc(function->debug_locals, sizeof(DebugLocal) * (size_t)function->debug_local_capacity, 0);
         mem_realloc(function, sizeof(ObjFunction), 0);
         break;
     }

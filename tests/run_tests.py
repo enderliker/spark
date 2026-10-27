@@ -279,6 +279,126 @@ def test_cli() -> None:
         if bad_version.exists():
             bad_version.unlink()
 
+    # Debugger tests (--debug)
+    dbg_script = ROOT / "tests" / "test_debug.spark"
+    dbg_script.write_text(
+        "fn add(x, y) {\n"
+        "    var z = x + y;\n"
+        "    return z;\n"
+        "}\n"
+        "var a = 10;\n"
+        "var b = 20;\n"
+        "var r = add(a, b);\n"
+        "print(\"ans:\", r);\n",
+        encoding="utf-8",
+    )
+    try:
+        dbg_run = run(["--debug", str(dbg_script)], stdin="b 3\nc\nl\nbt\ns\nl\nc\n")
+        report("--debug supports breakpoints, continue, locals, and step",
+               dbg_run.returncode == 0
+               and "Breakpoint 1 hit" in dbg_run.stdout
+               and "x = 10" in dbg_run.stdout
+               and "y = 20" in dbg_run.stdout
+               and "ans: 30" in dbg_run.stdout,
+               dbg_run.stdout + dbg_run.stderr)
+
+        # Debugger scoped locals test across slot reuse
+        dbg_scope = ROOT / "tests" / "test_dbg_scope.spark"
+        dbg_scope.write_text(
+            "{\n"
+            "    var a = 100;\n"
+            "}\n"
+            "{\n"
+            "    var b = 200;\n"
+            "    print(b);\n"
+            "}\n",
+            encoding="utf-8"
+        )
+        dbg_scope_run = run(["--debug", str(dbg_scope)], stdin="b 6\nc\nl\nc\n")
+        report("--debug respects lexical scope for locals across block slot reuse",
+               dbg_scope_run.returncode == 0
+               and "  b = 200" in dbg_scope_run.stdout
+               and "  a = 100" not in dbg_scope_run.stdout,
+               dbg_scope_run.stdout + dbg_scope_run.stderr)
+        if dbg_scope.exists():
+            dbg_scope.unlink()
+    finally:
+        if dbg_script.exists():
+            dbg_script.unlink()
+
+    # Formatter tests (--format)
+    fmt_script = ROOT / "tests" / "test_fmt.spark"
+    fmt_script.write_text("var  x=1+2;   if(x>2){print(x);}\n", encoding="utf-8")
+    try:
+        f1 = run(["--format", str(fmt_script)])
+        expected_fmt = "var x = 1 + 2;\nif (x > 2) {\n    print(x);\n}\n"
+        report("--format canonicalizes code to stdout",
+               f1.returncode == 0 and f1.stdout == expected_fmt,
+               f1.stdout)
+
+        f_write = run(["--format", "-w", str(fmt_script)])
+        report("--format -w writes in-place and is idempotent",
+               f_write.returncode == 0 and fmt_script.read_text(encoding="utf-8") == expected_fmt,
+               fmt_script.read_text(encoding="utf-8"))
+
+        fmt_advanced = ROOT / "tests" / "test_fmt_adv.spark"
+        fmt_advanced.write_text(
+            "var x = 1; // comment\n"
+            "var y = cond ? 1 : 2;\n"
+            "var m = {\"a\": 1};\n"
+            "print({\"k\": 2});\n",
+            encoding="utf-8"
+        )
+        f_adv = run(["--format", str(fmt_advanced)])
+        report("--format preserves trailing comments and formats ternaries and maps",
+               f_adv.returncode == 0 and
+               "var x = 1; // comment\n" in f_adv.stdout and
+               "var y = cond ? 1 : 2;\n" in f_adv.stdout and
+               "var m = {\"a\": 1};\n" in f_adv.stdout and
+               "print({\"k\": 2});\n" in f_adv.stdout,
+               f_adv.stdout)
+        if fmt_advanced.exists():
+            fmt_advanced.unlink()
+    finally:
+        if fmt_script.exists():
+            fmt_script.unlink()
+
+    # Linter tests (--lint)
+    lint_clean = ROOT / "tests" / "test_lint_clean.spark"
+    lint_clean.write_text("var a = 10;\nprint(a);\n", encoding="utf-8")
+    lint_dirty = ROOT / "tests" / "test_lint_dirty.spark"
+    lint_dirty.write_text(
+        "fn test(unused_param, used_param) {\n"
+        "    var x = used_param;\n"
+        "    if (true) {\n"
+        "        var x = 99;\n"
+        "        print(x);\n"
+        "    }\n"
+        "    return x;\n"
+        "    print(\"unreachable\");\n"
+        "}\n"
+        "test(1, 2);\n",
+        encoding="utf-8",
+    )
+    try:
+        l_clean = run(["--lint", str(lint_clean)])
+        report("--lint returns 0 on clean code",
+               l_clean.returncode == 0 and l_clean.stdout == "",
+               l_clean.stdout + l_clean.stderr)
+
+        l_dirty = run(["--lint", str(lint_dirty)])
+        report("--lint detects unused variables, unreachable code, and shadowing",
+               l_dirty.returncode == 1
+               and "[unused-variable]" in l_dirty.stdout
+               and "[unreachable-code]" in l_dirty.stdout
+               and "[shadowed-variable]" in l_dirty.stdout,
+               l_dirty.stdout + l_dirty.stderr)
+    finally:
+        if lint_clean.exists():
+            lint_clean.unlink()
+        if lint_dirty.exists():
+            lint_dirty.unlink()
+
 
 def main() -> int:
     if not BINARY.exists():
