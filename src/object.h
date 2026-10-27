@@ -49,6 +49,7 @@ typedef struct ObjFunction {
     int arity;
     int min_arity;
     bool is_varargs;
+    bool is_constructor;
     int upvalue_count;
     Chunk chunk;
     ObjString *name;
@@ -79,6 +80,13 @@ typedef struct ObjFile {
     bool is_closed;
     ObjString *path;
 } ObjFile;
+
+typedef struct {
+    Obj obj;
+    char *chars;
+    int length;
+    int capacity;
+} ObjStringBuilder;
 
 #define AS_FUNCTION(v) ((ObjFunction *)(v).as.obj)
 #define AS_CLOSURE(v) ((ObjClosure *)(v).as.obj)
@@ -117,6 +125,10 @@ ObjClosure *object_closure(ObjFunction *function);
 ObjNative *object_native(NativeFn fn, int arity, const char *name);
 ObjUpvalue *object_upvalue(Value *slot);
 ObjFile *object_file(FILE *stream, ObjString *path);
+ObjStringBuilder *object_string_builder(int initial_capacity);
+bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len);
+void string_builder_clear(ObjStringBuilder *sb);
+ObjString *string_builder_to_string(ObjStringBuilder *sb);
 
 void object_free(Obj *obj);
 void intern_remove_unmarked(void);

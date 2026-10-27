@@ -70,7 +70,10 @@ typedef enum {
     EXPR_MAP,
     EXPR_INTERPOLATION,
     EXPR_FUNCTION,
-    EXPR_METHOD_CALL
+    EXPR_METHOD_CALL,
+    EXPR_SLICE,
+    EXPR_UPDATE,
+    EXPR_OPTIONAL_CHAIN
 } ExprKind;
 
 struct Expr {
@@ -113,6 +116,7 @@ struct Expr {
             Expr *callee;
             ExprList *arguments;
             int argument_count;
+            bool is_new;
         } call;
         struct {
             Expr *object;
@@ -141,6 +145,23 @@ struct Expr {
             ExprList *arguments;
             int argument_count;
         } method_call;
+        struct {
+            Expr *object;
+            Expr *start;
+            Expr *end;
+            Expr *step;
+        } slice;
+        struct {
+            Expr *target;
+            TokenType op;
+            bool is_prefix;
+        } update;
+        struct {
+            Expr *object;
+            Text property;
+            bool is_index;
+            Expr *index;
+        } opt_chain;
     } as;
 };
 
@@ -165,12 +186,19 @@ typedef enum {
     STMT_CLASS
 } StmtKind;
 
+typedef struct ClassField {
+    Text name;
+    Expr *initializer;
+    struct ClassField *next;
+} ClassField;
+
 typedef struct ClassMethod {
     Text name;
     ParamList *params;
     int param_count;
     Stmt *body;
     bool is_init;
+    bool is_static;
     struct ClassMethod *next;
 } ClassMethod;
 
@@ -192,6 +220,7 @@ struct Stmt {
         } assign;
         struct {
             StmtList *statements;
+            bool transparent; /* destructuring desugaring: keep the enclosing scope */
         } block;
         struct {
             Expr *condition;
@@ -222,6 +251,8 @@ struct Stmt {
         struct {
             Text label;
             Text name;
+            bool has_value_name;
+            Text value_name;
             Expr *iterable;
             Stmt *body;
         } for_in;
@@ -252,6 +283,9 @@ struct Stmt {
         } try_stmt;
         struct {
             Text name;
+            bool has_superclass;
+            Text superclass;
+            ClassField *fields;
             ClassMethod *methods;
         } class_stmt;
     } as;

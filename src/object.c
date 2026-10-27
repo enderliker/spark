@@ -504,6 +504,7 @@ ObjFunction *object_function(void)
     function->arity = 0;
     function->min_arity = 0;
     function->is_varargs = false;
+    function->is_constructor = false;
     function->upvalue_count = 0;
     function->name = NULL;
     function->script_path = NULL;
@@ -571,6 +572,58 @@ ObjFile *object_file(FILE *stream, ObjString *path)
     return file;
 }
 
+ObjStringBuilder *object_string_builder(int initial_capacity)
+{
+    if (initial_capacity < 16) {
+        initial_capacity = 16;
+    }
+    ObjStringBuilder *sb = allocate_obj(sizeof(ObjStringBuilder), OBJ_STRING_BUILDER);
+    sb->chars = mem_realloc(NULL, 0, (size_t)initial_capacity);
+    if (sb->chars) {
+        sb->chars[0] = '\0';
+    }
+    sb->length = 0;
+    sb->capacity = initial_capacity;
+    return sb;
+}
+
+bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len)
+{
+    if (!chars || len <= 0) {
+        return true;
+    }
+    if (sb->length + len + 1 > sb->capacity) {
+        int old_cap = sb->capacity;
+        int new_cap = old_cap < 16 ? 16 : old_cap;
+        while (new_cap < sb->length + len + 1) {
+            new_cap *= 2;
+        }
+        char *new_chars = mem_realloc(sb->chars, (size_t)old_cap, (size_t)new_cap);
+        if (!new_chars) {
+            return false;
+        }
+        sb->chars = new_chars;
+        sb->capacity = new_cap;
+    }
+    memcpy(sb->chars + sb->length, chars, (size_t)len);
+    sb->length += len;
+    sb->chars[sb->length] = '\0';
+    return true;
+}
+
+void string_builder_clear(ObjStringBuilder *sb)
+{
+    sb->length = 0;
+    if (sb->chars && sb->capacity > 0) {
+        sb->chars[0] = '\0';
+    }
+}
+
+ObjString *string_builder_to_string(ObjStringBuilder *sb)
+{
+    return object_string(sb->chars ? sb->chars : "", sb->length);
+}
+
 void object_free(Obj *obj)
 {
     switch (obj->type) {
@@ -618,6 +671,15 @@ void object_free(Obj *obj)
         mem_realloc(file, sizeof(ObjFile), 0);
         break;
     }
+    case OBJ_STRING_BUILDER: {
+        ObjStringBuilder *sb = (ObjStringBuilder *)obj;
+        mem_realloc(sb->chars, (size_t)sb->capacity, 0);
+        mem_realloc(sb, sizeof(ObjStringBuilder), 0);
+        break;
+    }
+    case OBJ_CLASS:
+    case OBJ_INSTANCE:
+        break;
     }
 }
 
@@ -659,6 +721,9 @@ const char *obj_type_name(ObjType type)
     case OBJ_NATIVE: return "native function";
     case OBJ_UPVALUE: return "upvalue";
     case OBJ_FILE: return "file";
+    case OBJ_STRING_BUILDER: return "string_builder";
+    case OBJ_CLASS: return "class";
+    case OBJ_INSTANCE: return "instance";
     }
     return "object";
 }
@@ -803,6 +868,14 @@ static void value_format(buf_t *b, Value v, bool repr)
                         file->is_closed ? " (closed)" : "");
             break;
         }
+        case OBJ_STRING_BUILDER: {
+            ObjStringBuilder *sb = (ObjStringBuilder *)AS_OBJ(v);
+            buf_append_str(b, sb->chars ? sb->chars : "");
+            break;
+        }
+        case OBJ_CLASS:
+        case OBJ_INSTANCE:
+            break;
         }
         break;
     }
@@ -870,6 +943,9 @@ ObjString *value_to_string(Value v)
 {
     if (is_obj_type(v, OBJ_STRING)) {
         return AS_STRING(v);
+    }
+    if (is_obj_type(v, OBJ_STRING_BUILDER)) {
+        return string_builder_to_string(AS_STRING_BUILDER(v));
     }
     if (v.type == VAL_INT) {
         return int_to_string(v.as.integer);

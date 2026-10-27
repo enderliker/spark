@@ -35,7 +35,7 @@ static void print_help(void)
     printf("  --lint <file>     report unused variables, unreachable code and shadowing\n");
     printf("  --help            show this help\n");
     printf("  --version         show the version\n\n");
-    printf("Without a file an interactive REPL opens. Type 'salir' to exit.\n");
+    printf("Without a file an interactive REPL opens. Type 'exit' to exit.\n");
 }
 
 static char *read_file(const char *path, size_t *out_size)
@@ -329,7 +329,7 @@ static void repl(void)
     size_t capacity = 0;
     buf_t pending;
 
-    printf("Spark %s — type code and press Enter. 'salir' or Ctrl+D to exit.\n",
+    printf("Spark %s — type code and press Enter. 'exit' or Ctrl+D to exit.\n",
            SPARK_VERSION);
     buf_init(&pending);
 
@@ -355,8 +355,7 @@ static void repl(void)
                                        start[trimmed_len - 1] == ' ')) {
                 trimmed_len--;
             }
-            if ((trimmed_len == 5 && strncmp(start, "salir", 5) == 0) ||
-                (trimmed_len == 4 && strncmp(start, "exit", 4) == 0) ||
+            if ((trimmed_len == 4 && strncmp(start, "exit", 4) == 0) ||
                 (trimmed_len == 4 && strncmp(start, "quit", 4) == 0)) {
                 break;
             }

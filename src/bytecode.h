@@ -8,7 +8,7 @@
 #include "object.h"
 
 #define SPARK_BYTECODE_MAGIC "SPRK"
-#define SPARK_BYTECODE_VERSION 1
+#define SPARK_BYTECODE_VERSION 2
 
 /* Serializes `function` to disk at `path`.
  * Returns true on success, or false on error (with message in `error`). */

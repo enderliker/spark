@@ -199,6 +199,39 @@ static void parse_params(Parser *parser, ParamList **params, ParamList **tail, i
     consume(parser, TOKEN_RIGHT_PAREN, "expected ')' after the parameters");
 }
 
+static int hex_digit_value(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+    if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+    return -1;
+}
+
+/* Encodes a Unicode scalar value as UTF-8. Returns the number of bytes. */
+static int utf8_encode_scalar(uint32_t cp, char *out)
+{
+    if (cp <= 0x7f) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp <= 0x7ff) {
+        out[0] = (char)(0xc0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3f));
+        return 2;
+    }
+    if (cp <= 0xffff) {
+        out[0] = (char)(0xe0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (cp & 0x3f));
+        return 3;
+    }
+    out[0] = (char)(0xf0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+    out[3] = (char)(0x80 | (cp & 0x3f));
+    return 4;
+}
+
 static Text parse_string_part(Parser *parser, Token token)
 {
     char *buffer = new_node(parser, (size_t)token.length + 1);
@@ -227,6 +260,84 @@ static Text parse_string_part(Parser *parser, Token token)
         case '\\': buffer[out++] = '\\'; break;
         case '"': buffer[out++] = '"'; break;
         case '0': buffer[out++] = '\0'; break;
+        case 'u': {
+            uint32_t cp = 0;
+
+            if (i + 1 < token.length && token.start[i + 1] == '{') {
+                /* \u{...}: 1-6 hex digits, any Unicode scalar value. */
+                int j = i + 2;
+                int digits = 0;
+
+                while (j < token.length && token.start[j] != '}') {
+                    int hex_val = hex_digit_value(token.start[j]);
+
+                    if (hex_val < 0) {
+                        fail_at(parser, token, "invalid hex digit in unicode escape '\\u{...}'");
+                    }
+                    if (++digits > 6) {
+                        fail_at(parser, token,
+                                "unicode escape '\\u{...}' accepts at most 6 hex digits");
+                    }
+                    cp = (cp << 4) | (uint32_t)hex_val;
+                    j++;
+                }
+                if (j >= token.length) {
+                    fail_at(parser, token, "incomplete unicode escape '\\u{...}'");
+                }
+                if (digits == 0) {
+                    fail_at(parser, token, "unicode escape '\\u{...}' requires hex digits");
+                }
+                i = j;
+            } else {
+                /* \uXXXX: four hex digits; surrogate pairs are combined. */
+                if (i + 4 >= token.length) {
+                    fail_at(parser, token, "incomplete unicode escape '\\uXXXX'");
+                }
+                for (int k = 1; k <= 4; k++) {
+                    int hex_val = hex_digit_value(token.start[i + k]);
+
+                    if (hex_val < 0) {
+                        fail_at(parser, token, "invalid hex digit in unicode escape '\\uXXXX'");
+                    }
+                    cp = (cp << 4) | (uint32_t)hex_val;
+                }
+                i += 4;
+                if (cp >= 0xd800 && cp <= 0xdbff) {
+                    uint32_t low = 0;
+
+                    if (i + 6 >= token.length || token.start[i + 1] != '\\' ||
+                        token.start[i + 2] != 'u') {
+                        fail_at(parser, token,
+                                "high surrogate must be followed by a low surrogate "
+                                "(or use '\\u{...}')");
+                    }
+                    for (int k = 3; k <= 6; k++) {
+                        int hex_val = hex_digit_value(token.start[i + k]);
+
+                        if (hex_val < 0) {
+                            fail_at(parser, token,
+                                    "invalid hex digit in low surrogate escape");
+                        }
+                        low = (low << 4) | (uint32_t)hex_val;
+                    }
+                    if (low < 0xdc00 || low > 0xdfff) {
+                        fail_at(parser, token,
+                                "high surrogate must be followed by a low surrogate "
+                                "(or use '\\u{...}')");
+                    }
+                    cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
+                    i += 6;
+                } else if (cp >= 0xdc00 && cp <= 0xdfff) {
+                    fail_at(parser, token,
+                            "unexpected low surrogate (or use '\\u{...}')");
+                }
+            }
+            if (cp > 0x10ffff) {
+                fail_at(parser, token, "unicode escape is outside the valid range (max 10FFFF)");
+            }
+            out += utf8_encode_scalar(cp, buffer + out);
+            break;
+        }
         default: {
             char message[96];
 
@@ -403,7 +514,14 @@ static Expr *primary(Parser *parser)
         return parse_interpolation(parser, token);
     }
     if (match(parser, TOKEN_NEW)) {
-        return call(parser);
+        Token keyword = parser->previous;
+        Expr *constructed = call(parser);
+
+        if (constructed->kind != EXPR_CALL) {
+            fail_at(parser, keyword, "'new' must be followed by a class name and its arguments");
+        }
+        constructed->as.call.is_new = true;
+        return constructed;
     }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line, token.column);
@@ -481,9 +599,22 @@ static Expr *primary(Parser *parser)
         fn->as.function.name.length = 0;
         fn->as.function.params = params;
         fn->as.function.param_count = param_count;
-        fn->as.function.body = statement(parser);
-        if (fn->as.function.body->kind != STMT_BLOCK) {
-            fail_at(parser, token, "the body of a function must be enclosed in braces");
+        if (match(parser, TOKEN_ARROW)) {
+            Expr *ret_expr = expression(parser);
+            Stmt *ret_stmt = new_stmt(parser, STMT_RETURN, token.line, token.column);
+            ret_stmt->as.ret.value = ret_expr;
+            StmtList *list = new_node(parser, sizeof(StmtList));
+            list->stmt = ret_stmt;
+            list->next = NULL;
+            Stmt *block = new_stmt(parser, STMT_BLOCK, token.line, token.column);
+            block->as.block.statements = list;
+            block->as.block.transparent = false;
+            fn->as.function.body = block;
+        } else {
+            fn->as.function.body = statement(parser);
+            if (fn->as.function.body->kind != STMT_BLOCK) {
+                fail_at(parser, token, "the body of a function must be enclosed in braces");
+            }
         }
         return fn;
     }
@@ -525,14 +656,80 @@ static Expr *call(Parser *parser)
             call_expr->as.call.callee = expr;
             call_expr->as.call.arguments = arguments;
             call_expr->as.call.argument_count = count;
+            call_expr->as.call.is_new = false;
             expr = call_expr;
         } else if (match(parser, TOKEN_LEFT_BRACKET)) {
-            Expr *index = new_expr(parser, EXPR_INDEX, expr->line, parser->previous.column);
-
-            index->as.index.object = expr;
-            index->as.index.index = expression(parser);
-            consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after the index");
-            expr = index;
+            if (check(parser, TOKEN_COLON)) {
+                advance(parser); /* consume ':' */
+                Expr *start = NULL;
+                Expr *end = NULL;
+                Expr *step = NULL;
+                if (match(parser, TOKEN_COLON)) {
+                    if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                        step = expression(parser);
+                    }
+                } else if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                    end = expression(parser);
+                    if (match(parser, TOKEN_COLON)) {
+                        if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                            step = expression(parser);
+                        }
+                    }
+                }
+                consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after slice");
+                Expr *sl = new_expr(parser, EXPR_SLICE, expr->line, parser->previous.column);
+                sl->as.slice.object = expr;
+                sl->as.slice.start = start;
+                sl->as.slice.end = end;
+                sl->as.slice.step = step;
+                expr = sl;
+            } else {
+                Expr *first = expression(parser);
+                if (match(parser, TOKEN_COLON)) {
+                    Expr *start = first;
+                    Expr *end = NULL;
+                    Expr *step = NULL;
+                    if (match(parser, TOKEN_COLON)) {
+                        if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                            step = expression(parser);
+                        }
+                    } else if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                        end = expression(parser);
+                        if (match(parser, TOKEN_COLON)) {
+                            if (!check(parser, TOKEN_RIGHT_BRACKET)) {
+                                step = expression(parser);
+                            }
+                        }
+                    }
+                    consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after slice");
+                    Expr *sl = new_expr(parser, EXPR_SLICE, expr->line, parser->previous.column);
+                    sl->as.slice.object = expr;
+                    sl->as.slice.start = start;
+                    sl->as.slice.end = end;
+                    sl->as.slice.step = step;
+                    expr = sl;
+                } else {
+                    consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after the index");
+                    Expr *index = new_expr(parser, EXPR_INDEX, expr->line, parser->previous.column);
+                    index->as.index.object = expr;
+                    index->as.index.index = first;
+                    expr = index;
+                }
+            }
+        } else if (match(parser, TOKEN_QUESTION_DOT)) {
+            Expr *chain = new_expr(parser, EXPR_OPTIONAL_CHAIN, expr->line, parser->previous.column);
+            chain->as.opt_chain.object = expr;
+            if (match(parser, TOKEN_LEFT_BRACKET)) {
+                chain->as.opt_chain.is_index = true;
+                chain->as.opt_chain.index = expression(parser);
+                consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after '?['");
+            } else {
+                Token name = consume(parser, TOKEN_IDENTIFIER, "expected property name after '?.'");
+                chain->as.opt_chain.is_index = false;
+                chain->as.opt_chain.property = text_from_token(parser, name);
+                chain->as.opt_chain.index = NULL;
+            }
+            expr = chain;
         } else if (match(parser, TOKEN_DOT)) {
             Token name = consume(parser, TOKEN_IDENTIFIER, "expected property or method name after '.'");
             if (match(parser, TOKEN_LEFT_PAREN)) {
@@ -554,6 +751,13 @@ static Expr *call(Parser *parser)
                 index->as.index.index = prop_str;
                 expr = index;
             }
+        } else if (match(parser, TOKEN_PLUS_PLUS) || match(parser, TOKEN_MINUS_MINUS)) {
+            Token op = parser->previous;
+            Expr *up = new_expr(parser, EXPR_UPDATE, op.line, op.column);
+            up->as.update.target = expr;
+            up->as.update.op = op.type;
+            up->as.update.is_prefix = false;
+            expr = up;
         } else {
             break;
         }
@@ -563,6 +767,17 @@ static Expr *call(Parser *parser)
 
 static Expr *unary(Parser *parser)
 {
+    if (match(parser, TOKEN_PLUS)) {
+        return unary(parser);
+    }
+    if (match(parser, TOKEN_PLUS_PLUS) || match(parser, TOKEN_MINUS_MINUS)) {
+        Token op = parser->previous;
+        Expr *up = new_expr(parser, EXPR_UPDATE, op.line, op.column);
+        up->as.update.target = unary(parser);
+        up->as.update.op = op.type;
+        up->as.update.is_prefix = true;
+        return up;
+    }
     if (match(parser, TOKEN_BANG) || match(parser, TOKEN_NOT) || match(parser, TOKEN_MINUS) ||
         match(parser, TOKEN_TILDE)) {
         Token op = parser->previous;
@@ -575,9 +790,25 @@ static Expr *unary(Parser *parser)
     return call(parser);
 }
 
-static Expr *factor(Parser *parser)
+static Expr *power(Parser *parser)
 {
     Expr *expr = unary(parser);
+
+    if (match(parser, TOKEN_STAR_STAR)) {
+        Token op = parser->previous;
+        Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
+
+        binary->as.binary.left = expr;
+        binary->as.binary.op = op.type;
+        binary->as.binary.right = power(parser);
+        return binary;
+    }
+    return expr;
+}
+
+static Expr *factor(Parser *parser)
+{
+    Expr *expr = power(parser);
 
     while (match(parser, TOKEN_STAR) || match(parser, TOKEN_SLASH) || match(parser, TOKEN_PERCENT) ||
            match(parser, TOKEN_DIV)) {
@@ -586,7 +817,7 @@ static Expr *factor(Parser *parser)
 
         binary->as.binary.left = expr;
         binary->as.binary.op = op.type;
-        binary->as.binary.right = unary(parser);
+        binary->as.binary.right = power(parser);
         expr = binary;
     }
     return expr;
@@ -629,7 +860,8 @@ static Expr *comparison(Parser *parser)
     Expr *expr = shift(parser);
 
     while (match(parser, TOKEN_GREATER) || match(parser, TOKEN_GREATER_EQUAL) ||
-           match(parser, TOKEN_LESS) || match(parser, TOKEN_LESS_EQUAL)) {
+           match(parser, TOKEN_LESS) || match(parser, TOKEN_LESS_EQUAL) ||
+           match(parser, TOKEN_IN) || match(parser, TOKEN_INSTANCEOF)) {
         Token op = parser->previous;
         Expr *binary = new_expr(parser, EXPR_BINARY, op.line, op.column);
 
@@ -782,9 +1014,11 @@ static Stmt *expression_or_assignment(Parser *parser, bool with_semicolon)
 
     if (match(parser, TOKEN_EQUAL) || match(parser, TOKEN_PLUS_EQUAL) ||
         match(parser, TOKEN_MINUS_EQUAL) || match(parser, TOKEN_STAR_EQUAL) ||
-        match(parser, TOKEN_SLASH_EQUAL) || match(parser, TOKEN_AMPERSAND_EQUAL) ||
+        match(parser, TOKEN_SLASH_EQUAL) || match(parser, TOKEN_PERCENT_EQUAL) ||
+        match(parser, TOKEN_AMPERSAND_EQUAL) ||
         match(parser, TOKEN_PIPE_EQUAL) || match(parser, TOKEN_CARET_EQUAL) ||
-        match(parser, TOKEN_LESS_LESS_EQUAL) || match(parser, TOKEN_GREATER_GREATER_EQUAL)) {
+        match(parser, TOKEN_LESS_LESS_EQUAL) || match(parser, TOKEN_GREATER_GREATER_EQUAL) ||
+        match(parser, TOKEN_QUESTION_QUESTION_EQUAL)) {
         Token op = parser->previous;
         Stmt *stmt = new_stmt(parser, STMT_ASSIGN, expr->line, expr->column);
 
@@ -820,6 +1054,7 @@ static Stmt *block(Parser *parser)
     }
     consume(parser, TOKEN_RIGHT_BRACE, "expected '}' when closing the block");
     stmt->as.block.statements = head;
+    stmt->as.block.transparent = false;
     return stmt;
 }
 
@@ -857,6 +1092,112 @@ static Stmt *parse_const_declaration(Parser *parser)
 
 static Stmt *parse_var_declaration(Parser *parser, bool with_semicolon)
 {
+    if (match(parser, TOKEN_LEFT_BRACKET)) {
+        Token names[64];
+        int count = 0;
+        do {
+            if (check(parser, TOKEN_RIGHT_BRACKET)) break;
+            names[count++] = consume(parser, TOKEN_IDENTIFIER, "expected variable name in destructuring");
+        } while (match(parser, TOKEN_COMMA));
+        consume(parser, TOKEN_RIGHT_BRACKET, "expected ']' after destructuring list");
+        consume(parser, TOKEN_EQUAL, "expected '=' after destructuring pattern");
+        Expr *src = expression(parser);
+        if (with_semicolon) {
+            consume(parser, TOKEN_SEMICOLON, "expected ';' after the declaration");
+        }
+
+        static int tmp_counter = 0;
+        char tmp_name[32];
+        snprintf(tmp_name, sizeof(tmp_name), " _destruct%d", ++tmp_counter);
+        Text tmp_text;
+        tmp_text.chars = arena_strndup(parser->arena, tmp_name, (int)strlen(tmp_name));
+        tmp_text.length = (int)strlen(tmp_name);
+
+        StmtList *head = NULL;
+        StmtList *tail = NULL;
+        Stmt *s0 = new_stmt(parser, STMT_VAR, src->line, src->column);
+        s0->as.var.name = tmp_text;
+        s0->as.var.initializer = src;
+        s0->as.var.is_const = false;
+        list_append_stmt(parser, &head, &tail, s0);
+
+        for (int i = 0; i < count; i++) {
+            Stmt *sv = new_stmt(parser, STMT_VAR, names[i].line, names[i].column);
+            sv->as.var.name = text_from_token(parser, names[i]);
+            sv->as.var.is_const = false;
+
+            Expr *obj_var = new_expr(parser, EXPR_VARIABLE, names[i].line, names[i].column);
+            obj_var->as.variable = tmp_text;
+
+            Expr *idx = new_expr(parser, EXPR_NUMBER, names[i].line, names[i].column);
+            idx->as.number.is_int = true;
+            idx->as.number.integer = i;
+            idx->as.number.number = (double)i;
+
+            Expr *acc = new_expr(parser, EXPR_INDEX, names[i].line, names[i].column);
+            acc->as.index.object = obj_var;
+            acc->as.index.index = idx;
+
+            sv->as.var.initializer = acc;
+            list_append_stmt(parser, &head, &tail, sv);
+        }
+        Stmt *block = new_stmt(parser, STMT_BLOCK, src->line, src->column);
+        block->as.block.statements = head;
+        block->as.block.transparent = true;
+        return block;
+    }
+    if (match(parser, TOKEN_LEFT_BRACE)) {
+        Token names[64];
+        int count = 0;
+        do {
+            if (check(parser, TOKEN_RIGHT_BRACE)) break;
+            names[count++] = consume(parser, TOKEN_IDENTIFIER, "expected variable name in map destructuring");
+        } while (match(parser, TOKEN_COMMA));
+        consume(parser, TOKEN_RIGHT_BRACE, "expected '}' after destructuring list");
+        consume(parser, TOKEN_EQUAL, "expected '=' after destructuring pattern");
+        Expr *src = expression(parser);
+        if (with_semicolon) {
+            consume(parser, TOKEN_SEMICOLON, "expected ';' after the declaration");
+        }
+
+        static int tmp_counter = 0;
+        char tmp_name[32];
+        snprintf(tmp_name, sizeof(tmp_name), " _destruct%d", ++tmp_counter);
+        Text tmp_text;
+        tmp_text.chars = arena_strndup(parser->arena, tmp_name, (int)strlen(tmp_name));
+        tmp_text.length = (int)strlen(tmp_name);
+
+        StmtList *head = NULL;
+        StmtList *tail = NULL;
+        Stmt *s0 = new_stmt(parser, STMT_VAR, src->line, src->column);
+        s0->as.var.name = tmp_text;
+        s0->as.var.initializer = src;
+        s0->as.var.is_const = false;
+        list_append_stmt(parser, &head, &tail, s0);
+
+        for (int i = 0; i < count; i++) {
+            Stmt *sv = new_stmt(parser, STMT_VAR, names[i].line, names[i].column);
+            sv->as.var.name = text_from_token(parser, names[i]);
+            sv->as.var.is_const = false;
+
+            Expr *obj_var = new_expr(parser, EXPR_VARIABLE, names[i].line, names[i].column);
+            obj_var->as.variable = tmp_text;
+
+            Expr *prop = new_expr(parser, EXPR_STRING, names[i].line, names[i].column);
+            prop->as.string = text_from_token(parser, names[i]);
+
+            Expr *acc = new_expr(parser, EXPR_INDEX, names[i].line, names[i].column);
+            acc->as.index.object = obj_var;
+            acc->as.index.index = prop;
+
+            sv->as.var.initializer = acc;
+            list_append_stmt(parser, &head, &tail, sv);
+        }
+        Stmt *block = new_stmt(parser, STMT_BLOCK, src->line, src->column);
+        block->as.block.statements = head;
+        block->as.block.transparent = true;
+        return block;
+    }
     Token name = consume(parser, TOKEN_IDENTIFIER, "expected the variable name");
 
     return var_declaration_after_name(parser, name, with_semicolon);
@@ -973,10 +1314,24 @@ static Stmt *for_statement(Parser *parser, int line, int column)
     if (match(parser, TOKEN_VAR)) {
         Token name = consume(parser, TOKEN_IDENTIFIER, "expected the variable name");
 
+        if (match(parser, TOKEN_COMMA)) {
+            Token val_name = consume(parser, TOKEN_IDENTIFIER, "expected value variable name after ','");
+            consume(parser, TOKEN_IN, "expected 'in' after loop variables");
+            Stmt *for_in = new_stmt(parser, STMT_FOR_IN, line, column);
+
+            for_in->as.for_in.name = text_from_token(parser, name);
+            for_in->as.for_in.has_value_name = true;
+            for_in->as.for_in.value_name = text_from_token(parser, val_name);
+            for_in->as.for_in.iterable = expression(parser);
+            consume(parser, TOKEN_RIGHT_PAREN, "expected ')' when closing the for");
+            for_in->as.for_in.body = statement(parser);
+            return for_in;
+        }
         if (match(parser, TOKEN_IN)) {
             Stmt *for_in = new_stmt(parser, STMT_FOR_IN, line, column);
 
             for_in->as.for_in.name = text_from_token(parser, name);
+            for_in->as.for_in.has_value_name = false;
             for_in->as.for_in.iterable = expression(parser);
             consume(parser, TOKEN_RIGHT_PAREN, "expected ')' when closing the for");
             for_in->as.for_in.body = statement(parser);
@@ -1236,6 +1591,7 @@ static Stmt *parse_program(Parser *parser)
         list_append_stmt(parser, &head, &tail, declaration(parser));
     }
     program->as.block.statements = head;
+    program->as.block.transparent = false;
     return program;
 }
 

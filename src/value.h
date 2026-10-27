@@ -34,7 +34,10 @@ typedef enum {
     OBJ_CLOSURE,
     OBJ_NATIVE,
     OBJ_UPVALUE,
-    OBJ_FILE
+    OBJ_FILE,
+    OBJ_STRING_BUILDER,
+    OBJ_CLASS,
+    OBJ_INSTANCE
 } ObjType;
 
 struct Obj {
@@ -54,6 +57,7 @@ struct Obj {
 #define AS_INT(v) ((v).as.integer)
 #define AS_OBJ(v) ((v).as.obj)
 #define AS_STRING(v) ((ObjString *)(v).as.obj)
+#define AS_STRING_BUILDER(v) ((ObjStringBuilder *)(v).as.obj)
 
 static inline bool is_nil(Value v) { return v.type == VAL_NIL; }
 static inline bool is_bool(Value v) { return v.type == VAL_BOOL; }

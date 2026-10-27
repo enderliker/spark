@@ -68,6 +68,7 @@ static bool serialize_function(FILE *f, const ObjFunction *fn)
     if (!write_u32(f, (uint32_t)fn->arity)) return false;
     if (!write_u32(f, (uint32_t)fn->min_arity)) return false;
     if (!write_u8(f, fn->is_varargs ? 1 : 0)) return false;
+    if (!write_u8(f, fn->is_constructor ? 1 : 0)) return false;
     if (!write_u32(f, (uint32_t)fn->upvalue_count)) return false;
 
     /* Name */
@@ -259,17 +260,19 @@ static bool read_string_data(FILE *f, char **chars_out, uint32_t *len_out)
 static ObjFunction *deserialize_function(FILE *f)
 {
     uint32_t arity, min_arity, upvalue_count;
-    uint8_t is_varargs, has_field;
+    uint8_t is_varargs, is_constructor, has_field;
 
     if (!read_u32(f, &arity)) return NULL;
     if (!read_u32(f, &min_arity)) return NULL;
     if (!read_u8(f, &is_varargs)) return NULL;
+    if (!read_u8(f, &is_constructor)) return NULL;
     if (!read_u32(f, &upvalue_count)) return NULL;
 
     ObjFunction *fn = object_function();
     fn->arity = (int)arity;
     fn->min_arity = (int)min_arity;
     fn->is_varargs = is_varargs != 0;
+    fn->is_constructor = is_constructor != 0;
     fn->upvalue_count = (int)upvalue_count;
 
     /* Name */

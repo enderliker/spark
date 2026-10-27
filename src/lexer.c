@@ -181,6 +181,7 @@ static TokenType identifier_type(const Lexer *lexer)
         break;
     case 'e':
         if (IS("else")) return TOKEN_ELSE;
+        if (IS("extends")) return TOKEN_EXTENDS;
         break;
     case 'f':
         if (IS("false")) return TOKEN_FALSE;
@@ -192,6 +193,7 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("if")) return TOKEN_IF;
         if (IS("import")) return TOKEN_IMPORT;
         if (IS("in")) return TOKEN_IN;
+        if (IS("instanceof")) return TOKEN_INSTANCEOF;
         break;
     case 'n':
         if (IS("new")) return TOKEN_NEW;
@@ -205,6 +207,8 @@ static TokenType identifier_type(const Lexer *lexer)
         if (IS("return")) return TOKEN_RETURN;
         break;
     case 's':
+        if (IS("static")) return TOKEN_STATIC;
+        if (IS("super")) return TOKEN_SUPER;
         if (IS("switch")) return TOKEN_SWITCH;
         break;
     case 't':
@@ -367,14 +371,23 @@ static Token number(Lexer *lexer)
     return make_token(lexer, TOKEN_NUMBER);
 }
 
-static Token string_part(Lexer *lexer, bool first)
+static Token string_part(Lexer *lexer, bool first, bool multiline)
 {
     lexer->start = lexer->current;
 
     while (!is_at_end(lexer)) {
         char c = peek(lexer);
 
-        if (c == '"') {
+        if (multiline) {
+            if (c == '"' && peek_next(lexer) == '"' && lexer->current[2] == '"') {
+                Token token = make_token(lexer, first ? TOKEN_STRING : TOKEN_STRING_END);
+
+                advance(lexer);
+                advance(lexer);
+                advance(lexer);
+                return token;
+            }
+        } else if (c == '"') {
             Token token = make_token(lexer, first ? TOKEN_STRING : TOKEN_STRING_END);
 
             advance(lexer); /* closing quote */
@@ -394,6 +407,7 @@ static Token string_part(Lexer *lexer, bool first)
                 (int)(sizeof(lexer->interpolation_depth) / sizeof(lexer->interpolation_depth[0]))) {
                 return error_token(lexer, "too many nested string interpolations");
             }
+            lexer->interpolation_multiline[lexer->interpolation_count] = multiline;
             lexer->interpolation_depth[lexer->interpolation_count++] = 0;
             return token;
         }
@@ -407,19 +421,28 @@ static Token string_part(Lexer *lexer, bool first)
             lexer->line_start = lexer->current;
         }
     }
+    if (multiline) {
+        return error_token(lexer, "unterminated multiline string (missing closing '\"\"\"')");
+    }
     return error_token(lexer, "unterminated string (missing closing quote)");
 }
 
 static Token string_token(Lexer *lexer)
 {
-    return string_part(lexer, true);
+    if (peek(lexer) == '"' && peek_next(lexer) == '"') {
+        advance(lexer);
+        advance(lexer);
+        return string_part(lexer, true, true);
+    }
+    return string_part(lexer, true, false);
 }
 
 Token lexer_next(Lexer *lexer)
 {
     if (lexer->resume_string) {
         lexer->resume_string = false;
-        return string_part(lexer, false);
+        return string_part(lexer, false,
+                           lexer->interpolation_multiline[lexer->interpolation_count]);
     }
 
     skip_whitespace(lexer);
@@ -474,18 +497,36 @@ Token lexer_next(Lexer *lexer)
             return error_token(lexer, "unexpected character '..'");
         }
         return make_token(lexer, TOKEN_DOT);
-    case '?': return make_token(lexer, match(lexer, '?') ? TOKEN_QUESTION_QUESTION : TOKEN_QUESTION);
-    case '+': return make_token(lexer, match(lexer, '=') ? TOKEN_PLUS_EQUAL : TOKEN_PLUS);
-    case '-': return make_token(lexer, match(lexer, '=') ? TOKEN_MINUS_EQUAL : TOKEN_MINUS);
-    case '*': return make_token(lexer, match(lexer, '=') ? TOKEN_STAR_EQUAL : TOKEN_STAR);
+    case '?':
+        if (match(lexer, '?')) {
+            return make_token(lexer, match(lexer, '=') ? TOKEN_QUESTION_QUESTION_EQUAL
+                                                       : TOKEN_QUESTION_QUESTION);
+        }
+        if (match(lexer, '.')) return make_token(lexer, TOKEN_QUESTION_DOT);
+        return make_token(lexer, TOKEN_QUESTION);
+    case '+':
+        if (match(lexer, '+')) return make_token(lexer, TOKEN_PLUS_PLUS);
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_PLUS_EQUAL);
+        return make_token(lexer, TOKEN_PLUS);
+    case '-':
+        if (match(lexer, '-')) return make_token(lexer, TOKEN_MINUS_MINUS);
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_MINUS_EQUAL);
+        return make_token(lexer, TOKEN_MINUS);
+    case '*':
+        if (match(lexer, '*')) return make_token(lexer, TOKEN_STAR_STAR);
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_STAR_EQUAL);
+        return make_token(lexer, TOKEN_STAR);
     case '/': return make_token(lexer, match(lexer, '=') ? TOKEN_SLASH_EQUAL : TOKEN_SLASH);
-    case '%': return make_token(lexer, TOKEN_PERCENT);
+    case '%': return make_token(lexer, match(lexer, '=') ? TOKEN_PERCENT_EQUAL : TOKEN_PERCENT);
     case '&': return make_token(lexer, match(lexer, '=') ? TOKEN_AMPERSAND_EQUAL : TOKEN_AMPERSAND);
     case '|': return make_token(lexer, match(lexer, '=') ? TOKEN_PIPE_EQUAL : TOKEN_PIPE);
     case '^': return make_token(lexer, match(lexer, '=') ? TOKEN_CARET_EQUAL : TOKEN_CARET);
     case '~': return make_token(lexer, TOKEN_TILDE);
     case '!': return make_token(lexer, match(lexer, '=') ? TOKEN_BANG_EQUAL : TOKEN_BANG);
-    case '=': return make_token(lexer, match(lexer, '=') ? TOKEN_EQUAL_EQUAL : TOKEN_EQUAL);
+    case '=':
+        if (match(lexer, '=')) return make_token(lexer, TOKEN_EQUAL_EQUAL);
+        if (match(lexer, '>')) return make_token(lexer, TOKEN_ARROW);
+        return make_token(lexer, TOKEN_EQUAL);
     case '<':
         if (match(lexer, '<')) {
             return make_token(lexer, match(lexer, '=') ? TOKEN_LESS_LESS_EQUAL : TOKEN_LESS_LESS);
@@ -525,10 +566,15 @@ const char *token_type_name(TokenType type)
     case TOKEN_DOT: return "'.'";
     case TOKEN_DOT_DOT_DOT: return "'...'";
     case TOKEN_QUESTION: return "'?'";
-    case TOKEN_QUESTION_QUESTION: return "\?\?'";
+    case TOKEN_QUESTION_QUESTION: return "'?" "?'";
+    case TOKEN_QUESTION_QUESTION_EQUAL: return "'?" "?='";
+    case TOKEN_QUESTION_DOT: return "'?.'";
     case TOKEN_PLUS: return "'+'";
+    case TOKEN_PLUS_PLUS: return "'++'";
     case TOKEN_MINUS: return "'-'";
+    case TOKEN_MINUS_MINUS: return "'--'";
     case TOKEN_STAR: return "'*'";
+    case TOKEN_STAR_STAR: return "'**'";
     case TOKEN_SLASH: return "'/'";
     case TOKEN_PERCENT: return "'%'";
     case TOKEN_AMPERSAND: return "'&'";
@@ -546,10 +592,12 @@ const char *token_type_name(TokenType type)
     case TOKEN_MINUS_EQUAL: return "'-='";
     case TOKEN_STAR_EQUAL: return "'*='";
     case TOKEN_SLASH_EQUAL: return "'/='";
+    case TOKEN_PERCENT_EQUAL: return "'%='";
     case TOKEN_BANG: return "'!'";
     case TOKEN_BANG_EQUAL: return "'!='";
     case TOKEN_EQUAL: return "'='";
     case TOKEN_EQUAL_EQUAL: return "'=='";
+    case TOKEN_ARROW: return "'=>'";
     case TOKEN_GREATER: return "'>'";
     case TOKEN_GREATER_EQUAL: return "'>='";
     case TOKEN_LESS: return "'<'";
@@ -583,6 +631,10 @@ const char *token_type_name(TokenType type)
     case TOKEN_THROW: return "'throw'";
     case TOKEN_CLASS: return "'class'";
     case TOKEN_NEW: return "'new'";
+    case TOKEN_EXTENDS: return "'extends'";
+    case TOKEN_SUPER: return "'super'";
+    case TOKEN_STATIC: return "'static'";
+    case TOKEN_INSTANCEOF: return "'instanceof'";
     case TOKEN_TRUE: return "'true'";
     case TOKEN_FALSE: return "'false'";
     case TOKEN_NIL: return "'nil'";

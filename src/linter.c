@@ -199,6 +199,30 @@ static void lint_expression(LinterContext *ctx, Expr *expr)
         }
         break;
 
+    case EXPR_SLICE:
+        lint_expression(ctx, expr->as.slice.object);
+        if (expr->as.slice.start) {
+            lint_expression(ctx, expr->as.slice.start);
+        }
+        if (expr->as.slice.end) {
+            lint_expression(ctx, expr->as.slice.end);
+        }
+        if (expr->as.slice.step) {
+            lint_expression(ctx, expr->as.slice.step);
+        }
+        break;
+
+    case EXPR_UPDATE:
+        lint_expression(ctx, expr->as.update.target);
+        break;
+
+    case EXPR_OPTIONAL_CHAIN:
+        lint_expression(ctx, expr->as.opt_chain.object);
+        if (expr->as.opt_chain.is_index) {
+            lint_expression(ctx, expr->as.opt_chain.index);
+        }
+        break;
+
     case EXPR_INDEX:
         lint_expression(ctx, expr->as.index.object);
         lint_expression(ctx, expr->as.index.index);
@@ -264,7 +288,9 @@ static void lint_statement(LinterContext *ctx, Stmt *stmt)
         break;
 
     case STMT_BLOCK: {
-        push_scope(ctx, false);
+        if (!stmt->as.block.transparent) {
+            push_scope(ctx, false);
+        }
         bool terminated = false;
         const char *t_desc = NULL;
         bool reported_dead = false;
@@ -282,7 +308,9 @@ static void lint_statement(LinterContext *ctx, Stmt *stmt)
                 t_desc = terminator_desc(item->stmt);
             }
         }
-        pop_scope(ctx);
+        if (!stmt->as.block.transparent) {
+            pop_scope(ctx);
+        }
         break;
     }
 
@@ -323,6 +351,9 @@ static void lint_statement(LinterContext *ctx, Stmt *stmt)
         lint_expression(ctx, stmt->as.for_in.iterable);
         push_scope(ctx, false);
         declare_symbol(ctx, stmt->as.for_in.name, stmt->line, stmt->column, false);
+        if (stmt->as.for_in.has_value_name) {
+            declare_symbol(ctx, stmt->as.for_in.value_name, stmt->line, stmt->column, false);
+        }
         lint_statement(ctx, stmt->as.for_in.body);
         pop_scope(ctx);
         break;

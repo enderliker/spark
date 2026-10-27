@@ -30,6 +30,8 @@ typedef enum {
     TOK_OP_ASSIGN,      /* = += -= *= /= %= &= |= ^= <<= >>= */
     TOK_OP_UNARY,       /* ! ~ */
     TOK_PLUS_MINUS,     /* + or - (ambiguous between binary and unary) */
+    TOK_UPDATE,         /* ++ or -- */
+    TOK_ARROW,          /* => */
     TOK_QUESTION,       /* ? */
     TOK_COMMENT_LINE,   /* // line comment */
     TOK_COMMENT_BLOCK,  /* block comment */
@@ -130,6 +132,24 @@ static FmtToken scan_token(FmtScanner *s)
     }
 
     /* Strings (handle escapes and interpolation ${...}) */
+    if (*start == '"' && start[1] == '"' && start[2] == '"') {
+        /* Triple-quoted multiline string: copy verbatim until the closing quotes. */
+        s->cur += 3;
+        while (*s->cur) {
+            if (s->cur[0] == '"' && s->cur[1] == '"' && s->cur[2] == '"') {
+                s->cur += 3;
+                break;
+            }
+            if (*s->cur == '\n') {
+                s->line++;
+            }
+            s->cur++;
+        }
+        tok.type = TOK_STRING;
+        tok.text = start;
+        tok.length = (int)(s->cur - start);
+        return tok;
+    }
     if (*start == '"') {
         s->cur++;
         int brace_depth = 0;
@@ -225,8 +245,16 @@ static FmtToken scan_token(FmtScanner *s)
     else if (c == '~') { tok.type = TOK_OP_UNARY; }
     else if (c == '?') {
         if (next == '?') {
+            s->cur++; /* second '?' */
+            if (*s->cur == '=') {
+                s->cur++;
+                tok.type = TOK_OP_ASSIGN; /* ??= */
+            } else {
+                tok.type = TOK_OP_BIN; /* ?? */
+            }
+        } else if (next == '.') {
             s->cur++;
-            tok.type = TOK_OP_BIN; /* ?? */
+            tok.type = TOK_DOT; /* ?. (optional property or index access) */
         } else {
             tok.type = TOK_QUESTION;
         }
@@ -243,6 +271,9 @@ static FmtToken scan_token(FmtScanner *s)
         if (next == '=') {
             s->cur++;
             tok.type = TOK_OP_ASSIGN;
+        } else if (next == c) {
+            s->cur++;
+            tok.type = TOK_UPDATE;
         } else {
             tok.type = TOK_PLUS_MINUS;
         }
@@ -251,6 +282,9 @@ static FmtToken scan_token(FmtScanner *s)
         if (next == '=') {
             s->cur++;
             tok.type = TOK_OP_ASSIGN;
+        } else if (c == '*' && next == '*') {
+            s->cur++;
+            tok.type = TOK_OP_BIN;
         } else {
             tok.type = TOK_OP_BIN;
         }
@@ -259,6 +293,9 @@ static FmtToken scan_token(FmtScanner *s)
         if (next == '=') {
             s->cur++;
             tok.type = TOK_OP_BIN;
+        } else if (next == '>') {
+            s->cur++;
+            tok.type = TOK_ARROW;
         } else {
             tok.type = TOK_OP_ASSIGN;
         }
@@ -463,6 +500,7 @@ char *formatter_format(const char *source, const char *path, char *error_buf, si
     bool at_line_start = true;
     int for_paren_depth = -1;
     int paren_depth = 0;
+    int bracket_depth = 0;
     int ctx_stack[256];
     int ctx_depth = 0;
 
@@ -556,6 +594,9 @@ char *formatter_format(const char *source, const char *path, char *error_buf, si
                     need_space = true;
                 } else if (prev->type == TOK_WORD && token_str_eq(prev, "const")) {
                     need_space = true;
+                } else if (prev->type == TOK_WORD && token_str_eq(prev, "fn") &&
+                           tok->type == TOK_LPAREN) {
+                    need_space = false;
                 } else if (prev->type == TOK_WORD && token_str_eq(prev, "fn")) {
                     need_space = true;
                 } else if (prev->type == TOK_WORD && token_str_eq(prev, "class")) {
@@ -573,7 +614,7 @@ char *formatter_format(const char *source, const char *path, char *error_buf, si
                     need_space = true;
                 } else if (prev->type == TOK_COMMA) {
                     need_space = true;
-                } else if (prev->type == TOK_COLON && tok->type != TOK_COLON) {
+                } else if (prev->type == TOK_COLON && tok->type != TOK_COLON && bracket_depth == 0) {
                     need_space = true;
                 } else if (prev->type == TOK_SEMICOLON && for_paren_depth >= 0) {
                     need_space = true;
@@ -583,6 +624,10 @@ char *formatter_format(const char *source, const char *path, char *error_buf, si
                     /* ternary colon */
                     need_space = true;
                 } else if (tok->type == TOK_OP_ASSIGN || prev->type == TOK_OP_ASSIGN) {
+                    need_space = true;
+                } else if (tok->type == TOK_ARROW || prev->type == TOK_ARROW) {
+                    need_space = true;
+                } else if (prev->type == TOK_UPDATE && tok->type == TOK_PLUS_MINUS) {
                     need_space = true;
                 } else if (tok->type == TOK_OP_BIN || prev->type == TOK_OP_BIN) {
                     need_space = true;
@@ -617,6 +662,12 @@ char *formatter_format(const char *source, const char *path, char *error_buf, si
                 for_paren_depth = -1;
             }
             paren_depth--;
+        } else if (tok->type == TOK_LBRACKET) {
+            bracket_depth++;
+        } else if (tok->type == TOK_RBRACKET) {
+            if (bracket_depth > 0) {
+                bracket_depth--;
+            }
         } else if (tok->type == TOK_LBRACE) {
             indent++;
             if (ctx_depth < 256) {

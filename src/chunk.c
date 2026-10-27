@@ -82,9 +82,11 @@ const char *opcode_name(OpCode op)
     case OP_SET_UPVALUE: return "SET_UPVALUE";
     case OP_INDEX: return "INDEX";
     case OP_INDEX_SET: return "INDEX_SET";
+    case OP_INDEX_INC: return "INDEX_INC";
     case OP_ARRAY: return "ARRAY";
     case OP_MAP: return "MAP";
     case OP_ITER_KEYS: return "ITER_KEYS";
+    case OP_ITER_PAIR: return "ITER_PAIR";
     case OP_LEN: return "LEN";
     case OP_TO_STRING: return "TO_STRING";
     case OP_EQUAL: return "EQUAL";
@@ -101,6 +103,10 @@ const char *opcode_name(OpCode op)
     case OP_BIT_XOR: return "BIT_XOR";
     case OP_SHL: return "SHL";
     case OP_SHR: return "SHR";
+    case OP_POW: return "POW";
+    case OP_IN: return "IN";
+    case OP_INSTANCEOF: return "INSTANCEOF";
+    case OP_SLICE: return "SLICE";
     case OP_ADD_LOCAL_CONST: return "ADD_LOCAL_CONST";
     case OP_SUBTRACT_LOCAL_CONST: return "SUBTRACT_LOCAL_CONST";
     case OP_MULTIPLY_LOCAL_CONST: return "MULTIPLY_LOCAL_CONST";
@@ -122,7 +128,9 @@ const char *opcode_name(OpCode op)
     case OP_ARRAY_PUSH: return "ARRAY_PUSH";
     case OP_ARRAY_EXTEND: return "ARRAY_EXTEND";
     case OP_CALL: return "CALL";
+    case OP_NEW: return "NEW";
     case OP_CALL_SPREAD: return "CALL_SPREAD";
+    case OP_NEW_SPREAD: return "NEW_SPREAD";
     case OP_TAIL_CALL: return "TAIL_CALL";
     case OP_TAIL_CALL_SPREAD: return "TAIL_CALL_SPREAD";
     case OP_CLOSURE: return "CLOSURE";
@@ -226,8 +234,10 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
     case OP_GET_UPVALUE:
     case OP_SET_UPVALUE:
     case OP_CALL:
+    case OP_NEW:
     case OP_TAIL_CALL:
     case OP_RETURN_LOCAL:
+    case OP_INDEX_INC:
         return byte_instruction(chunk, opcode_name(op), offset);
     case OP_ADD_LOCAL_CONST:
     case OP_SUBTRACT_LOCAL_CONST:

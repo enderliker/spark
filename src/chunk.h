@@ -27,9 +27,11 @@ typedef enum {
     OP_SET_UPVALUE,   /* u8 */
     OP_INDEX,
     OP_INDEX_SET,
+    OP_INDEX_INC,     /* u8: bit 0 = decrement, bit 1 = prefix; ref [obj, index] */
     OP_ARRAY,         /* u16: number of elements */
     OP_MAP,           /* u16: number of key/value pairs */
-    OP_ITER_KEYS,     /* turns the iterable into an array of keys/values */
+    OP_ITER_KEYS,     /* turns the iterable into an array of keys */
+    OP_ITER_PAIR,     /* map: [map, keys, i] -> [key, value]; others: [i, value] */
     OP_LEN,           /* length of an array, map or string */
     OP_TO_STRING,     /* converts the top value to a string */
     OP_EQUAL,
@@ -46,6 +48,10 @@ typedef enum {
     OP_BIT_XOR,
     OP_SHL,
     OP_SHR,
+    OP_POW,
+    OP_IN,
+    OP_INSTANCEOF,
+    OP_SLICE,
     /* Superinstructions: left operand in a local, right operand a numeric
      * constant. They avoid two dispatches per operation. */
     OP_ADD_LOCAL_CONST,      /* u8: slot, u16: constant */
@@ -69,7 +75,9 @@ typedef enum {
     OP_ARRAY_PUSH,    /* appends top of stack to array below it, pops value */
     OP_ARRAY_EXTEND,  /* unpacks array on top of stack into array below it, pops src */
     OP_CALL,          /* u8: arguments */
+    OP_NEW,           /* u8: arguments; only accepts class constructors */
     OP_CALL_SPREAD,   /* arguments are in the array on top of stack */
+    OP_NEW_SPREAD,    /* like CALL_SPREAD but only accepts class constructors */
     OP_TAIL_CALL,     /* u8: arguments */
     OP_TAIL_CALL_SPREAD, /* arguments are in the array on top of stack */
     OP_CLOSURE,       /* u16 constant + (is_local, index) pairs */

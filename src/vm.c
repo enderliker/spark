@@ -3,6 +3,7 @@
 
 #include "vm.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <math.h>
@@ -10,6 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -91,6 +95,7 @@ typedef struct {
     bool has_exception;
     Value exception_value;
     bool had_error;
+    bool constructing;
     bool debug_mode;
 } VM;
 
@@ -323,6 +328,10 @@ static void blacken(Obj *object)
         }
         break;
     }
+    case OBJ_STRING_BUILDER:
+    case OBJ_CLASS:
+    case OBJ_INSTANCE:
+        break;
     }
 }
 
@@ -572,6 +581,14 @@ static Value native_type(int arg_count, Value *args)
     const char *name;
 
     (void)arg_count;
+    if (is_obj_type(args[0], OBJ_MAP)) {
+        /* Instances created from a class report the class name. */
+        Value cls;
+        if (map_get(AS_MAP(args[0]), OBJ_VAL(object_string("__class", 7)), &cls) &&
+            is_obj_type(cls, OBJ_STRING)) {
+            return cls;
+        }
+    }
     if (is_obj(args[0]) &&
         (AS_OBJ(args[0])->type == OBJ_CLOSURE || AS_OBJ(args[0])->type == OBJ_FUNCTION ||
          AS_OBJ(args[0])->type == OBJ_NATIVE)) {
@@ -767,8 +784,10 @@ static Value native_substr(int arg_count, Value *args)
         return NIL_VAL;
     }
     if (start < 0) {
-        vm_runtime_error(ERROR_VALUE, "'substr' does not accept a negative start (%d)", start);
-        return NIL_VAL;
+        start += total;
+        if (start < 0) {
+            start = 0;
+        }
     }
     if (arg_count == 3) {
         if (!integer_argument(args[2], "count", "substr", &count)) {
@@ -870,24 +889,141 @@ static Value native_pow(int arg_count, Value *args)
     return NUMBER_VAL(pow(value_as_double(args[0]), value_as_double(args[1])));
 }
 
-static Value native_min(int arg_count, Value *args)
+static Value native_sin(int arg_count, Value *args)
 {
     (void)arg_count;
-    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
-        vm_runtime_error(ERROR_TYPE, "'min' expects two numbers");
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'sin' expects a number, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
-    return numeric_less(args[1], args[0]) ? args[1] : args[0];
+    return NUMBER_VAL(sin(value_as_double(args[0])));
+}
+
+static Value native_cos(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'cos' expects a number, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(cos(value_as_double(args[0])));
+}
+
+static Value native_log(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'log' expects a number, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    double d = value_as_double(args[0]);
+    if (d <= 0.0) {
+        vm_runtime_error(ERROR_VALUE, "'log' expects a positive number, received %g", d);
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(log(d));
+}
+
+static Value native_exp(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'exp' expects a number, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(exp(value_as_double(args[0])));
+}
+
+static Value native_min(int arg_count, Value *args)
+{
+    if (arg_count == 0) {
+        vm_runtime_error(ERROR_ARITY, "'min' expects at least 1 argument");
+        return NIL_VAL;
+    }
+    if (arg_count == 1) {
+        if (!is_obj_type(args[0], OBJ_ARRAY)) {
+            vm_runtime_error(ERROR_TYPE, "single argument to 'min' must be an array");
+            return NIL_VAL;
+        }
+        ObjArray *arr = AS_ARRAY(args[0]);
+        if (arr->count == 0) {
+            vm_runtime_error(ERROR_VALUE, "cannot find min of an empty array");
+            return NIL_VAL;
+        }
+        Value m = arr->items[0];
+        if (!value_is_numeric(m)) {
+            vm_runtime_error(ERROR_TYPE, "'min' array elements must be numbers");
+            return NIL_VAL;
+        }
+        for (int i = 1; i < arr->count; i++) {
+            Value item = arr->items[i];
+            if (!value_is_numeric(item)) {
+                vm_runtime_error(ERROR_TYPE, "'min' array elements must be numbers");
+                return NIL_VAL;
+            }
+            if (numeric_less(item, m)) m = item;
+        }
+        return m;
+    }
+    Value m = args[0];
+    if (!value_is_numeric(m)) {
+        vm_runtime_error(ERROR_TYPE, "'min' arguments must be numbers");
+        return NIL_VAL;
+    }
+    for (int i = 1; i < arg_count; i++) {
+        if (!value_is_numeric(args[i])) {
+            vm_runtime_error(ERROR_TYPE, "'min' arguments must be numbers");
+            return NIL_VAL;
+        }
+        if (numeric_less(args[i], m)) m = args[i];
+    }
+    return m;
 }
 
 static Value native_max(int arg_count, Value *args)
 {
-    (void)arg_count;
-    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
-        vm_runtime_error(ERROR_TYPE, "'max' expects two numbers");
+    if (arg_count == 0) {
+        vm_runtime_error(ERROR_ARITY, "'max' expects at least 1 argument");
         return NIL_VAL;
     }
-    return numeric_greater(args[1], args[0]) ? args[1] : args[0];
+    if (arg_count == 1) {
+        if (!is_obj_type(args[0], OBJ_ARRAY)) {
+            vm_runtime_error(ERROR_TYPE, "single argument to 'max' must be an array");
+            return NIL_VAL;
+        }
+        ObjArray *arr = AS_ARRAY(args[0]);
+        if (arr->count == 0) {
+            vm_runtime_error(ERROR_VALUE, "cannot find max of an empty array");
+            return NIL_VAL;
+        }
+        Value m = arr->items[0];
+        if (!value_is_numeric(m)) {
+            vm_runtime_error(ERROR_TYPE, "'max' array elements must be numbers");
+            return NIL_VAL;
+        }
+        for (int i = 1; i < arr->count; i++) {
+            Value item = arr->items[i];
+            if (!value_is_numeric(item)) {
+                vm_runtime_error(ERROR_TYPE, "'max' array elements must be numbers");
+                return NIL_VAL;
+            }
+            if (numeric_greater(item, m)) m = item;
+        }
+        return m;
+    }
+    Value m = args[0];
+    if (!value_is_numeric(m)) {
+        vm_runtime_error(ERROR_TYPE, "'max' arguments must be numbers");
+        return NIL_VAL;
+    }
+    for (int i = 1; i < arg_count; i++) {
+        if (!value_is_numeric(args[i])) {
+            vm_runtime_error(ERROR_TYPE, "'max' arguments must be numbers");
+            return NIL_VAL;
+        }
+        if (numeric_greater(args[i], m)) m = args[i];
+    }
+    return m;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1160,48 +1296,73 @@ static Value native_slice(int arg_count, Value *args)
         vm_runtime_error(ERROR_ARITY, "'slice' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
-    if (!is_obj_type(args[0], OBJ_ARRAY)) {
-        vm_runtime_error(ERROR_TYPE, "'slice' expects an array as first argument, received %s",
+    if (!is_obj_type(args[0], OBJ_ARRAY) && !is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'slice' expects an array or a string as first argument, received %s",
                          value_type_name(args[0]));
         return NIL_VAL;
     }
-    ObjArray *array = AS_ARRAY(args[0]);
-    int start;
-    int end;
+    int start = 0;
+    int end = 0;
 
     if (!integer_argument(args[1], "start", "slice", &start)) {
         return NIL_VAL;
     }
-    if (arg_count == 3) {
-        if (!integer_argument(args[2], "end", "slice", &end)) {
-            return NIL_VAL;
+
+    if (is_obj_type(args[0], OBJ_ARRAY)) {
+        ObjArray *array = AS_ARRAY(args[0]);
+        if (arg_count == 3) {
+            if (!integer_argument(args[2], "end", "slice", &end)) {
+                return NIL_VAL;
+            }
+        } else {
+            end = array->count;
         }
+
+        if (start < 0) start += array->count;
+        if (start < 0) start = 0;
+        if (start > array->count) start = array->count;
+
+        if (end < 0) end += array->count;
+        if (end < 0) end = 0;
+        if (end > array->count) end = array->count;
+
+        if (end < start) end = start;
+
+        ObjArray *result = object_array();
+        push(OBJ_VAL(result));
+        for (int i = start; i < end; i++) {
+            array_push(result, array->items[i]);
+        }
+        pop();
+        return OBJ_VAL(result);
     } else {
-        end = array->count;
-    }
-    if (start < 0 || end < 0) {
-        vm_runtime_error(ERROR_VALUE, "'slice' does not accept negative indexes (start %d, end %d)",
-                         start, end);
-        return NIL_VAL;
-    }
-    if (start > array->count) {
-        start = array->count;
-    }
-    if (end > array->count) {
-        end = array->count;
-    }
-    if (end < start) {
-        end = start;
-    }
+        ObjString *string = AS_STRING(args[0]);
+        int total_chars = utf8_length(string->chars, string->length);
+        if (arg_count == 3) {
+            if (!integer_argument(args[2], "end", "slice", &end)) {
+                return NIL_VAL;
+            }
+        } else {
+            end = total_chars;
+        }
 
-    ObjArray *result = object_array();
+        if (start < 0) start += total_chars;
+        if (start < 0) start = 0;
+        if (start > total_chars) start = total_chars;
 
-    push(OBJ_VAL(result));
-    for (int i = start; i < end; i++) {
-        array_push(result, array->items[i]);
+        if (end < 0) end += total_chars;
+        if (end < 0) end = 0;
+        if (end > total_chars) end = total_chars;
+
+        if (end < start) end = start;
+
+        int byte_start = utf8_byte_offset(string, start);
+        int byte_end = (end == total_chars) ? string->length : utf8_byte_offset(string, end);
+        if (byte_start < 0) byte_start = string->length;
+        if (byte_end < byte_start) byte_end = byte_start;
+
+        return OBJ_VAL(object_string(string->chars + byte_start, byte_end - byte_start));
     }
-    pop();
-    return OBJ_VAL(result);
 }
 
 static Value native_starts_with(int arg_count, Value *args)
@@ -2406,6 +2567,781 @@ static Value native_regex_replace(int arg_count, Value *args)
     return OBJ_VAL(res);
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 10 / 12 Standard Library & StringBuilder natives             */
+/* ------------------------------------------------------------------ */
+
+static Value native_time(int arg_count, Value *args)
+{
+    (void)arg_count;
+    (void)args;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return NUMBER_VAL((double)tv.tv_sec + (double)tv.tv_usec / 1000000.0);
+}
+
+static Value native_sleep(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'sleep' expects a number (milliseconds), received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    double ms = value_as_double(args[0]);
+    if (ms < 0) {
+        vm_runtime_error(ERROR_VALUE, "'sleep' duration cannot be negative");
+        return NIL_VAL;
+    }
+    long seconds = (long)(ms / 1000.0);
+    long nanoseconds = (long)((ms - (seconds * 1000.0)) * 1000000.0);
+    struct timespec req;
+    req.tv_sec = seconds;
+    req.tv_nsec = nanoseconds;
+    nanosleep(&req, NULL);
+    return NIL_VAL;
+}
+
+static Value native_chr(int arg_count, Value *args)
+{
+    (void)arg_count;
+    int code = 0;
+    if (!integer_argument(args[0], "codepoint", "chr", &code)) {
+        return NIL_VAL;
+    }
+    if (code < 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+        vm_runtime_error(ERROR_VALUE, "invalid Unicode codepoint %d", code);
+        return NIL_VAL;
+    }
+    char buf[5];
+    int len = 0;
+    if (code <= 0x7f) {
+        buf[len++] = (char)code;
+    } else if (code <= 0x7ff) {
+        buf[len++] = (char)(0xc0 | (code >> 6));
+        buf[len++] = (char)(0x80 | (code & 0x3f));
+    } else if (code <= 0xffff) {
+        buf[len++] = (char)(0xe0 | (code >> 12));
+        buf[len++] = (char)(0x80 | ((code >> 6) & 0x3f));
+        buf[len++] = (char)(0x80 | (code & 0x3f));
+    } else {
+        buf[len++] = (char)(0xf0 | (code >> 18));
+        buf[len++] = (char)(0x80 | ((code >> 12) & 0x3f));
+        buf[len++] = (char)(0x80 | ((code >> 6) & 0x3f));
+        buf[len++] = (char)(0x80 | (code & 0x3f));
+    }
+    buf[len] = '\0';
+    return OBJ_VAL(object_string(buf, len));
+}
+
+static Value native_ord(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'ord' expects a string, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *s = AS_STRING(args[0]);
+    if (s->length == 0) {
+        vm_runtime_error(ERROR_VALUE, "'ord' expects a non-empty string");
+        return NIL_VAL;
+    }
+    const uint8_t *p = (const uint8_t *)s->chars;
+    uint32_t cp = 0;
+    if (p[0] < 0x80) {
+        cp = p[0];
+    } else if ((p[0] & 0xe0) == 0xc0) {
+        cp = ((p[0] & 0x1f) << 6) | (p[1] & 0x3f);
+    } else if ((p[0] & 0xf0) == 0xe0) {
+        cp = ((p[0] & 0x0f) << 12) | ((p[1] & 0x3f) << 6) | (p[2] & 0x3f);
+    } else if ((p[0] & 0xf8) == 0xf0) {
+        cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f);
+    }
+    return INT_VAL((int64_t)cp);
+}
+
+static Value pad_string_helper(int arg_count, Value *args, bool start, const char *name)
+{
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'%s' expects 2 or 3 arguments, received %d", name, arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'%s' expects a string as first argument", name);
+        return NIL_VAL;
+    }
+    int target_len = 0;
+    if (!integer_argument(args[1], "target length", name, &target_len)) {
+        return NIL_VAL;
+    }
+    const char *pad_chars = " ";
+    int pad_len = 1;
+    if (arg_count == 3) {
+        if (!is_obj_type(args[2], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' pad string must be a string", name);
+            return NIL_VAL;
+        }
+        ObjString *p = AS_STRING(args[2]);
+        if (p->length == 0) {
+            return args[0];
+        }
+        pad_chars = p->chars;
+        pad_len = p->length;
+    }
+    ObjString *s = AS_STRING(args[0]);
+    int cur_len = utf8_length(s->chars, s->length);
+    if (cur_len >= target_len) {
+        return args[0];
+    }
+    int needed = target_len - cur_len;
+    buf_t b;
+    buf_init(&b);
+    if (start) {
+        for (int i = 0; i < needed; i++) {
+            buf_append(&b, pad_chars + (i % pad_len), 1);
+        }
+        buf_append(&b, s->chars, (size_t)s->length);
+    } else {
+        buf_append(&b, s->chars, (size_t)s->length);
+        for (int i = 0; i < needed; i++) {
+            buf_append(&b, pad_chars + (i % pad_len), 1);
+        }
+    }
+    ObjString *res = object_string(b.data ? b.data : "", (int)b.len);
+    buf_free(&b);
+    return OBJ_VAL(res);
+}
+
+static Value native_pad_start(int arg_count, Value *args)
+{
+    return pad_string_helper(arg_count, args, true, "pad_start");
+}
+
+static Value native_pad_end(int arg_count, Value *args)
+{
+    return pad_string_helper(arg_count, args, false, "pad_end");
+}
+
+static Value native_sum(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'sum' expects an array, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjArray *arr = AS_ARRAY(args[0]);
+    if (arr->count == 0) return INT_VAL(0);
+    bool all_int = true;
+    int64_t int_sum = 0;
+    double double_sum = 0.0;
+    for (int i = 0; i < arr->count; i++) {
+        Value v = arr->items[i];
+        if (!value_is_numeric(v)) {
+            vm_runtime_error(ERROR_TYPE, "'sum' elements must be numbers");
+            return NIL_VAL;
+        }
+        if (all_int && is_int(v)) {
+            int_sum += AS_INT(v);
+        } else {
+            if (all_int) {
+                double_sum = (double)int_sum;
+                all_int = false;
+            }
+            double_sum += value_as_double(v);
+        }
+    }
+    return all_int ? INT_VAL(int_sum) : NUMBER_VAL(double_sum);
+}
+
+static Value native_any(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'any' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'any' expects an array as first argument");
+        return NIL_VAL;
+    }
+    ObjArray *arr = AS_ARRAY(args[0]);
+    Value fn = arg_count == 2 ? args[1] : NIL_VAL;
+    for (int i = 0; i < arr->count; i++) {
+        if (arg_count == 2) {
+            Value res;
+            push(arr->items[i]);
+            if (!call_callback(fn, 1, &res) || vm.had_error) return NIL_VAL;
+            if (!value_is_falsey(res)) return BOOL_VAL(true);
+        } else {
+            if (!value_is_falsey(arr->items[i])) return BOOL_VAL(true);
+        }
+    }
+    return BOOL_VAL(false);
+}
+
+static Value native_all(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'all' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'all' expects an array as first argument");
+        return NIL_VAL;
+    }
+    ObjArray *arr = AS_ARRAY(args[0]);
+    Value fn = arg_count == 2 ? args[1] : NIL_VAL;
+    for (int i = 0; i < arr->count; i++) {
+        if (arg_count == 2) {
+            Value res;
+            push(arr->items[i]);
+            if (!call_callback(fn, 1, &res) || vm.had_error) return NIL_VAL;
+            if (value_is_falsey(res)) return BOOL_VAL(false);
+        } else {
+            if (value_is_falsey(arr->items[i])) return BOOL_VAL(false);
+        }
+    }
+    return BOOL_VAL(true);
+}
+
+static Value native_enumerate(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'enumerate' expects an array, received %s", value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjArray *arr = AS_ARRAY(args[0]);
+    ObjArray *res = object_array();
+    push(OBJ_VAL(res));
+    for (int i = 0; i < arr->count; i++) {
+        ObjArray *pair = object_array();
+        push(OBJ_VAL(pair));
+        array_push(pair, INT_VAL(i));
+        array_push(pair, arr->items[i]);
+        array_push(res, OBJ_VAL(pair));
+        pop();
+    }
+    pop();
+    return OBJ_VAL(res);
+}
+
+static Value native_zip(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_ARRAY) || !is_obj_type(args[1], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'zip' expects two arrays");
+        return NIL_VAL;
+    }
+    ObjArray *a1 = AS_ARRAY(args[0]);
+    ObjArray *a2 = AS_ARRAY(args[1]);
+    int n = a1->count < a2->count ? a1->count : a2->count;
+    ObjArray *res = object_array();
+    push(OBJ_VAL(res));
+    for (int i = 0; i < n; i++) {
+        ObjArray *pair = object_array();
+        push(OBJ_VAL(pair));
+        array_push(pair, a1->items[i]);
+        array_push(pair, a2->items[i]);
+        array_push(res, OBJ_VAL(pair));
+        pop();
+    }
+    pop();
+    return OBJ_VAL(res);
+}
+
+static Value native_isinstance(int arg_count, Value *args)
+{
+    (void)arg_count;
+    ObjString *target_type = NULL;
+
+    if (is_obj_type(args[1], OBJ_STRING)) {
+        target_type = AS_STRING(args[1]);
+    } else if (is_obj_type(args[1], OBJ_CLOSURE)) {
+        target_type = AS_CLOSURE(args[1])->function->name;
+    } else if (is_obj_type(args[1], OBJ_FUNCTION)) {
+        target_type = AS_FUNCTION(args[1])->name;
+    }
+    if (!target_type) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'isinstance' second argument must be a type name or a class");
+        return NIL_VAL;
+    }
+    const char *actual_type = value_type_name(args[0]);
+    if (strcmp(target_type->chars, actual_type) == 0) {
+        return BOOL_VAL(true);
+    }
+    if (is_obj_type(args[0], OBJ_MAP)) {
+        Value cls;
+        if (map_get(AS_MAP(args[0]), OBJ_VAL(object_string("__class", 7)), &cls)) {
+            if (is_obj_type(cls, OBJ_STRING) && strcmp(AS_STRING(cls)->chars, target_type->chars) == 0) {
+                return BOOL_VAL(true);
+            }
+        }
+    }
+    return BOOL_VAL(false);
+}
+
+static Value native_copy(int arg_count, Value *args)
+{
+    (void)arg_count;
+    Value val = args[0];
+    if (is_obj_type(val, OBJ_ARRAY)) {
+        ObjArray *arr = AS_ARRAY(val);
+        ObjArray *cp = object_array();
+        push(OBJ_VAL(cp));
+        for (int i = 0; i < arr->count; i++) {
+            array_push(cp, arr->items[i]);
+        }
+        pop();
+        return OBJ_VAL(cp);
+    }
+    if (is_obj_type(val, OBJ_MAP)) {
+        ObjMap *map = AS_MAP(val);
+        ObjMap *cp = object_map();
+        push(OBJ_VAL(cp));
+        for (int i = 0; i < map->capacity; i++) {
+            if (map->entries[i].state == 1) {
+                map_set(cp, map->entries[i].key, map->entries[i].value);
+            }
+        }
+        pop();
+        return OBJ_VAL(cp);
+    }
+    return val;
+}
+
+static Value native_list_dir(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'list_dir' expects a directory path string");
+        return NIL_VAL;
+    }
+    ObjString *path = AS_STRING(args[0]);
+    DIR *dir = opendir(path->chars);
+    if (!dir) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot open directory '%s'", path->chars);
+        return NIL_VAL;
+    }
+    ObjArray *res = object_array();
+    push(OBJ_VAL(res));
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        ObjString *name = object_string(entry->d_name, (int)strlen(entry->d_name));
+        array_push(res, OBJ_VAL(name));
+    }
+    closedir(dir);
+    pop();
+    return OBJ_VAL(res);
+}
+
+static Value native_mkdir(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'mkdir' expects a path string");
+        return NIL_VAL;
+    }
+    ObjString *path = AS_STRING(args[0]);
+    if (mkdir(path->chars, 0777) != 0 && errno != EEXIST) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot create directory '%s'", path->chars);
+        return NIL_VAL;
+    }
+    return BOOL_VAL(true);
+}
+
+static Value native_exec(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'exec' expects a command string");
+        return NIL_VAL;
+    }
+    ObjString *cmd = AS_STRING(args[0]);
+    int stdout_pipe[2];
+    int stderr_pipe[2];
+    if (pipe(stdout_pipe) != 0 || pipe(stderr_pipe) != 0) {
+        vm_runtime_error(ERROR_RUNTIME, "failed to create pipes for 'exec'");
+        return NIL_VAL;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        vm_runtime_error(ERROR_RUNTIME, "failed to fork process for 'exec'");
+        return NIL_VAL;
+    }
+    if (pid == 0) {
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        dup2(stderr_pipe[1], STDERR_FILENO);
+        close(stdout_pipe[1]);
+        close(stderr_pipe[1]);
+        execl("/bin/sh", "sh", "-c", cmd->chars, (char *)NULL);
+        _exit(127);
+    }
+    close(stdout_pipe[1]);
+    close(stderr_pipe[1]);
+
+    buf_t out_buf, err_buf;
+    buf_init(&out_buf);
+    buf_init(&err_buf);
+    char temp[512];
+    ssize_t n;
+    while ((n = read(stdout_pipe[0], temp, sizeof(temp))) > 0) {
+        buf_append(&out_buf, temp, (size_t)n);
+    }
+    while ((n = read(stderr_pipe[0], temp, sizeof(temp))) > 0) {
+        buf_append(&err_buf, temp, (size_t)n);
+    }
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+
+    ObjMap *map = object_map();
+    push(OBJ_VAL(map));
+    map_set(map, OBJ_VAL(object_string("exit_code", 9)), INT_VAL(exit_code));
+    ObjString *out_str = object_string(out_buf.data ? out_buf.data : "", (int)out_buf.len);
+    map_set(map, OBJ_VAL(object_string("stdout", 6)), OBJ_VAL(out_str));
+    ObjString *err_str = object_string(err_buf.data ? err_buf.data : "", (int)err_buf.len);
+    map_set(map, OBJ_VAL(object_string("stderr", 6)), OBJ_VAL(err_str));
+    buf_free(&out_buf);
+    buf_free(&err_buf);
+    pop();
+    return OBJ_VAL(map);
+}
+
+static Value native_string_builder(int arg_count, Value *args)
+{
+    int cap = 16;
+    const char *init = NULL;
+    int init_len = 0;
+    if (arg_count == 1) {
+        if (is_int(args[0])) {
+            cap = (int)AS_INT(args[0]);
+        } else if (is_obj_type(args[0], OBJ_STRING)) {
+            ObjString *s = AS_STRING(args[0]);
+            init = s->chars;
+            init_len = s->length;
+            cap = init_len + 16;
+        }
+    }
+    ObjStringBuilder *sb = object_string_builder(cap);
+    if (init && init_len > 0) {
+        string_builder_append(sb, init, init_len);
+    }
+    return OBJ_VAL(sb);
+}
+
+static Value native_sb_append(int arg_count, Value *args)
+{
+    if (arg_count < 2) {
+        vm_runtime_error(ERROR_ARITY, "'sb_append' expects 2 arguments (builder, value)");
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'sb_append' first argument must be a string_builder");
+        return NIL_VAL;
+    }
+    ObjStringBuilder *sb = AS_STRING_BUILDER(args[0]);
+    ObjString *s = is_obj_type(args[1], OBJ_STRING) ? AS_STRING(args[1]) : value_to_string(args[1]);
+    string_builder_append(sb, s->chars, s->length);
+    return args[0];
+}
+
+static Value native_sb_to_string(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'sb_to_string' expects a string_builder");
+        return NIL_VAL;
+    }
+    return OBJ_VAL(string_builder_to_string(AS_STRING_BUILDER(args[0])));
+}
+
+static Value native_sb_len(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'sb_len' expects a string_builder");
+        return NIL_VAL;
+    }
+    ObjStringBuilder *sb = AS_STRING_BUILDER(args[0]);
+    return INT_VAL(utf8_length(sb->chars, sb->length));
+}
+
+static Value native_sb_clear(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'sb_clear' expects a string_builder");
+        return NIL_VAL;
+    }
+    string_builder_clear(AS_STRING_BUILDER(args[0]));
+    return args[0];
+}
+
+static bool dispatch_native_method(Value receiver, ObjString *method, int arg_count, Value *out)
+{
+    const char *name = method->chars;
+    Value *args = vm.stack_top - arg_count;
+
+    if (is_obj_type(receiver, OBJ_STRING)) {
+        ObjString *str = AS_STRING(receiver);
+        if (strcmp(name, "len") == 0 && arg_count == 0) {
+            *out = INT_VAL((int64_t)utf8_length(str->chars, str->length));
+            return true;
+        }
+        if (strcmp(name, "upper") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_upper(1, a);
+            return true;
+        }
+        if (strcmp(name, "lower") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_lower(1, a);
+            return true;
+        }
+        if (strcmp(name, "trim") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_trim(1, a);
+            return true;
+        }
+        if (strcmp(name, "split") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_split(2, a);
+            return true;
+        }
+        if (strcmp(name, "replace") == 0 && arg_count == 2) {
+            Value a[3] = { receiver, args[0], args[1] };
+            *out = native_replace(3, a);
+            return true;
+        }
+        if (strcmp(name, "starts_with") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_starts_with(2, a);
+            return true;
+        }
+        if (strcmp(name, "ends_with") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_ends_with(2, a);
+            return true;
+        }
+        if (strcmp(name, "contains") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_contains(2, a);
+            return true;
+        }
+        if (strcmp(name, "index_of") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_index_of(2, a);
+            return true;
+        }
+        if (strcmp(name, "repeat") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_repeat(2, a);
+            return true;
+        }
+        if (strcmp(name, "slice") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = native_slice(arg_count + 1, a);
+            return true;
+        }
+        if (strcmp(name, "pad_start") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = pad_string_helper(arg_count + 1, a, true, "pad_start");
+            return true;
+        }
+        if (strcmp(name, "pad_end") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = pad_string_helper(arg_count + 1, a, false, "pad_end");
+            return true;
+        }
+    } else if (is_obj_type(receiver, OBJ_ARRAY)) {
+        ObjArray *arr = AS_ARRAY(receiver);
+        if (strcmp(name, "len") == 0 && arg_count == 0) {
+            *out = INT_VAL((int64_t)arr->count);
+            return true;
+        }
+        if (strcmp(name, "push") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_push(2, a);
+            return true;
+        }
+        if (strcmp(name, "pop") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_pop(1, a);
+            return true;
+        }
+        if (strcmp(name, "contains") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_contains(2, a);
+            return true;
+        }
+        if (strcmp(name, "index_of") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_index_of(2, a);
+            return true;
+        }
+        if (strcmp(name, "insert") == 0 && arg_count == 2) {
+            Value a[3] = { receiver, args[0], args[1] };
+            *out = native_insert(3, a);
+            return true;
+        }
+        if (strcmp(name, "remove") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_remove(2, a);
+            return true;
+        }
+        if (strcmp(name, "reverse") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_reverse(1, a);
+            return true;
+        }
+        if (strcmp(name, "fill") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_fill(2, a);
+            return true;
+        }
+        if (strcmp(name, "slice") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = native_slice(arg_count + 1, a);
+            return true;
+        }
+        if (strcmp(name, "join") == 0 && (arg_count == 0 || arg_count == 1)) {
+            Value sep = arg_count == 1 ? args[0] : OBJ_VAL(object_string("", 0));
+            Value a[2] = { receiver, sep };
+            *out = native_join(2, a);
+            return true;
+        }
+        if (strcmp(name, "sort") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_sort(1, a);
+            return true;
+        }
+        if (strcmp(name, "sort_by") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_sort_by(2, a);
+            return true;
+        }
+        if (strcmp(name, "map") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_map(2, a);
+            return true;
+        }
+        if (strcmp(name, "filter") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_filter(2, a);
+            return true;
+        }
+        if (strcmp(name, "each") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_each(2, a);
+            return true;
+        }
+        if (strcmp(name, "reduce") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = native_reduce(arg_count + 1, a);
+            return true;
+        }
+    } else if (is_obj_type(receiver, OBJ_STRING_BUILDER)) {
+        ObjStringBuilder *sb = AS_STRING_BUILDER(receiver);
+        if (strcmp(name, "append") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_sb_append(2, a);
+            return true;
+        }
+        if (strcmp(name, "to_string") == 0 && arg_count == 0) {
+            *out = OBJ_VAL(string_builder_to_string(sb));
+            return true;
+        }
+        if (strcmp(name, "len") == 0 && arg_count == 0) {
+            *out = INT_VAL((int64_t)utf8_length(sb->chars, sb->length));
+            return true;
+        }
+        if (strcmp(name, "clear") == 0 && arg_count == 0) {
+            string_builder_clear(sb);
+            *out = receiver;
+            return true;
+        }
+    } else if (is_obj_type(receiver, OBJ_FILE)) {
+        if (strcmp(name, "read_line") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_read_line(1, a);
+            return true;
+        }
+        if (strcmp(name, "read") == 0 && (arg_count == 0 || arg_count == 1)) {
+            Value a[2] = { receiver, arg_count == 1 ? args[0] : NIL_VAL };
+            *out = native_read(arg_count + 1, a);
+            return true;
+        }
+        if (strcmp(name, "write") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_write(2, a);
+            return true;
+        }
+        if (strcmp(name, "close") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_close(1, a);
+            return true;
+        }
+        if (strcmp(name, "eof") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_eof(1, a);
+            return true;
+        }
+    } else if (is_obj_type(receiver, OBJ_MAP)) {
+        if (strcmp(name, "keys") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_keys(1, a);
+            return true;
+        }
+        if (strcmp(name, "values") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_values(1, a);
+            return true;
+        }
+        if (strcmp(name, "len") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_len(1, a);
+            return true;
+        }
+        if (strcmp(name, "has") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_has(2, a);
+            return true;
+        }
+        if (strcmp(name, "get") == 0 && (arg_count == 1 || arg_count == 2)) {
+            Value a[3] = { receiver, args[0], arg_count == 2 ? args[1] : NIL_VAL };
+            *out = native_get(arg_count + 1, a);
+            return true;
+        }
+        if (strcmp(name, "delete") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_del(2, a);
+            return true;
+        }
+        if (strcmp(name, "clear") == 0 && arg_count == 0) {
+            Value a[1] = { receiver };
+            *out = native_clear(1, a);
+            return true;
+        }
+        if (strcmp(name, "merge") == 0 && arg_count == 1) {
+            Value a[2] = { receiver, args[0] };
+            *out = native_merge(2, a);
+            return true;
+        }
+    }
+    return false;
+}
+
 int vm_global_slot(ObjString *name)
 {
     Value existing;
@@ -2547,6 +3483,42 @@ void vm_runtime_error(ErrorType type, const char *fmt, ...)
         source = function->source;
     }
 
+    if (vm.try_handler_count > 0) {
+        ObjMap *err = object_map();
+        push(OBJ_VAL(err));
+
+        ObjString *k_type = object_string("type", 4);
+        push(OBJ_VAL(k_type));
+        const char *tname = error_type_name(type);
+        ObjString *v_type = object_string(tname, (int)strlen(tname));
+        push(OBJ_VAL(v_type));
+        map_set(err, OBJ_VAL(k_type), OBJ_VAL(v_type));
+        pop(); pop();
+
+        ObjString *k_msg = object_string("message", 7);
+        push(OBJ_VAL(k_msg));
+        ObjString *v_msg = object_string(message, (int)strlen(message));
+        push(OBJ_VAL(v_msg));
+        map_set(err, OBJ_VAL(k_msg), OBJ_VAL(v_msg));
+        pop(); pop();
+
+        ObjString *k_line = object_string("line", 4);
+        push(OBJ_VAL(k_line));
+        map_set(err, OBJ_VAL(k_line), INT_VAL(line));
+        pop();
+
+        ObjString *k_col = object_string("column", 6);
+        push(OBJ_VAL(k_col));
+        map_set(err, OBJ_VAL(k_col), INT_VAL(column));
+        pop();
+
+        pop(); /* pop err */
+
+        vm.has_exception = true;
+        vm.exception_value = OBJ_VAL(err);
+        return;
+    }
+
     error_print(type, line, column, source, message);
     for (int i = vm.frame_count - 1; i >= 0; i--) {
         CallFrame *frame = &vm.frames[i];
@@ -2609,6 +3581,17 @@ static void close_upvalues(Value *last)
 static bool call_closure(ObjClosure *closure, int arg_count)
 {
     ObjFunction *function = closure->function;
+
+    if (function->is_constructor && !vm.constructing) {
+        vm_runtime_error(ERROR_TYPE, "class '%s' must be constructed with 'new %s(...)'",
+                         function->name ? function->name->chars : "?",
+                         function->name ? function->name->chars : "?");
+        return false;
+    }
+    if (!function->is_constructor && vm.constructing) {
+        vm_runtime_error(ERROR_TYPE, "'new' expects a class, received a function");
+        return false;
+    }
 
     if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
         if (function->is_varargs) {
@@ -2876,8 +3859,9 @@ static inline bool add_values(Value a, Value b, Value *out)
         *out = OBJ_VAL(result);
         return true;
     }
-    vm_runtime_error(ERROR_TYPE, "the operands of '+' must be two numbers or two strings "
-                     "(received %s and %s)",
+    vm_runtime_error(ERROR_TYPE,
+                     "the operands of '+' must be two numbers or two strings (received %s and %s); "
+                     "use string interpolation (\"value: ${x}\") or str(x) to build text",
                      value_type_name(a), value_type_name(b));
     return false;
 }
@@ -2893,8 +3877,8 @@ static bool index_to_position(Value index, int *out)
     if (is_int(index)) {
         int64_t integer = AS_INT(index);
 
-        if (integer < 0 || integer > INT_MAX) {
-            vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %lld",
+        if (integer < INT_MIN || integer > INT_MAX) {
+            vm_runtime_error(ERROR_VALUE, "the index is out of integer range, received %lld",
                              (long long)integer);
             return false;
         }
@@ -2904,8 +3888,8 @@ static bool index_to_position(Value index, int *out)
     if (is_number(index)) {
         double raw = AS_NUMBER(index);
 
-        if (raw < 0 || raw != floor(raw) || raw > INT_MAX) {
-            vm_runtime_error(ERROR_VALUE, "the index must be a non-negative integer, received %g", raw);
+        if (raw != floor(raw) || raw < (double)INT_MIN || raw > (double)INT_MAX) {
+            vm_runtime_error(ERROR_VALUE, "the index must be an integral number, received %g", raw);
             return false;
         }
         *out = (int)raw;
@@ -3435,7 +4419,8 @@ static InterpretResult run(int base_frame)
                     ObjClosure *closure = (ObjClosure *)obj;
                     ObjFunction *function = closure->function;
 
-                    if (!function->is_varargs && arg_count >= function->min_arity &&
+                    if (!function->is_varargs && !function->is_constructor &&
+                        arg_count >= function->min_arity &&
                         arg_count <= function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
                         int original_argc = arg_count;
                         while (arg_count < function->arity) {
@@ -3463,13 +4448,13 @@ static InterpretResult run(int base_frame)
                         Value *native_base = sp - arg_count - 1;
                         vm.stack_top = sp;
                         Value result = native->function(arg_count, native_base + 1);
-                        if (__builtin_expect(!vm.had_error, 1)) {
+                        if (__builtin_expect(!vm.had_error && !vm.has_exception, 1)) {
                             *native_base = result;
                             sp = native_base + 1;
                             ip += 2;
                             DISPATCH();
                         }
-                        return INTERPRET_RUNTIME_ERROR;
+                        goto handle_runtime_error;
                     }
                 }
             }
@@ -3486,7 +4471,8 @@ static InterpretResult run(int base_frame)
                     ObjClosure *closure = (ObjClosure *)obj;
                     ObjFunction *function = closure->function;
 
-                    if (!function->is_varargs && arg_count >= function->min_arity &&
+                    if (!function->is_varargs && !function->is_constructor &&
+                        arg_count >= function->min_arity &&
                         arg_count <= function->arity) {
                         if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
                             close_upvalues(slots);
@@ -3514,7 +4500,7 @@ static InterpretResult run(int base_frame)
                         vm.frame_count = (int)(frame - vm.frames) + 1;
                         vm.stack_top = sp;
                         Value result = native->function(arg_count, native_base + 1);
-                        if (__builtin_expect(!vm.had_error, 1)) {
+                        if (__builtin_expect(!vm.had_error && !vm.has_exception, 1)) {
                             if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
                                 close_upvalues(slots);
                             }
@@ -3526,7 +4512,7 @@ static InterpretResult run(int base_frame)
                             constants = frame->constants;
                             DISPATCH();
                         }
-                        return INTERPRET_RUNTIME_ERROR;
+                        goto handle_runtime_error;
                     }
                 }
             }
@@ -3806,7 +4792,7 @@ cold_dispatch:
 
             if (!global->defined) {
                 vm_runtime_error(ERROR_NAME, "global variable '%s' not defined", global->name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(global->value);
             break;
@@ -3818,7 +4804,7 @@ cold_dispatch:
 
             if (global->is_const && global->defined) {
                 vm_runtime_error(ERROR_CONST, "cannot redefine constant '%s'", global->name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             global->value = pop();
             global->defined = true;
@@ -3831,7 +4817,7 @@ cold_dispatch:
 
             if (global->defined) {
                 vm_runtime_error(ERROR_CONST, "cannot redefine constant '%s'", global->name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             global->value = pop();
             global->defined = true;
@@ -3845,11 +4831,11 @@ cold_dispatch:
 
             if (!global->defined) {
                 vm_runtime_error(ERROR_NAME, "global variable '%s' not defined", global->name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             if (global->is_const) {
                 vm_runtime_error(ERROR_CONST, "cannot assign to constant '%s'", global->name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             global->value = pop();
             break;
@@ -3860,7 +4846,7 @@ cold_dispatch:
             ObjString *path_str = AS_STRING(frame->closure->function->chunk.constants[slot]);
 
             if (!import_module(path_str, frame->closure->function->script_path)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             break;
         }
@@ -3889,12 +4875,15 @@ cold_dispatch:
                 int position;
 
                 if (!index_to_position(index, &position)) {
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
-                if (position >= array->count) {
+                if (position < 0) {
+                    position += array->count;
+                }
+                if (position < 0 || position >= array->count) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 result = array->items[position];
             } else if (is_obj_type(object, OBJ_MAP)) {
@@ -3910,23 +4899,26 @@ cold_dispatch:
                 int char_length;
 
                 if (!index_to_position(index, &position)) {
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
+                }
+                int total_chars = utf8_length(string->chars, string->length);
+                if (position < 0) {
+                    position += total_chars;
+                }
+                if (position < 0 || position >= total_chars) {
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (string of %d characters)",
+                                     position, total_chars);
+                    goto handle_runtime_error;
                 }
                 byte_index = utf8_byte_offset(string, position);
-
-                if (byte_index < 0) {
-                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (string of %d characters)",
-                                     position, utf8_length(string->chars, string->length));
-                    return INTERPRET_RUNTIME_ERROR;
-                }
                 char_length = utf8_char_length(string, byte_index);
 
                 result = OBJ_VAL(object_string(string->chars + byte_index, char_length));
             } else {
-                vm_runtime_error(ERROR_TYPE, "only an array, a map or a string can be indexed, "
-                                 "indexed a %s",
+                vm_runtime_error(ERROR_TYPE,
+                                 "cannot index a %s; expected an array, a map or a string",
                                  value_type_name(object));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             pop();
             pop();
@@ -3944,12 +4936,15 @@ cold_dispatch:
                 int position;
 
                 if (!index_to_position(index, &position)) {
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
-                if (position >= array->count) {
+                if (position < 0) {
+                    position += array->count;
+                }
+                if (position < 0 || position >= array->count) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
                                      array->count);
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 array->items[position] = value;
             } else if (is_obj_type(object, OBJ_MAP)) {
@@ -3957,9 +4952,76 @@ cold_dispatch:
             } else {
                 vm_runtime_error(ERROR_TYPE, "can only assign to an array or a map, tried to assign to a %s",
                                  value_type_name(object));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             vm.stack_top -= 3;
+            break;
+        }
+
+        case OP_INDEX_INC: {
+            uint8_t flags = READ_BYTE();
+            bool decrement = (flags & 1) != 0;
+            bool prefix = (flags & 2) != 0;
+            Value index = peek(0);
+            Value object = peek(1);
+            Value old_value = NIL_VAL;
+            Value new_value = NIL_VAL;
+
+            if (is_obj_type(object, OBJ_ARRAY)) {
+                ObjArray *array = AS_ARRAY(object);
+                int position;
+
+                if (!index_to_position(index, &position)) {
+                    goto handle_runtime_error;
+                }
+                if (position < 0) {
+                    position += array->count;
+                }
+                if (position < 0 || position >= array->count) {
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                                     array->count);
+                    goto handle_runtime_error;
+                }
+                old_value = array->items[position];
+                if (decrement) {
+                    if (!arithmetic_values(OP_SUBTRACT, old_value, INT_VAL(1), &new_value)) {
+                        goto handle_runtime_error;
+                    }
+                } else if (!add_values(old_value, INT_VAL(1), &new_value)) {
+                    goto handle_runtime_error;
+                }
+                array->items[position] = new_value;
+            } else if (is_obj_type(object, OBJ_MAP)) {
+                ObjMap *map = AS_MAP(object);
+
+                if (map_get(map, index, &old_value)) {
+                    if (!value_is_numeric(old_value)) {
+                        vm_runtime_error(ERROR_TYPE,
+                                         "'%s' expects a numeric value, received %s",
+                                         decrement ? "--" : "++", value_type_name(old_value));
+                        goto handle_runtime_error;
+                    }
+                } else {
+                    vm_runtime_error(ERROR_NAME, "'%s' cannot update a missing map key",
+                                     decrement ? "--" : "++");
+                    goto handle_runtime_error;
+                }
+                if (decrement) {
+                    if (!arithmetic_values(OP_SUBTRACT, old_value, INT_VAL(1), &new_value)) {
+                        goto handle_runtime_error;
+                    }
+                } else if (!add_values(old_value, INT_VAL(1), &new_value)) {
+                    goto handle_runtime_error;
+                }
+                map_set(map, index, new_value);
+            } else {
+                vm_runtime_error(ERROR_TYPE,
+                                 "can only update an array or a map element, tried to update a %s",
+                                 value_type_name(object));
+                goto handle_runtime_error;
+            }
+            vm.stack_top[-2] = prefix ? new_value : old_value;
+            vm.stack_top--;
             break;
         }
 
@@ -4030,7 +5092,42 @@ cold_dispatch:
                 break;
             }
             vm_runtime_error(ERROR_TYPE, "cannot iterate over a %s", value_type_name(iterable));
-            return INTERPRET_RUNTIME_ERROR;
+            goto handle_runtime_error;
+        }
+
+        case OP_ITER_PAIR: {
+            Value index_val = vm.stack_top[-1];
+            Value keys_val = vm.stack_top[-2];
+            Value original = vm.stack_top[-3];
+            Value first;
+            Value second;
+
+            if (!is_obj_type(keys_val, OBJ_ARRAY) || !is_int(index_val)) {
+                vm_runtime_error(ERROR_RUNTIME, "corrupt iteration state");
+                goto handle_runtime_error;
+            }
+            int position = (int)AS_INT(index_val);
+            ObjArray *keys = AS_ARRAY(keys_val);
+
+            if (position < 0 || position >= keys->count) {
+                vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                                 keys->count);
+                goto handle_runtime_error;
+            }
+            if (is_obj_type(original, OBJ_MAP)) {
+                Value stored = NIL_VAL;
+
+                first = keys->items[position];
+                map_get(AS_MAP(original), first, &stored);
+                second = stored;
+            } else {
+                first = INT_VAL(position);
+                second = keys->items[position];
+            }
+            vm.stack_top[-3] = first;
+            vm.stack_top[-2] = second;
+            vm.stack_top--;
+            break;
         }
 
         case OP_LEN: {
@@ -4046,7 +5143,7 @@ cold_dispatch:
             } else {
                 vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map or a string, received %s",
                                  value_type_name(value));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             /* Leaves the original value and pushes its length: the compiler uses it
              * to initialize the counter of a for-in. */
@@ -4074,7 +5171,7 @@ cold_dispatch:
 
             if (!compare_values(instruction == OP_GREATER_LOCAL_CONST, frame->slots[slot], b,
                                 &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(BOOL_VAL(result));
             break;
@@ -4087,7 +5184,7 @@ cold_dispatch:
             bool result;
 
             if (!compare_values(instruction == OP_GREATER, a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(BOOL_VAL(result));
             break;
@@ -4099,7 +5196,7 @@ cold_dispatch:
             Value result;
 
             if (!add_values(frame->slots[slot], b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
@@ -4111,7 +5208,7 @@ cold_dispatch:
             Value result;
 
             if (!add_values(a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
@@ -4128,7 +5225,7 @@ cold_dispatch:
             Value result;
 
             if (!arithmetic_values(op, frame->slots[slot], b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
@@ -4143,7 +5240,7 @@ cold_dispatch:
             Value result;
 
             if (!arithmetic_values(instruction, a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
@@ -4155,7 +5252,7 @@ cold_dispatch:
             Value result;
 
             if (!int_divide_values(a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
@@ -4171,10 +5268,177 @@ cold_dispatch:
             Value result;
 
             if (!bitwise_values(instruction, a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             break;
+        }
+
+        case OP_POW: {
+            Value b = pop();
+            Value a = pop();
+            if (!value_is_numeric(a) || !value_is_numeric(b)) {
+                vm_runtime_error(ERROR_TYPE, "operands of '**' must be numbers");
+                goto handle_runtime_error;
+            }
+            push(NUMBER_VAL(pow(value_as_double(a), value_as_double(b))));
+            break;
+        }
+
+        case OP_IN: {
+            Value coll = pop();
+            Value item = pop();
+            if (is_obj_type(coll, OBJ_ARRAY)) {
+                ObjArray *arr = AS_ARRAY(coll);
+                bool found = false;
+                for (int i = 0; i < arr->count; i++) {
+                    if (values_equal(arr->items[i], item)) {
+                        found = true;
+                        break;
+                    }
+                }
+                push(BOOL_VAL(found));
+            } else if (is_obj_type(coll, OBJ_MAP)) {
+                Value val;
+                push(BOOL_VAL(map_get(AS_MAP(coll), item, &val)));
+            } else if (is_obj_type(coll, OBJ_STRING)) {
+                if (!is_obj_type(item, OBJ_STRING)) {
+                    vm_runtime_error(ERROR_TYPE, "'in' with a string requires a string needle");
+                    goto handle_runtime_error;
+                }
+                ObjString *str = AS_STRING(coll);
+                ObjString *sub = AS_STRING(item);
+                if (sub->length == 0) {
+                    push(BOOL_VAL(true));
+                } else {
+                    push(BOOL_VAL(strstr(str->chars, sub->chars) != NULL));
+                }
+            } else {
+                vm_runtime_error(ERROR_TYPE, "cannot use 'in' on %s", value_type_name(coll));
+                goto handle_runtime_error;
+            }
+            break;
+        }
+
+        case OP_INSTANCEOF: {
+            Value target = pop();
+            Value inst = pop();
+            bool result = false;
+            ObjString *target_name = NULL;
+
+            /* The right operand may be the class value (its constructor) or a name. */
+            if (is_obj_type(target, OBJ_STRING)) {
+                target_name = AS_STRING(target);
+            } else if (is_obj_type(target, OBJ_CLOSURE)) {
+                target_name = AS_CLOSURE(target)->function->name;
+            } else if (is_obj_type(target, OBJ_FUNCTION)) {
+                target_name = AS_FUNCTION(target)->name;
+            }
+            if (target_name && is_obj_type(inst, OBJ_MAP)) {
+                Value c;
+                if (map_get(AS_MAP(inst), OBJ_VAL(object_string("__class", 7)), &c) &&
+                    is_obj_type(c, OBJ_STRING)) {
+                    ObjString *actual = AS_STRING(c);
+
+                    result = actual->length == target_name->length &&
+                             memcmp(actual->chars, target_name->chars,
+                                    (size_t)target_name->length) == 0;
+                }
+            }
+            push(BOOL_VAL(result));
+            break;
+        }
+
+        case OP_SLICE: {
+            Value step_val = pop();
+            Value end_val = pop();
+            Value start_val = pop();
+            Value obj_val = pop();
+
+            int step = 1;
+            if (!is_nil(step_val)) {
+                if (!integer_argument(step_val, "step", "slice", &step)) {
+                    goto handle_runtime_error;
+                }
+                if (step == 0) {
+                    vm_runtime_error(ERROR_VALUE, "slice step cannot be zero");
+                    goto handle_runtime_error;
+                }
+            }
+
+            if (is_obj_type(obj_val, OBJ_ARRAY)) {
+                ObjArray *arr = AS_ARRAY(obj_val);
+                int len = arr->count;
+                int start = step > 0 ? 0 : len - 1;
+                int end = step > 0 ? len : -1;
+
+                if (!is_nil(start_val)) {
+                    if (!integer_argument(start_val, "start", "slice", &start)) goto handle_runtime_error;
+                    if (start < 0) start += len;
+                    if (start < 0) start = step > 0 ? 0 : -1;
+                    if (start >= len) start = step > 0 ? len : len - 1;
+                }
+                if (!is_nil(end_val)) {
+                    if (!integer_argument(end_val, "end", "slice", &end)) goto handle_runtime_error;
+                    if (end < 0) end += len;
+                    if (end < 0) end = step > 0 ? 0 : -1;
+                    if (end >= len) end = step > 0 ? len : len - 1;
+                }
+
+                ObjArray *res = object_array();
+                push(OBJ_VAL(res));
+                if (step > 0) {
+                    for (int i = start; i < end; i += step) {
+                        array_push(res, arr->items[i]);
+                    }
+                } else {
+                    for (int i = start; i > end; i += step) {
+                        array_push(res, arr->items[i]);
+                    }
+                }
+                break;
+            } else if (is_obj_type(obj_val, OBJ_STRING)) {
+                ObjString *str = AS_STRING(obj_val);
+                int len = utf8_length(str->chars, str->length);
+                int start = step > 0 ? 0 : len - 1;
+                int end = step > 0 ? len : -1;
+
+                if (!is_nil(start_val)) {
+                    if (!integer_argument(start_val, "start", "slice", &start)) goto handle_runtime_error;
+                    if (start < 0) start += len;
+                    if (start < 0) start = step > 0 ? 0 : -1;
+                    if (start >= len) start = step > 0 ? len : len - 1;
+                }
+                if (!is_nil(end_val)) {
+                    if (!integer_argument(end_val, "end", "slice", &end)) goto handle_runtime_error;
+                    if (end < 0) end += len;
+                    if (end < 0) end = step > 0 ? 0 : -1;
+                    if (end >= len) end = step > 0 ? len : len - 1;
+                }
+
+                buf_t b;
+                buf_init(&b);
+                if (step > 0) {
+                    for (int i = start; i < end; i += step) {
+                        int byte_off = utf8_byte_offset(str, i);
+                        int char_len = utf8_char_length(str, byte_off);
+                        buf_append(&b, str->chars + byte_off, (size_t)char_len);
+                    }
+                } else {
+                    for (int i = start; i > end; i += step) {
+                        int byte_off = utf8_byte_offset(str, i);
+                        int char_len = utf8_char_length(str, byte_off);
+                        buf_append(&b, str->chars + byte_off, (size_t)char_len);
+                    }
+                }
+                ObjString *res = object_string(b.data ? b.data : "", (int)b.len);
+                buf_free(&b);
+                push(OBJ_VAL(res));
+                break;
+            } else {
+                vm_runtime_error(ERROR_TYPE, "cannot slice %s", value_type_name(obj_val));
+                goto handle_runtime_error;
+            }
         }
 
         case OP_NOT:
@@ -4193,7 +5457,7 @@ cold_dispatch:
             } else {
                 vm_runtime_error(ERROR_TYPE, "negation expects a number, received %s",
                                  value_type_name(value));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             break;
         }
@@ -4204,7 +5468,7 @@ cold_dispatch:
             if (!is_int(value)) {
                 vm_runtime_error(ERROR_TYPE, "the bitwise complement expects an integer, received %s",
                                  value_type_name(value));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(INT_VAL(~AS_INT(value)));
             break;
@@ -4258,7 +5522,7 @@ cold_dispatch:
 
             if (!compare_values(instruction == OP_JUMP_IF_NOT_GREATER_LOCAL_CONST,
                                 frame->slots[slot], b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             if (!result) {
                 frame->ip += offset;
@@ -4292,7 +5556,7 @@ cold_dispatch:
                     vm.has_exception = false;
                     goto do_throw;
                 }
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             if (vm.has_exception) {
                 vm.had_error = false;
@@ -4301,7 +5565,42 @@ cold_dispatch:
                 goto do_throw;
             }
             if (vm.had_error) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
+            }
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_NEW: {
+            int arg_count = READ_BYTE();
+            Value callee = peek(arg_count);
+
+            if (!is_obj_type(callee, OBJ_CLOSURE) ||
+                !AS_CLOSURE(callee)->function->is_constructor) {
+                vm_runtime_error(ERROR_TYPE, "'new' expects a class, received %s",
+                                 value_type_name(callee));
+                goto handle_runtime_error;
+            }
+            vm.constructing = true;
+            bool ok = call_value(callee, arg_count);
+            vm.constructing = false;
+            if (!ok) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
+                goto handle_runtime_error;
+            }
+            if (vm.has_exception) {
+                vm.had_error = false;
+                push(vm.exception_value);
+                vm.has_exception = false;
+                goto do_throw;
+            }
+            if (vm.had_error) {
+                goto handle_runtime_error;
             }
             frame = &vm.frames[vm.frame_count - 1];
             break;
@@ -4313,6 +5612,13 @@ cold_dispatch:
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
+                if (function->is_constructor) {
+                    vm_runtime_error(ERROR_TYPE,
+                                     "class '%s' must be constructed with 'new %s(...)'",
+                                     function->name ? function->name->chars : "?",
+                                     function->name ? function->name->chars : "?");
+                    goto handle_runtime_error;
+                }
                 if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
                     if (function->is_varargs) {
                         vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
@@ -4327,7 +5633,7 @@ cold_dispatch:
                                          function->name ? function->name->chars : "anonymous",
                                          function->min_arity, function->arity, arg_count);
                     }
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
                 if (function->is_varargs) {
@@ -4368,12 +5674,12 @@ cold_dispatch:
                 if (native->arity >= 0 && arg_count != native->arity) {
                     vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
                                      native->name->chars, native->arity, arg_count);
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 Value *native_base = vm.stack_top - arg_count - 1;
                 Value result = native->function(arg_count, native_base + 1);
-                if (vm.had_error) {
-                    return INTERPRET_RUNTIME_ERROR;
+                if (vm.had_error || vm.has_exception) {
+                    goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
                 vm.frame_count--;
@@ -4393,7 +5699,7 @@ cold_dispatch:
             }
             vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
                              value_type_name(callee));
-            return INTERPRET_RUNTIME_ERROR;
+            goto handle_runtime_error;
         }
 
         case OP_ARRAY_PUSH: {
@@ -4409,7 +5715,7 @@ cold_dispatch:
             if (!is_obj_type(src, OBJ_ARRAY)) {
                 vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
                                  value_type_name(src));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             ObjArray *src_arr = AS_ARRAY(src);
             for (int i = 0; i < src_arr->count; i++) {
@@ -4418,17 +5724,64 @@ cold_dispatch:
             break;
         }
 
+        case OP_NEW_SPREAD: {
+            Value args = pop();
+            if (!is_obj_type(args, OBJ_ARRAY)) {
+                vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
+                                 value_type_name(args));
+                goto handle_runtime_error;
+            }
+            ObjArray *arr = AS_ARRAY(args);
+            int count = arr->count;
+            if (!ensure_stack(count + 256)) {
+                goto handle_runtime_error;
+            }
+            for (int i = 0; i < count; i++) {
+                push(arr->items[i]);
+            }
+            Value callee = peek(count);
+            if (!is_obj_type(callee, OBJ_CLOSURE) ||
+                !AS_CLOSURE(callee)->function->is_constructor) {
+                vm_runtime_error(ERROR_TYPE, "'new' expects a class, received %s",
+                                 value_type_name(callee));
+                goto handle_runtime_error;
+            }
+            vm.constructing = true;
+            bool ok = call_value(callee, count);
+            vm.constructing = false;
+            if (!ok) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
+                goto handle_runtime_error;
+            }
+            if (vm.has_exception) {
+                vm.had_error = false;
+                push(vm.exception_value);
+                vm.has_exception = false;
+                goto do_throw;
+            }
+            if (vm.had_error) {
+                goto handle_runtime_error;
+            }
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
         case OP_CALL_SPREAD: {
             Value args = pop();
             if (!is_obj_type(args, OBJ_ARRAY)) {
                 vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
                                  value_type_name(args));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             ObjArray *arr = AS_ARRAY(args);
             int count = arr->count;
             if (!ensure_stack(count + 256)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             for (int i = 0; i < count; i++) {
                 push(arr->items[i]);
@@ -4440,7 +5793,7 @@ cold_dispatch:
                     vm.has_exception = false;
                     goto do_throw;
                 }
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             if (vm.has_exception) {
                 vm.had_error = false;
@@ -4449,7 +5802,7 @@ cold_dispatch:
                 goto do_throw;
             }
             if (vm.had_error) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             frame = &vm.frames[vm.frame_count - 1];
             break;
@@ -4460,17 +5813,24 @@ cold_dispatch:
             if (!is_obj_type(args, OBJ_ARRAY)) {
                 vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
                                  value_type_name(args));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             ObjArray *arr = AS_ARRAY(args);
             int arg_count = arr->count;
             if (!ensure_stack(arg_count + 256)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             for (int i = 0; i < arg_count; i++) {
                 push(arr->items[i]);
             }
             Value callee = peek(arg_count);
+            if (is_obj_type(callee, OBJ_CLOSURE) &&
+                AS_CLOSURE(callee)->function->is_constructor) {
+                vm_runtime_error(ERROR_TYPE, "class '%s' must be constructed with 'new %s(...)'",
+                                 AS_CLOSURE(callee)->function->name->chars,
+                                 AS_CLOSURE(callee)->function->name->chars);
+                goto handle_runtime_error;
+            }
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
@@ -4488,7 +5848,7 @@ cold_dispatch:
                                          function->name ? function->name->chars : "anonymous",
                                          function->min_arity, function->arity, arg_count);
                     }
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
                 if (function->is_varargs) {
@@ -4529,12 +5889,12 @@ cold_dispatch:
                 if (native->arity >= 0 && arg_count != native->arity) {
                     vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
                                      native->name->chars, native->arity, arg_count);
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 Value *native_base = vm.stack_top - arg_count - 1;
                 Value result = native->function(arg_count, native_base + 1);
-                if (vm.had_error) {
-                    return INTERPRET_RUNTIME_ERROR;
+                if (vm.had_error || vm.has_exception) {
+                    goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
                 vm.frame_count--;
@@ -4554,7 +5914,7 @@ cold_dispatch:
             }
             vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
                              value_type_name(callee));
-            return INTERPRET_RUNTIME_ERROR;
+            goto handle_runtime_error;
         }
 
         case OP_CLOSURE: {
@@ -4592,7 +5952,7 @@ cold_dispatch:
             Value a = pop();
             Value result;
             if (!add_values(a, b, &result)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(result);
             goto op_return_shared;
@@ -4638,7 +5998,7 @@ cold_dispatch:
 
             if (vm.try_handler_count == TRY_HANDLERS_MAX) {
                 vm_runtime_error(ERROR_RUNTIME, "too many nested try handlers");
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             TryHandler *h = &vm.try_handlers[vm.try_handler_count++];
             h->frame_count = vm.frame_count;
@@ -4653,7 +6013,7 @@ cold_dispatch:
 
             if (vm.try_handler_count == TRY_HANDLERS_MAX) {
                 vm_runtime_error(ERROR_RUNTIME, "too many nested try handlers");
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             TryHandler *h = &vm.try_handlers[vm.try_handler_count++];
             h->frame_count = vm.frame_count;
@@ -4687,17 +6047,18 @@ cold_dispatch:
 
         case OP_THROW: {
         do_throw: ;
-            Value exception_val = pop();
+            Value exception_val = vm.has_exception ? vm.exception_value : pop();
+            vm.has_exception = false;
 
             while (vm.try_handler_count > 0) {
-                TryHandler *h = &vm.try_handlers[--vm.try_handler_count];
+                TryHandler *h = &vm.try_handlers[vm.try_handler_count - 1];
 
-                if (h->frame_count < base_frame) {
+                if (base_frame > 0 && h->frame_count <= base_frame) {
                     vm.has_exception = true;
                     vm.exception_value = exception_val;
-                    vm.had_error = true;
                     return INTERPRET_RUNTIME_ERROR;
                 }
+                vm.try_handler_count--;
 
                 while (vm.frame_count > h->frame_count) {
                     close_upvalues(vm.frames[vm.frame_count - 1].slots);
@@ -4731,49 +6092,76 @@ cold_dispatch:
             ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
 
             Value receiver = peek(arg_count);
-            if (!is_obj_type(receiver, OBJ_MAP)) {
+
+            if (is_obj_type(receiver, OBJ_MAP)) {
+                Value method_val;
+                if (map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
+                    /* Replace receiver on stack with the method */
+                    *(vm.stack_top - arg_count - 1) = method_val;
+
+                    if (is_obj_type(method_val, OBJ_CLOSURE)) {
+                        if (!call_closure((ObjClosure *)AS_OBJ(method_val), arg_count)) {
+                            if (vm.has_exception) {
+                                vm.had_error = false;
+                                push(vm.exception_value);
+                                vm.has_exception = false;
+                                goto do_throw;
+                            }
+                            goto handle_runtime_error;
+                        }
+                        /* Bind self on the newly created frame */
+                        vm.frames[vm.frame_count - 1].self = receiver;
+                        frame = &vm.frames[vm.frame_count - 1];
+                    } else if (is_obj_type(method_val, OBJ_NATIVE)) {
+                        if (!call_value(method_val, arg_count)) {
+                            if (vm.has_exception) {
+                                vm.had_error = false;
+                                push(vm.exception_value);
+                                vm.has_exception = false;
+                                goto do_throw;
+                            }
+                            goto handle_runtime_error;
+                        }
+                    } else if (is_nil(method_val)) {
+                        vm_runtime_error(ERROR_TYPE,
+                                         "field '%s' is nil; check it before calling",
+                                         method_name->chars);
+                        goto handle_runtime_error;
+                    } else {
+                        vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
+                        goto handle_runtime_error;
+                    }
+                    break;
+                }
+            }
+
+            Value native_res;
+            if (dispatch_native_method(receiver, method_name, arg_count, &native_res)) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
+                if (vm.had_error) {
+                    goto handle_runtime_error;
+                }
+                vm.stack_top -= (arg_count + 1);
+                push(native_res);
+                break;
+            }
+
+            if (is_obj_type(receiver, OBJ_MAP)) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
+            } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_ARRAY) ||
+                       is_obj_type(receiver, OBJ_STRING_BUILDER) || is_obj_type(receiver, OBJ_FILE)) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,
+                                 value_type_name(receiver));
+            } else {
                 vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
                                  value_type_name(receiver));
-                return INTERPRET_RUNTIME_ERROR;
             }
-
-            Value method_val;
-            if (!map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
-                vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
-                return INTERPRET_RUNTIME_ERROR;
-            }
-
-            /* Replace receiver on stack with the method */
-            *(vm.stack_top - arg_count - 1) = method_val;
-
-            if (is_obj_type(method_val, OBJ_CLOSURE)) {
-                if (!call_closure((ObjClosure *)AS_OBJ(method_val), arg_count)) {
-                    if (vm.has_exception) {
-                        vm.had_error = false;
-                        push(vm.exception_value);
-                        vm.has_exception = false;
-                        goto do_throw;
-                    }
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-                /* Bind self on the newly created frame */
-                vm.frames[vm.frame_count - 1].self = receiver;
-                frame = &vm.frames[vm.frame_count - 1];
-            } else if (is_obj_type(method_val, OBJ_NATIVE)) {
-                if (!call_value(method_val, arg_count)) {
-                    if (vm.has_exception) {
-                        vm.had_error = false;
-                        push(vm.exception_value);
-                        vm.has_exception = false;
-                        goto do_throw;
-                    }
-                    return INTERPRET_RUNTIME_ERROR;
-                }
-            } else {
-                vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
-                return INTERPRET_RUNTIME_ERROR;
-            }
-            break;
+            goto handle_runtime_error;
         }
 
         case OP_INVOKE_SPREAD: {
@@ -4784,26 +6172,26 @@ cold_dispatch:
             if (!is_obj_type(args_val, OBJ_ARRAY)) {
                 vm_runtime_error(ERROR_TYPE, "spread operator '...' requires an array, received %s",
                                  value_type_name(args_val));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
 
             Value receiver = peek(0);
             if (!is_obj_type(receiver, OBJ_MAP)) {
                 vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
                                  value_type_name(receiver));
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
 
             Value method_val;
             if (!map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
 
             ObjArray *arr = AS_ARRAY(args_val);
             int count = arr->count;
             if (!ensure_stack(count + 256)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
 
             /* Replace receiver on stack with the method */
@@ -4821,7 +6209,7 @@ cold_dispatch:
                         vm.has_exception = false;
                         goto do_throw;
                     }
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
                 /* Bind self on the newly created frame */
                 vm.frames[vm.frame_count - 1].self = receiver;
@@ -4834,11 +6222,11 @@ cold_dispatch:
                         vm.has_exception = false;
                         goto do_throw;
                     }
-                    return INTERPRET_RUNTIME_ERROR;
+                    goto handle_runtime_error;
                 }
             } else {
                 vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             break;
         }
@@ -4846,7 +6234,7 @@ cold_dispatch:
         case OP_SELF: {
             if (is_nil(frame->self)) {
                 vm_runtime_error(ERROR_NAME, "'self' is not bound (not in a method call)");
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(frame->self);
             break;
@@ -4858,12 +6246,12 @@ cold_dispatch:
             Value a = frame->slots[slot];
             Value arg;
             if (!arithmetic_values(OP_SUBTRACT, a, b, &arg)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             push(frame->slots[0]);
             push(arg);
             if (!call_closure(frame->closure, 1)) {
-                return INTERPRET_RUNTIME_ERROR;
+                goto handle_runtime_error;
             }
             frame = &vm.frames[vm.frame_count - 1];
             break;
@@ -4871,7 +6259,7 @@ cold_dispatch:
 
         default:
             vm_runtime_error(ERROR_RUNTIME, "unknown instruction (%d)", instruction);
-            return INTERPRET_RUNTIME_ERROR;
+            goto handle_runtime_error;
         }
 
     end_instruction:
@@ -4887,6 +6275,13 @@ cold_dispatch:
 #else
     }
 #endif
+
+handle_runtime_error:
+    if (vm.has_exception && vm.try_handler_count > 0) {
+        vm.had_error = false;
+        goto do_throw;
+    }
+    return INTERPRET_RUNTIME_ERROR;
 }
 #ifdef SPARK_COMPUTED_GOTO
 #pragma GCC diagnostic pop
@@ -4988,8 +6383,12 @@ void vm_init(void)
     define_native("round", native_round, 1);
     define_native("sqrt", native_sqrt, 1);
     define_native("pow", native_pow, 2);
-    define_native("min", native_min, 2);
-    define_native("max", native_max, 2);
+    define_native("sin", native_sin, 1);
+    define_native("cos", native_cos, 1);
+    define_native("log", native_log, 1);
+    define_native("exp", native_exp, 1);
+    define_native("min", native_min, -1);
+    define_native("max", native_max, -1);
     define_native("contains", native_contains, 2);
     define_native("index_of", native_index_of, 2);
     define_native("insert", native_insert, 3);
@@ -5036,6 +6435,27 @@ void vm_init(void)
     define_native("regex_match", native_regex_match, 2);
     define_native("regex_find", native_regex_find, 2);
     define_native("regex_replace", native_regex_replace, 3);
+    define_native("time", native_time, 0);
+    define_native("sleep", native_sleep, 1);
+    define_native("chr", native_chr, 1);
+    define_native("ord", native_ord, 1);
+    define_native("pad_start", native_pad_start, -1);
+    define_native("pad_end", native_pad_end, -1);
+    define_native("sum", native_sum, 1);
+    define_native("any", native_any, -1);
+    define_native("all", native_all, -1);
+    define_native("enumerate", native_enumerate, 1);
+    define_native("zip", native_zip, 2);
+    define_native("isinstance", native_isinstance, 2);
+    define_native("copy", native_copy, 1);
+    define_native("list_dir", native_list_dir, 1);
+    define_native("mkdir", native_mkdir, 1);
+    define_native("exec", native_exec, 1);
+    define_native("string_builder", native_string_builder, -1);
+    define_native("sb_append", native_sb_append, 2);
+    define_native("sb_to_string", native_sb_to_string, 1);
+    define_native("sb_len", native_sb_len, 1);
+    define_native("sb_clear", native_sb_clear, 1);
     vm_set_args(0, NULL);
 
     int underscore_slot = vm_global_slot(object_string("_", 1));
@@ -5048,6 +6468,12 @@ void vm_init(void)
         vm.global_slots[nan_slot].value = NUMBER_VAL(NAN);
         vm.global_slots[nan_slot].defined = true;
         vm.global_slots[nan_slot].is_const = true;
+    }
+    int pi_slot = vm_global_slot(object_string("pi", 2));
+    if (pi_slot >= 0) {
+        vm.global_slots[pi_slot].value = NUMBER_VAL(3.14159265358979323846);
+        vm.global_slots[pi_slot].defined = true;
+        vm.global_slots[pi_slot].is_const = true;
     }
 }
 

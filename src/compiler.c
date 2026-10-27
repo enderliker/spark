@@ -404,6 +404,28 @@ static VarRef resolve_variable(Compiler *compiler, Text name, int line)
     return ref;
 }
 
+static void emit_get_slot(Compiler *compiler, int slot, int line)
+{
+    if (slot <= 0xff) {
+        emit_byte(compiler, OP_GET_LOCAL, line);
+        emit_byte(compiler, (uint8_t)slot, line);
+    } else {
+        emit_byte(compiler, OP_GET_LOCAL_16, line);
+        emit_u16(compiler, (uint16_t)slot, line);
+    }
+}
+
+static void emit_set_slot(Compiler *compiler, int slot, int line)
+{
+    if (slot <= 0xff) {
+        emit_byte(compiler, OP_SET_LOCAL, line);
+        emit_byte(compiler, (uint8_t)slot, line);
+    } else {
+        emit_byte(compiler, OP_SET_LOCAL_16, line);
+        emit_u16(compiler, (uint16_t)slot, line);
+    }
+}
+
 static void emit_get(Compiler *compiler, VarRef ref, int line)
 {
     switch (ref.kind) {
@@ -574,6 +596,7 @@ static int compound_opcode(TokenType op)
     case TOKEN_MINUS_EQUAL: return OP_SUBTRACT;
     case TOKEN_STAR_EQUAL: return OP_MULTIPLY;
     case TOKEN_SLASH_EQUAL: return OP_DIVIDE;
+    case TOKEN_PERCENT_EQUAL: return OP_MODULO;
     case TOKEN_AMPERSAND_EQUAL: return OP_BIT_AND;
     case TOKEN_PIPE_EQUAL: return OP_BIT_OR;
     case TOKEN_CARET_EQUAL: return OP_BIT_XOR;
@@ -603,6 +626,7 @@ static TokenType compound_to_binary(TokenType op)
     case TOKEN_MINUS_EQUAL: return TOKEN_MINUS;
     case TOKEN_STAR_EQUAL: return TOKEN_STAR;
     case TOKEN_SLASH_EQUAL: return TOKEN_SLASH;
+    case TOKEN_PERCENT_EQUAL: return TOKEN_PERCENT;
     default: return TOKEN_EOF;
     }
 }
@@ -613,6 +637,45 @@ static void compile_discard_assignment(Compiler *compiler, Stmt *stmt, TokenType
     Expr *target = stmt->as.assign.target;
 
     compiler->column = stmt->column;
+    if (op == TOKEN_QUESTION_QUESTION_EQUAL) {
+        if (target->kind == EXPR_VARIABLE) {
+            VarRef ref = resolve_variable(compiler, target->as.variable, line);
+
+            check_mutable(compiler, ref, target->as.variable, line);
+            emit_get(compiler, ref, line);
+            emit_byte(compiler, OP_DUP, line);
+            emit_byte(compiler, OP_NIL, line);
+            emit_byte(compiler, OP_EQUAL, line);
+            int keep_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+            emit_byte(compiler, OP_POP, line);
+            compile_expression(compiler, stmt->as.assign.value);
+            compiler->column = stmt->column;
+            emit_set(compiler, ref, line);
+            int end_jump = emit_jump(compiler, OP_JUMP, line);
+            patch_jump(compiler, keep_jump);
+            emit_byte(compiler, OP_POP, line);
+            patch_jump(compiler, end_jump);
+        } else {
+            compile_expression(compiler, target->as.index.object);
+            compile_expression(compiler, target->as.index.index);
+            emit_byte(compiler, OP_DUP2, line);
+            emit_byte(compiler, OP_INDEX, line);
+            emit_byte(compiler, OP_DUP, line);
+            emit_byte(compiler, OP_NIL, line);
+            emit_byte(compiler, OP_EQUAL, line);
+            int keep_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+            emit_byte(compiler, OP_POP, line);
+            compile_expression(compiler, stmt->as.assign.value);
+            compiler->column = stmt->column;
+            emit_byte(compiler, OP_INDEX_SET, line);
+            int end_jump = emit_jump(compiler, OP_JUMP, line);
+            patch_jump(compiler, keep_jump);
+            emit_byte(compiler, OP_POP, line);
+            emit_byte(compiler, OP_POP, line);
+            patch_jump(compiler, end_jump);
+        }
+        return;
+    }
     if (target->kind == EXPR_VARIABLE) {
         VarRef ref = resolve_variable(compiler, target->as.variable, line);
 
@@ -731,10 +794,12 @@ static void compile_if(Compiler *compiler, Stmt *stmt, int line)
 
 static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
 {
+    static const Text source_name = {" iterable_ref", 13};
     static const Text iterable_name = {" iterable", 9};
     static const Text count_name = {" count", 6};
     static const Text index_name = {" index", 6};
     LoopCtx loop;
+    int source_slot;
     int iterable_slot;
     int count_slot;
     int index_slot;
@@ -743,6 +808,9 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
     begin_scope(compiler);
 
     compile_expression(compiler, stmt->as.for_in.iterable);
+    source_slot = add_local(compiler, source_name, line);
+    mark_local_initialized(compiler);
+    emit_byte(compiler, OP_DUP, line);
     emit_byte(compiler, OP_ITER_KEYS, line);
     iterable_slot = add_local(compiler, iterable_name, line);
     mark_local_initialized(compiler);
@@ -757,27 +825,33 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
 
     int loop_start = compiler->function->chunk.count;
 
-    emit_byte(compiler, OP_GET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)index_slot, line);
-    emit_byte(compiler, OP_GET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)count_slot, line);
+    emit_get_slot(compiler, index_slot, line);
+    emit_get_slot(compiler, count_slot, line);
     emit_byte(compiler, OP_LESS, line);
     exit_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
 
-    emit_byte(compiler, OP_GET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)iterable_slot, line);
-    emit_byte(compiler, OP_GET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)index_slot, line);
-    emit_byte(compiler, OP_INDEX, line);
-
     begin_scope(compiler);
-    add_local(compiler, stmt->as.for_in.name, line);
-    mark_local_initialized(compiler);
+    if (stmt->as.for_in.has_value_name) {
+        emit_get_slot(compiler, source_slot, line);
+        emit_get_slot(compiler, iterable_slot, line);
+        emit_get_slot(compiler, index_slot, line);
+        emit_byte(compiler, OP_ITER_PAIR, line);
+        add_local(compiler, stmt->as.for_in.name, line);
+        mark_local_initialized(compiler);
+        add_local(compiler, stmt->as.for_in.value_name, line);
+        mark_local_initialized(compiler);
+    } else {
+        emit_get_slot(compiler, iterable_slot, line);
+        emit_get_slot(compiler, index_slot, line);
+        emit_byte(compiler, OP_INDEX, line);
+        add_local(compiler, stmt->as.for_in.name, line);
+        mark_local_initialized(compiler);
+    }
 
     memset(&loop, 0, sizeof(loop));
     loop.start = loop_start;
     loop.continue_target = -1;
-    loop.local_count = compiler->local_count - 1;
+    loop.local_count = compiler->local_count - (stmt->as.for_in.has_value_name ? 2 : 1);
     loop.label = stmt->as.for_in.label;
 
     LoopCtx *previous_loop = compiler->loop;
@@ -794,12 +868,10 @@ static void compile_for_in(Compiler *compiler, Stmt *stmt, int line)
         patch_offset(compiler, loop.continues[i]);
     }
 
-    emit_byte(compiler, OP_GET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)index_slot, line);
+    emit_get_slot(compiler, index_slot, line);
     emit_constant(compiler, INT_VAL(1), line);
     emit_byte(compiler, OP_ADD, line);
-    emit_byte(compiler, OP_SET_LOCAL, line);
-    emit_byte(compiler, (uint8_t)index_slot, line);
+    emit_set_slot(compiler, index_slot, line);
     emit_loop(compiler, loop_start, line);
 
     patch_jump(compiler, exit_jump);
@@ -1143,6 +1215,23 @@ static void compile_try(Compiler *compiler, Stmt *stmt, int line)
     }
 }
 
+static bool is_reserved_type_name(Text name)
+{
+    static const char *const reserved[] = {
+        "number", "string", "bool", "nil", "array", "map",
+        "function", "native function", "file", "string_builder", "class", "instance",
+    };
+
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+        int length = (int)strlen(reserved[i]);
+
+        if (name.length == length && memcmp(name.chars, reserved[i], (size_t)length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void compile_class(Compiler *compiler, Stmt *stmt, int line)
 {
     Text name = stmt->as.class_stmt.name;
@@ -1151,6 +1240,11 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
 
     if (is_global && global_is_const(compiler, class_name)) {
         compile_error(compiler, line, "cannot redefine constant '%.*s'", name.length, name.chars);
+    }
+    if (is_reserved_type_name(name)) {
+        compile_error(compiler, line,
+                      "class name '%.*s' collides with a built-in type name",
+                      name.length, name.chars);
     }
 
     ClassMethod *init_method = NULL;
@@ -1164,6 +1258,7 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
     Compiler fn;
     init_compiler(&fn, compiler, FUNC_INITIALIZER, compiler->ctx);
     fn.function->name = object_string(name.chars, name.length);
+    fn.function->is_constructor = true;
     fn.locals[0].name = name;
     fn.locals[0].is_const = true;
 
@@ -1211,6 +1306,17 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
     if (fn.locals[self_slot].debug_index >= 0) {
         fn.function->debug_locals[fn.locals[self_slot].debug_index].start_pc = fn.function->chunk.count;
     }
+
+    /* Tag the instance with its class name so instanceof/type can resolve it. */
+    emit_byte(&fn, OP_GET_LOCAL, line);
+    emit_byte(&fn, (uint8_t)self_slot, line);
+    int class_key = add_constant(&fn, OBJ_VAL(object_string("__class", 7)), line);
+    emit_byte(&fn, OP_CONSTANT, line);
+    emit_u16(&fn, (uint16_t)class_key, line);
+    int class_value = add_constant(&fn, OBJ_VAL(class_name), line);
+    emit_byte(&fn, OP_CONSTANT, line);
+    emit_u16(&fn, (uint16_t)class_value, line);
+    emit_byte(&fn, OP_INDEX_SET, line);
 
     /* Attach methods */
     for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
@@ -1322,14 +1428,18 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
         break;
 
     case STMT_BLOCK:
-        begin_scope(compiler);
+        if (!stmt->as.block.transparent) {
+            begin_scope(compiler);
+        }
         for (StmtList *list = stmt->as.block.statements; list; list = list->next) {
             compile_statement(compiler, list->stmt);
             if (stmt_is_terminator(list->stmt)) {
                 break;
             }
         }
-        end_scope(compiler, line);
+        if (!stmt->as.block.transparent) {
+            end_scope(compiler, line);
+        }
         break;
 
     case STMT_IF:
@@ -1441,6 +1551,23 @@ static void compile_spread_arguments(Compiler *compiler, ExprList *arguments, in
     }
 }
 
+static void compile_call_with_arguments(Compiler *compiler, Expr *expr, int line)
+{
+    if (expr_list_has_spread(expr->as.call.arguments)) {
+        compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count,
+                                 line);
+        compiler->column = expr->column;
+        emit_byte(compiler, expr->as.call.is_new ? OP_NEW_SPREAD : OP_CALL_SPREAD, line);
+    } else {
+        for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+            compile_expression(compiler, arg->expr);
+        }
+        compiler->column = expr->column;
+        emit_byte(compiler, expr->as.call.is_new ? OP_NEW : OP_CALL, line);
+        emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
+    }
+}
+
 static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column)
 {
     if (compiler->type == FUNC_INITIALIZER) {
@@ -1516,6 +1643,9 @@ static void compile_binary_operator(Compiler *compiler, TokenType op, int line)
     case TOKEN_PLUS: emit_byte(compiler, OP_ADD, line); break;
     case TOKEN_MINUS: emit_byte(compiler, OP_SUBTRACT, line); break;
     case TOKEN_STAR: emit_byte(compiler, OP_MULTIPLY, line); break;
+    case TOKEN_STAR_STAR: emit_byte(compiler, OP_POW, line); break;
+    case TOKEN_IN: emit_byte(compiler, OP_IN, line); break;
+    case TOKEN_INSTANCEOF: emit_byte(compiler, OP_INSTANCEOF, line); break;
     case TOKEN_SLASH: emit_byte(compiler, OP_DIVIDE, line); break;
     case TOKEN_PERCENT: emit_byte(compiler, OP_MODULO, line); break;
     case TOKEN_DIV: emit_byte(compiler, OP_INT_DIVIDE, line); break;
@@ -1973,7 +2103,8 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 
     case EXPR_CALL: {
         /* Superinstruction: self-recursive call with (local - constant) argument */
-        if (compiler->type == FUNC_FUNCTION &&
+        if (!expr->as.call.is_new &&
+            compiler->type == FUNC_FUNCTION &&
             expr->as.call.argument_count == 1 &&
             !expr->as.call.arguments->is_spread &&
             expr->as.call.callee->kind == EXPR_VARIABLE &&
@@ -1993,19 +2124,65 @@ static void compile_expression(Compiler *compiler, Expr *expr)
                 }
             }
         }
-        compile_expression(compiler, expr->as.call.callee);
-        if (expr_list_has_spread(expr->as.call.arguments)) {
-            compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);
-            compiler->column = expr->column;
-            emit_byte(compiler, OP_CALL_SPREAD, line);
-        } else {
-            for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
-                compile_expression(compiler, arg->expr);
+
+        Expr *callee = expr->as.call.callee;
+        if (callee->kind == EXPR_OPTIONAL_CHAIN) {
+            if (expr->as.call.is_new) {
+                compile_error(compiler, line, "cannot construct through '?.'");
             }
             compiler->column = expr->column;
-            emit_byte(compiler, OP_CALL, line);
-            emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
+            if (!callee->as.opt_chain.is_index) {
+                /* a?.b(...): short-circuit to nil when the receiver is nil. */
+                ObjString *name = name_constant(callee->as.opt_chain.property);
+                int name_index = add_constant(compiler, OBJ_VAL(name), line);
+
+                compile_expression(compiler, callee->as.opt_chain.object);
+                emit_byte(compiler, OP_DUP, line);
+                emit_byte(compiler, OP_NIL, line);
+                emit_byte(compiler, OP_EQUAL, line);
+                int nil_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+                emit_byte(compiler, OP_POP, line);
+                emit_byte(compiler, OP_NIL, line);
+                int end_jump = emit_jump(compiler, OP_JUMP, line);
+
+                patch_jump(compiler, nil_jump);
+                compiler->column = expr->column;
+                if (expr_list_has_spread(expr->as.call.arguments)) {
+                    compile_spread_arguments(compiler, expr->as.call.arguments,
+                                             expr->as.call.argument_count, line);
+                    emit_byte(compiler, OP_INVOKE_SPREAD, line);
+                    emit_u16(compiler, (uint16_t)name_index, line);
+                } else {
+                    for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+                        compile_expression(compiler, arg->expr);
+                    }
+                    emit_byte(compiler, OP_INVOKE, line);
+                    emit_u16(compiler, (uint16_t)name_index, line);
+                    emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
+                }
+                patch_jump(compiler, end_jump);
+            } else {
+                /* a?.[i](...): short-circuit to nil when the object is nil. */
+                compile_expression(compiler, callee->as.opt_chain.object);
+                emit_byte(compiler, OP_DUP, line);
+                emit_byte(compiler, OP_NIL, line);
+                emit_byte(compiler, OP_EQUAL, line);
+                int nil_jump = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+                emit_byte(compiler, OP_POP, line);
+                emit_byte(compiler, OP_NIL, line);
+                int end_jump = emit_jump(compiler, OP_JUMP, line);
+
+                patch_jump(compiler, nil_jump);
+                compile_expression(compiler, callee->as.opt_chain.index);
+                emit_byte(compiler, OP_INDEX, line);
+                compile_call_with_arguments(compiler, expr, line);
+                patch_jump(compiler, end_jump);
+            }
+            break;
         }
+
+        compile_expression(compiler, expr->as.call.callee);
+        compile_call_with_arguments(compiler, expr, line);
         break;
     }
 
@@ -2095,6 +2272,77 @@ static void compile_expression(Compiler *compiler, Expr *expr)
             emit_u16(compiler, (uint16_t)index, line);
             emit_byte(compiler, (uint8_t)expr->as.method_call.argument_count, line);
         }
+        break;
+    }
+
+    case EXPR_SLICE:
+        compile_expression(compiler, expr->as.slice.object);
+        if (expr->as.slice.start) {
+            compile_expression(compiler, expr->as.slice.start);
+        } else {
+            emit_byte(compiler, OP_NIL, line);
+        }
+        if (expr->as.slice.end) {
+            compile_expression(compiler, expr->as.slice.end);
+        } else {
+            emit_byte(compiler, OP_NIL, line);
+        }
+        if (expr->as.slice.step) {
+            compile_expression(compiler, expr->as.slice.step);
+        } else {
+            emit_byte(compiler, OP_NIL, line);
+        }
+        emit_byte(compiler, OP_SLICE, line);
+        break;
+
+    case EXPR_UPDATE: {
+        Expr *target = expr->as.update.target;
+        bool is_inc = expr->as.update.op == TOKEN_PLUS_PLUS;
+        bool is_prefix = expr->as.update.is_prefix;
+        if (target->kind == EXPR_VARIABLE) {
+            VarRef ref = resolve_variable(compiler, target->as.variable, line);
+            emit_get(compiler, ref, line);
+            if (!is_prefix) {
+                emit_byte(compiler, OP_DUP, line);
+            }
+            emit_constant(compiler, INT_VAL(1), line);
+            emit_byte(compiler, is_inc ? OP_ADD : OP_SUBTRACT, line);
+            if (is_prefix) {
+                /* SET pops the new value; keep a copy as the result. */
+                emit_byte(compiler, OP_DUP, line);
+            }
+            emit_set(compiler, ref, line);
+        } else if (target->kind == EXPR_INDEX) {
+            compile_expression(compiler, target->as.index.object);
+            compile_expression(compiler, target->as.index.index);
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_INDEX_INC, line);
+            emit_byte(compiler,
+                      (uint8_t)((is_inc ? 0 : 1) | (is_prefix ? 2 : 0)), line);
+        } else {
+            compile_error(compiler, line, "invalid target for '++' or '--'");
+        }
+        break;
+    }
+
+    case EXPR_OPTIONAL_CHAIN: {
+        compile_expression(compiler, expr->as.opt_chain.object);
+        emit_byte(compiler, OP_DUP, line);
+        emit_byte(compiler, OP_NIL, line);
+        emit_byte(compiler, OP_EQUAL, line);
+        int jump_nil = emit_jump(compiler, OP_JUMP_IF_FALSE_POP, line);
+        int jump_end = emit_jump(compiler, OP_JUMP, line);
+
+        patch_jump(compiler, jump_nil);
+        if (expr->as.opt_chain.is_index) {
+            compile_expression(compiler, expr->as.opt_chain.index);
+            emit_byte(compiler, OP_INDEX, line);
+        } else {
+            ObjString *name = name_constant(expr->as.opt_chain.property);
+            emit_constant(compiler, OBJ_VAL(name), line);
+            emit_byte(compiler, OP_INDEX, line);
+        }
+        patch_jump(compiler, jump_end);
         break;
     }
     }

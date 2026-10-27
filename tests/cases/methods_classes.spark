@@ -49,7 +49,7 @@ c1.add_step(3).next();
 print(c1.current());
 
 // Default arguments in init
-var c2 = Counter();
+var c2 = new Counter();
 print(c2.current());
 print(c2.next());
 
