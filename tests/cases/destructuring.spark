@@ -1,0 +1,11 @@
+var [a, b] = [1, 2];
+print(a, b);
+
+var {x, y} = {"x": 3, "y": 4};
+print(x, y);
+
+var [first, second] = "hi";
+print(first, second);
+
+a = 10;
+print(a, b);

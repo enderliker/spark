@@ -1,0 +1,2 @@
+exit: 65
+stderr: invalid target for '++' or '--'

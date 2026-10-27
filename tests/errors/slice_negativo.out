@@ -1,2 +1,2 @@
 exit: 70
-stderr: 'slice' does not accept negative indexes
+stderr: 'slice' expects an array or a string as first argument, received number

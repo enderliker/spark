@@ -1,0 +1,37 @@
+try {
+    1 / 0;
+} catch (e) {
+    print("zero div: " + e.type);
+    print("msg: " + e.message);
+}
+
+try {
+    sqrt(-1);
+} catch (e) {
+    print("sqrt: " + e.type);
+}
+
+try {
+    1 + "a";
+} catch (e) {
+    print("type err: " + e.type);
+}
+
+try {
+    var arr = [10, 20];
+    print(arr[5]);
+} catch (e) {
+    print("index err: " + e.type);
+}
+
+try {
+    assert(false, "boom");
+} catch (e) {
+    print("assert: " + e.type + " -> " + e.message);
+}
+
+try {
+    map([1, 2, 0], fn(x) { return 10 / x; });
+} catch (e) {
+    print("callback err: " + e.type);
+}

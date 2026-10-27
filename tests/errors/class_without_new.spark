@@ -1,0 +1,4 @@
+class Point {
+    init(x) { self.x = x; }
+}
+var p = Point(1);

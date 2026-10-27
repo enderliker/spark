@@ -1,0 +1,31 @@
+var i = 1;
+print(i++);
+print(i);
+print(++i);
+print(i);
+print(i--);
+print(i);
+print(--i);
+print(i);
+
+var a = [5, 6];
+print(a[0]++);
+print(a[0]);
+print(++a[0]);
+print(a);
+
+var m = {"n": 10};
+print(m.n++);
+print(m.n);
+print(--m.n);
+print(m.n);
+
+var f = 2.5;
+print(f++);
+print(f);
+
+var total = 0;
+for (var k = 0; k < 3; k++) {
+    total += k;
+}
+print(total);

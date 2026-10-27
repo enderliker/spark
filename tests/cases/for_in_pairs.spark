@@ -1,0 +1,40 @@
+var arr = [10, 20, 30];
+for (var i, value in arr) {
+    print(i, value);
+}
+
+for (var i, c in "abc") {
+    print(i, c);
+}
+
+var single = {"only": 1};
+for (var key, value in single) {
+    print(key, value);
+}
+
+var sorted = {"b": 2, "a": 1}.keys().sort();
+for (var i, key in sorted) {
+    print(i, key);
+}
+
+var total = 0;
+for (var value in arr) {
+    total += value;
+}
+print(total);
+
+for (var i, value in arr) {
+    if (i == 1) {
+        continue;
+    }
+    print("kept", value);
+}
+
+var found = nil;
+for (var i, value in arr) {
+    if (value == 20) {
+        found = i;
+        break;
+    }
+}
+print(found);

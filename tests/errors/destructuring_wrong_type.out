@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: cannot index a number; expected an array, a map or a string

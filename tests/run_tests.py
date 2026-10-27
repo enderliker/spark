@@ -359,6 +359,49 @@ def test_cli() -> None:
                f_adv.stdout)
         if fmt_advanced.exists():
             fmt_advanced.unlink()
+
+        fmt_modern = ROOT / "tests" / "test_fmt_modern.spark"
+        fmt_modern.write_text(
+            'var s = """line one\n'
+            'line two""";\n'
+            'var a=[1,2,3];\n'
+            'var x=a[1:2];\n'
+            'var y=2**3;\n'
+            'x++;\n'
+            'var z=--y;\n'
+            'var o=nil;\n'
+            'var q=o?.value;\n'
+            'var w=fn(n)=>n+1;\n'
+            'var r=1 in a;\n'
+            'var t=nil;\n'
+            't??=5;\n'
+            'print(s,x,y,z,q,w(1),r,t);\n',
+            encoding="utf-8",
+        )
+        try:
+            f_modern = run(["--format", str(fmt_modern)])
+            expected_modern = (
+                'var s = """line one\n'
+                'line two""";\n'
+                'var a = [1, 2, 3];\n'
+                'var x = a[1:2];\n'
+                'var y = 2 ** 3;\n'
+                'x++;\n'
+                'var z = --y;\n'
+                'var o = nil;\n'
+                'var q = o?.value;\n'
+                'var w = fn(n) => n + 1;\n'
+                'var r = 1 in a;\n'
+                'var t = nil;\n'
+                't ??= 5;\n'
+                'print(s, x, y, z, q, w(1), r, t);\n'
+            )
+            report("--format handles modern syntax",
+                   f_modern.returncode == 0 and f_modern.stdout == expected_modern,
+                   f_modern.stdout)
+        finally:
+            if fmt_modern.exists():
+                fmt_modern.unlink()
     finally:
         if fmt_script.exists():
             fmt_script.unlink()
@@ -366,6 +409,20 @@ def test_cli() -> None:
     # Linter tests (--lint)
     lint_clean = ROOT / "tests" / "test_lint_clean.spark"
     lint_clean.write_text("var a = 10;\nprint(a);\n", encoding="utf-8")
+    lint_modern = ROOT / "tests" / "test_lint_modern.spark"
+    lint_modern.write_text(
+        "var arr = [1, 2, 3];\n"
+        "var [first, second] = arr;\n"
+        "var s = 0;\n"
+        "for (var i, value in arr) { s += i + value; }\n"
+        "var f = fn(x) => x + first;\n"
+        "var tail = arr[1:];\n"
+        "var maybe = nil;\n"
+        "var guarded = maybe?.value;\n"
+        "var ok = first in arr and first == second;\n"
+        "print(second, s, f(1), tail, guarded, ok);\n",
+        encoding="utf-8",
+    )
     lint_dirty = ROOT / "tests" / "test_lint_dirty.spark"
     lint_dirty.write_text(
         "fn test(unused_param, used_param) {\n"
@@ -393,11 +450,18 @@ def test_cli() -> None:
                and "[unreachable-code]" in l_dirty.stdout
                and "[shadowed-variable]" in l_dirty.stdout,
                l_dirty.stdout + l_dirty.stderr)
+
+        l_modern = run(["--lint", str(lint_modern)])
+        report("--lint understands modern syntax",
+               l_modern.returncode == 0 and l_modern.stdout == "",
+               l_modern.stdout + l_modern.stderr)
     finally:
         if lint_clean.exists():
             lint_clean.unlink()
         if lint_dirty.exists():
             lint_dirty.unlink()
+        if lint_modern.exists():
+            lint_modern.unlink()
 
 
 def main() -> int:

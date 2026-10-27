@@ -1,0 +1,4 @@
+fn plain(x) {
+    return x;
+}
+var value = new plain(1);

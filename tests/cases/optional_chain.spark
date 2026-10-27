@@ -1,0 +1,17 @@
+var missing = nil;
+var m = {"value": 3, "method": fn(x) { return x + 1; }, "nested": {"deep": 9}};
+var values = [10, 20];
+
+print(missing?.value);
+print(m?.value);
+print(missing?.["value"]);
+print(m?.["value"]);
+print(missing?.method(1));
+print(m?.method(1));
+print(missing?.[0]);
+print(values?.[1]);
+print(missing?.nested);
+print(m?.nested.deep);
+
+var chain = missing?.value ?? "fallback";
+print(chain);

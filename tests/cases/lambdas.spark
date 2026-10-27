@@ -1,0 +1,27 @@
+var add = fn(a, b) => a + b;
+print(add(2, 3));
+
+var square = fn(x) => x * x;
+print(square(5));
+
+var apply = fn(f, v) => f(v);
+print(apply(square, 4));
+
+var doubled = [1, 2, 3].map(fn(x) => x * 2);
+print(doubled);
+
+var evens = [1, 2, 3, 4].filter(fn(x) => x % 2 == 0);
+print(evens);
+
+var total = [1, 2, 3, 4].reduce(fn(acc, x) => acc + x, 0);
+print(total);
+
+var make_counter = fn() {
+    var count = 0;
+    return fn() {
+        count++;
+        return count;
+    };
+};
+var next = make_counter();
+print(next(), next(), next());

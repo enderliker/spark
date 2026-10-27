@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 4: 'new' expects a class, received function

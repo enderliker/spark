@@ -1,0 +1,19 @@
+var text = """line one
+line two""";
+print(text);
+print(len(text));
+
+var block = """
+  hello
+  world
+""";
+print("[${block}]");
+print(len(block));
+
+var single = """one""";
+print(single, len(single));
+
+var name = "Spark";
+var templated = """Hello,
+${name}!""";
+print(templated);

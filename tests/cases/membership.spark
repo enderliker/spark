@@ -1,0 +1,21 @@
+print(2 in [1, 2, 3]);
+print(4 in [1, 2, 3]);
+print("ell" in "hello");
+print("xyz" in "hello");
+print("k" in {"k": 1});
+print("z" in {"k": 1});
+
+class Point {
+    init(x) { self.x = x; }
+    get() { return self.x; }
+}
+
+var p = new Point(4);
+print(p instanceof Point);
+print(p instanceof Point);
+print(p instanceof nil);
+print(isinstance(p, "Point"));
+print(isinstance(p, Point));
+print(isinstance(p, "map"));
+print(isinstance(1, "number"));
+print(nil instanceof Point);

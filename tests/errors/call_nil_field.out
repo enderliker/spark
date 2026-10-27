@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 2: field 'f' is nil; check it before calling

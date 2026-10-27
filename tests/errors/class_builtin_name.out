@@ -1,0 +1,2 @@
+exit: 65
+stderr: class name 'map' collides with a built-in type name

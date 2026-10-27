@@ -1,0 +1,7 @@
+zero div: ZeroDivisionError
+msg: division by zero
+sqrt: ValueError
+type err: TypeError
+index err: IndexError
+assert: AssertionError -> boom
+callback err: ZeroDivisionError

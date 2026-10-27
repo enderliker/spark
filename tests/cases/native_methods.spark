@@ -1,0 +1,25 @@
+var s = "  Hello, World  ";
+print(s.trim());
+print(s.trim().upper());
+print(s.trim().lower());
+print("a,b,c".split(",").join("-"));
+print("abc".repeat(2));
+print("banana".replace("a", "o"));
+print("7".pad_start(3, "0"));
+print("ab".pad_end(4, "."));
+print("hello".starts_with("he"), "hello".ends_with("lo"));
+print("hello".index_of("ll"), "hello".contains("ell"));
+print("abcdef".slice(1, 4));
+
+var a = [1, 2, 3];
+print(a.len(), a.contains(2), a.index_of(3));
+print(a.reverse());
+print(a.join("+"));
+print([3, 1, 2].sort());
+print([3, 1, 2].sort_by(fn(a, b) => a > b));
+print([1, 2].map(fn(x) => x * 10));
+print([1, 2, 3, 4].filter(fn(x) => x % 2 == 0));
+
+print({"a": 1, "b": 2}.keys().sort());
+print({"a": 1, "b": 2}.values().sort());
+print({"a": 1}.has("a"), {"a": 1}.get("a"));

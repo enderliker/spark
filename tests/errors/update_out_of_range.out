@@ -1,0 +1,2 @@
+exit: 70
+stderr: IndexError at line 2: index out of range: 5 (size 1)

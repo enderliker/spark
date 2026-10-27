@@ -1,0 +1,28 @@
+var sb = string_builder();
+sb.append("Hello");
+sb.append(", ");
+sb.append("world");
+print(sb.to_string());
+print(sb.len());
+
+sb.clear();
+print(sb.len());
+print(sb.to_string() == "");
+
+var seeded = string_builder("seed");
+print(seeded.to_string(), seeded.len());
+
+var parts = string_builder();
+for (var i = 0; i < 5; i++) {
+    parts.append(str(i));
+}
+print(parts.to_string());
+
+var numbers = string_builder();
+sb_append(numbers, 12);
+sb_append(numbers, "-");
+print(sb_append(numbers, 34).to_string());
+
+print(sb_to_string(seeded));
+sb_clear(seeded);
+print(sb_len(seeded), sb_to_string(seeded));

@@ -1,0 +1,2 @@
+exit: 65
+stderr: high surrogate must be followed by a low surrogate

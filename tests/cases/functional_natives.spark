@@ -1,0 +1,13 @@
+print(any([false, false, true]));
+print(any([]));
+print(all([true, true, true]));
+print(all([true, false]));
+print(all([]));
+
+print(enumerate(["a", "b"]));
+print(zip([1, 2, 3], ["a", "b"]));
+
+print(sum([1, 2, 3, 4]));
+print(sum([]));
+print(copy({"a": 1}));
+print(copy("text"));

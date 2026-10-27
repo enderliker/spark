@@ -1,0 +1,2 @@
+exit: 65
+stderr: unicode escape is outside the valid range (max 10FFFF)

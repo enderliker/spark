@@ -1,0 +1,9 @@
+print("\u0041\u00e9\u20ac");
+print("\u{1F600}");
+print("\uD83D\uDE00");
+print(len("\u{1F600}"));
+print(ord("\u{1F600}"));
+print(chr(0x1F600));
+print("\u{48}\u{69}");
+print("caf\u00e9");
+print("\u{10FFFF}" == "\uDBFF\uDFFF");
