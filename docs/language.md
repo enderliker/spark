@@ -113,7 +113,7 @@ From highest to lowest precedence:
 | `==` `!=` | left | equality |
 | `&` | left | bitwise AND |
 | `^` | left | bitwise XOR |
-| `|` | left | bitwise OR |
+| `\|` | left | bitwise OR |
 | `and` | left | short-circuited conjunction |
 | `or` | left | short-circuited disjunction |
 | `??` | right | null-coalescing |
@@ -446,8 +446,13 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
-| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"` or `"function"`. |
+| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, or the class name of an instance. |
+| `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string also works. |
+| `is_a(x, Class)` | `true` when `x` is an instance of `Class` or one of its subclasses. |
+| `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `clock()` | Monotonic clock seconds, for measuring. |
+| `time()` | Wall-clock seconds since the Unix epoch. |
+| `sleep(ms)` | Suspends the program for the given number of milliseconds. |
 | `assert(cond, message?)` | Runtime error if `cond` is falsey. |
 | `has(map, key)` | Whether the map contains the key. |
 | `del(map, key)` | Deletes the key and returns whether it existed. |
@@ -469,19 +474,28 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `upper(text)` / `lower(text)` | ASCII upper/lower case. |
 | `repeat(text, n)` | `text` repeated `n` times. |
 | `replace(text, old, new)` | Replaces every occurrence of `old`. |
+| `chr(code)` | One-character string for a Unicode codepoint. |
+| `ord(text)` | Unicode codepoint of the first character of a non-empty string. |
+| `pad_start(text, width, fill?)` / `pad_end(...)` | Pads to `width` characters (the fill defaults to a space). |
 | `clear(map)` | Empties the map; returns it. |
 | `merge(dest, src)` | Copies `src` entries into `dest` (src wins); returns `dest`. |
 | `get(map, key, default?)` | Value for `key`, or the default (or `nil`) when absent. |
 | `map(array, fn)` / `filter(array, fn)` | New array with `fn(x)` applied / kept when truthy. |
 | `reduce(array, fn, initial?)` | Left fold with `fn(acc, x)`; without `initial`, uses the first element. |
 | `each(array, fn)` | Calls `fn(x)` for every element; returns `nil`. |
+| `any(array, fn?)` / `all(array, fn?)` | Whether any/all elements are truthy, or satisfy `fn(x)`. |
+| `sum(array)` | Sum of the numeric elements; integer when every element is an integer. |
+| `enumerate(array)` | Array of `[index, value]` pairs. |
+| `zip(a, b)` | Array of `[a[i], b[i]]` pairs, up to the shorter array. |
 | `sort(array)` | Sorts numbers or strings in place; mixing types is an error. |
 | `sort_by(array, fn)` | Sorts in place with `fn(x, y)` returning whether `x` goes before `y`. |
 | `abs(x)` | Absolute value; an integer stays an integer. |
 | `floor(x)` / `ceil(x)` / `round(x)` | Rounding; an integer input is returned unchanged. |
 | `sqrt(x)` | Square root (error on negative input). |
 | `pow(x, y)` | `x` raised to `y`. |
-| `min(a, b)` / `max(a, b)` | Smaller/larger of two numbers; returns the chosen operand. |
+| `sin(x)` / `cos(x)` | Sine and cosine (radians). |
+| `log(x)` / `exp(x)` | Natural logarithm and exponential. |
+| `min(a, b, ...)` / `max(a, b, ...)` | Smallest/largest of the arguments, or of an array when given a single array. |
 | `exit(code?)` | Flushes stdout/stderr and terminates the program with the given exit code (default 0). |
 | `env(name?)` | Value of an environment variable as string or `nil`; without arguments, returns a map of all variables. |
 | `input(prompt?)` | Reads a line from standard input (without trailing newline); returns `nil` on EOF. |
@@ -495,6 +509,9 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `write(file, data)` | Writes string data to file handle; returns count of bytes written. |
 | `close(file)` | Closes file handle; using a closed handle is an error. |
 | `eof(file)` | Whether file handle has reached end of file. |
+| `list_dir(path)` | Array with the names of the entries in a directory. |
+| `mkdir(path)` | Creates a directory (succeeds when it already exists). |
+| `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
 | `rand()` | Float in `[0.0, 1.0)`. |
 | `randint(max)` / `randint(min, max)` | Random integer in `[min, max]` (inclusive). |
 | `srand(seed)` | Seeds the PRNG with an integer or float. |
@@ -514,6 +531,9 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`.
+
+The global constants `pi` and `nan` are predefined, and the REPL keeps the result of
+the last expression in `_`.
 
 The script arguments are accessible through the global array `argv`, where `argv[0]`
 is the script file path and subsequent elements are arguments passed on the command line
@@ -863,7 +883,7 @@ coroutine and channel methods can also be called with spread arguments
 With no arguments, `spark` opens a REPL. Every expression statement prints its value,
 global variables persist and errors do not close the session. The special variable `_`
 automatically holds the result of the last evaluated expression statement. Type
-`salir`, `exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
+`exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
 unclosed braces, so multi-line functions can be defined.
 
 ## 17. Precompiled bytecode (`.sparkc`)
