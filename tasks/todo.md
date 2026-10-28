@@ -115,11 +115,11 @@ write?, timeout_ms?)` snapshot the coroutine and return `INTERPRET_BLOCKED`, and
 picking the next coroutine, waking on readiness or deadline. Record the spike's
 outcome (poll vs epoll, wake path, timeout handling) in `docs/architecture.md`.
 **Acceptance criteria:**
-- [ ] One coroutine waiting on a socket lets another run and wakes as soon as the descriptor is ready.
-- [ ] A deadline wakes the waiter with a timeout error; an idle wait does not spin (CPU near zero).
-- [ ] The spike notes and the chosen data structures are recorded in `docs/architecture.md`.
+- [x] One coroutine waiting on a socket lets another run and wakes as soon as the descriptor is ready.
+- [x] A deadline wakes the waiter with a timeout error; an idle wait does not spin (CPU near zero).
+- [x] The spike notes and the chosen data structures are recorded in `docs/architecture.md`.
 **Verification:**
-- [ ] Fixture with two coroutines sharing a socket pair; benchmark gate; ASan/UBSan.
+- [x] Fixture with two coroutines sharing a socket pair; benchmark gate; ASan/UBSan.
 **Dependencies:** T83.
 **Files:** `src/vm.c`, `src/object.h`, `src/net.c`, `docs/architecture.md`, `tests/`.
 **Scope:** M.
@@ -129,10 +129,10 @@ outcome (poll vs epoll, wake path, timeout handling) in `docs/architecture.md`.
 array of sockets) plus a timeout queue so several deadlines coexist and the scheduler
 sleeps exactly until the next one.
 **Acceptance criteria:**
-- [ ] One coroutine services several sockets at once and reports which are ready.
-- [ ] Several concurrent deadlines fire within a bounded slack (no fixed sleep granularity).
+- [x] One coroutine services several sockets at once and reports which are ready.
+- [x] Several concurrent deadlines fire within a bounded slack (no fixed sleep granularity).
 **Verification:**
-- [ ] Fixture with three sockets and two distinct timeouts; suite; ASan/UBSan.
+- [x] Fixture with three sockets and two distinct timeouts; suite; ASan/UBSan.
 **Dependencies:** T87.
 **Files:** `src/net.c`, `src/vm.c`, `tests/`, `docs/language.md`, `docs/architecture.md`.
 **Scope:** M.
@@ -143,11 +143,11 @@ would-block operation suspends only its coroutine. Extend the existing `run_dept
 guard (currently used by `yield` and channel waits) to these waits with the documented
 message.
 **Acceptance criteria:**
-- [ ] A server coroutine handles two clients concurrently in a single process.
-- [ ] Calling a would-block operation inside a native callback or an imported module raises the documented error instead of stalling.
-- [ ] Timeouts and EOF keep the behavior shipped in Phase 15.
+- [x] A server coroutine handles two clients concurrently in a single process.
+- [x] Calling a would-block operation inside a native callback or an imported module raises the documented error instead of stalling.
+- [x] Timeouts and EOF keep the behavior shipped in Phase 15.
 **Verification:**
-- [ ] Fixture with a server and two clients; suite; sanitizers.
+- [x] Fixture with a server and two clients; suite; sanitizers.
 **Dependencies:** T87, T88.
 **Files:** `src/net.c`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -157,18 +157,18 @@ message.
 coroutine, asserting every connection completes, the descriptor count returns to the
 baseline and the run does not burn CPU while idle. Add an echo benchmark.
 **Acceptance criteria:**
-- [ ] 32 concurrent connections complete with a single server coroutine and no descriptor leak.
-- [ ] The benchmark runs `fib(27)` and the echo throughput; the `fib` minimum stays below 5 ms.
+- [x] 32 concurrent connections complete with a single server coroutine and no descriptor leak.
+- [x] The benchmark runs `fib(27)` and the echo throughput; the `fib` minimum stays below 5 ms.
 **Verification:**
-- [ ] Fixture; `python3 benchmarks/run.py`; ASan/UBSan.
+- [x] Fixture; `python3 benchmarks/run.py`; ASan/UBSan.
 **Dependencies:** T89.
 **Files:** `tests/`, `benchmarks/`, `benchmarks/run_all.py`.
 **Scope:** S.
 
 ## Checkpoint: Phase 16
-- [ ] N concurrent connections served by one process with no busy-wait
-- [ ] `fib(27)` minimum still below 5 ms; sanitizers clean
-- [ ] If the spike fails, record the fallback (blocking with timeouts) in the plan and stop here
+- [x] N concurrent connections served by one process with no busy-wait (32 clients, one server coroutine)
+- [x] `fib(27)` minimum below 5 ms (4.97 ms); sanitizers clean
+- [x] The spike succeeded: `poll(2)` chosen, wake path and data structures recorded in `docs/architecture.md`
 
 ---
 

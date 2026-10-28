@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "chunk.h"
+#include "error.h"
 #include "table.h"
 #include "value.h"
 
@@ -13,6 +14,8 @@ struct ObjInstance;
 struct ObjClosure;
 struct ObjCoroutine;
 struct ObjChannel;
+struct ObjSocket;
+struct ObjServer;
 
 struct ObjString {
     Obj obj;
@@ -119,8 +122,25 @@ typedef enum {
     CORO_WAIT_NONE,
     CORO_WAIT_SEND,
     CORO_WAIT_RECEIVE,
-    CORO_WAIT_JOIN
+    CORO_WAIT_JOIN,
+    CORO_WAIT_READ,
+    CORO_WAIT_WRITE
 } CoroutineWaitKind;
+
+/* Readiness a socket wait is interested in. */
+#define NET_EVENT_READ 1
+#define NET_EVENT_WRITE 2
+
+/* Pending network operation a blocked coroutine performs (or reports) when its
+ * descriptor becomes ready or its deadline expires. */
+typedef enum {
+    NET_OP_WAIT = 0, /* explicit sock.wait: result is `true` on readiness */
+    NET_OP_RECV,
+    NET_OP_RECV_LINE,
+    NET_OP_SEND,
+    NET_OP_ACCEPT,
+    NET_OP_SELECT
+} NetWaitOp;
 
 /* A cooperative green thread. While suspended it owns a private value stack
  * and a snapshot of its call frames; the VM swaps those in when it runs. The
@@ -157,9 +177,23 @@ typedef struct ObjCoroutine {
     struct ObjChannel *wait_channel;
     CoroutineWaitKind wait_kind;
     Value wait_value;
+    /* Network wait state (phase 16): the socket or server being awaited, the
+     * operation to retry on wake-up, the requested readiness bits and the
+     * absolute monotonic deadline in milliseconds (0 = wait forever). */
+    struct ObjSocket *wait_socket;
+    struct ObjServer *wait_server;
+    ObjArray *wait_sockets;
+    NetWaitOp wait_op;
+    int wait_events;
+    int wait_arg;
+    int64_t wait_timeout; /* configured timeout in ms, for the error message */
+    int64_t wait_deadline;
     bool has_resume_result;
     Value resume_result;
     const char *resume_error;
+    ErrorType resume_error_type;
+    /* Backing storage for a formatted wake-up error (for example a timeout). */
+    char resume_error_buffer[256];
     /* Bytecode position of the method call that blocked, used to report
      * errors (such as sending on a channel closed while waiting). */
     uint8_t *resume_ip;

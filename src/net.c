@@ -200,7 +200,7 @@ static const char *net_strip_brackets(const char *host, char *buffer, size_t siz
     return host;
 }
 
-static int64_t net_now_ms(void)
+int64_t net_now_ms(void)
 {
     struct timespec ts;
 
@@ -322,7 +322,6 @@ static int net_connect(const char *host, int64_t port, int64_t deadline, NetErro
 
         net_set_nonblocking(fd, true);
         if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
-            net_set_nonblocking(fd, false);
             break;
         }
         if (errno != EINPROGRESS && errno != EWOULDBLOCK && errno != EINTR) {
@@ -356,7 +355,6 @@ static int net_connect(const char *host, int64_t port, int64_t deadline, NetErro
             fd = -1;
             continue;
         }
-        net_set_nonblocking(fd, false);
         break;
     }
 
@@ -407,6 +405,7 @@ static int net_listen(const char *host, int64_t port, int backlog, NetError *err
             saved = errno;
             continue;
         }
+        net_set_nonblocking(fd, true);
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
         if (bind(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
@@ -471,6 +470,7 @@ static int net_udp_bind(const char *host, int64_t port, NetError *err)
             saved = errno;
             continue;
         }
+        net_set_nonblocking(fd, true);
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
         if (bind(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
@@ -489,39 +489,6 @@ static int net_udp_bind(const char *host, int64_t port, NetError *err)
         return -1;
     }
     return fd;
-}
-
-/* Writes the whole buffer, retrying short writes until the deadline. Returns 0
- * on success, -2 on timeout and -1 on error. `written` gets the bytes sent. */
-static int net_send_all(int fd, const char *data, int length, int64_t deadline, size_t *written)
-{
-    size_t total = 0;
-
-    while (total < (size_t)length) {
-        int ready = net_wait(fd, POLLOUT, deadline);
-
-        if (ready == 0) {
-            *written = total;
-            return -2;
-        }
-        if (ready < 0) {
-            *written = total;
-            return -1;
-        }
-
-        ssize_t sent = send(fd, data + total, (size_t)length - total, MSG_NOSIGNAL);
-
-        if (sent < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
-            }
-            *written = total;
-            return -1;
-        }
-        total += (size_t)sent;
-    }
-    *written = total;
-    return 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -683,12 +650,15 @@ static Value native_net_hostname(int arg_count, Value *args)
     return OBJ_VAL(object_string(name, (int)strlen(name)));
 }
 
+static Value native_net_select(int arg_count, Value *args);
+
 void net_init(void)
 {
     vm_define_native("tcp_connect", native_tcp_connect, -1);
     vm_define_native("tcp_listen", native_tcp_listen, -1);
     vm_define_native("udp_bind", native_udp_bind, -1);
     vm_define_native("net_hostname", native_net_hostname, 0);
+    vm_define_native("net_select", native_net_select, -1);
 }
 
 /* ------------------------------------------------------------------ */
@@ -732,203 +702,187 @@ static Value net_socket_close(ObjSocket *socket)
     return NIL_VAL;
 }
 
-static Value net_socket_send(ObjSocket *socket, Value data)
+/* Result of a non-blocking socket operation. */
+#define NET_DONE 0
+#define NET_AGAIN 1
+#define NET_FAILED (-1)
+
+/* Writes the payload from `offset`, continuing where a previous attempt stopped.
+ * On NET_AGAIN, `*progress` gets the bytes written so far. */
+static int net_do_send(ObjSocket *socket, ObjString *payload, size_t offset, size_t *progress,
+                       Value *out, NetError *err)
 {
-    if (!is_obj_type(data, OBJ_STRING)) {
-        vm_runtime_error(ERROR_TYPE, "'send' expects a string, received %s", net_value_type(data));
-        return NIL_VAL;
-    }
-    if (socket->kind != NET_TCP) {
-        vm_runtime_error(ERROR_NETWORK, "'send' requires a TCP socket; use 'send_to' for UDP");
-        return NIL_VAL;
-    }
+    size_t sent = offset;
 
-    ObjString *payload = AS_STRING(data);
-    size_t written = 0;
-    int status = net_send_all(socket->fd, payload->chars, payload->length,
-                              net_deadline(socket->timeout_ms), &written);
+    while (sent < (size_t)payload->length) {
+        ssize_t n = send(socket->fd, payload->chars + sent, (size_t)payload->length - sent,
+                         MSG_NOSIGNAL);
 
-    if (status == -2) {
-        vm_runtime_error(ERROR_TIMEOUT, "'send' timed out after %lld ms",
-                         (long long)socket->timeout_ms);
-        return NIL_VAL;
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            *progress = sent;
+            return NET_AGAIN;
+        }
+        net_fail_errno(err, errno, "send failed");
+        return NET_FAILED;
     }
-    if (status < 0) {
-        NetError err;
-
-        net_fail_errno(&err, errno, "send failed");
-        net_raise(&err);
-        return NIL_VAL;
-    }
-    return INT_VAL((int64_t)written);
+    *out = INT_VAL((int64_t)sent);
+    return NET_DONE;
 }
 
-static Value net_socket_recv(ObjSocket *socket, int64_t max_value)
+static int net_do_recv(ObjSocket *socket, int max, Value *out, NetError *err)
 {
-    int max;
     char *buffer;
-
-    if (max_value < 0 || max_value > NET_READ_MAX) {
-        vm_runtime_error(ERROR_VALUE, "'recv' size out of valid range (0..%d)", NET_READ_MAX);
-        return NIL_VAL;
-    }
-    max = (int)max_value;
-    if (max == 0) {
-        return OBJ_VAL(object_string("", 0));
-    }
-
-    buffer = malloc((size_t)max);
-
-    if (!buffer) {
-        vm_runtime_error(ERROR_MEMORY, "out of memory in 'recv'");
-        return NIL_VAL;
-    }
-
-    int total = 0;
 
     if (socket->rbuf_pos < socket->rbuf_len) {
         int available = socket->rbuf_len - socket->rbuf_pos;
         int take = available < max ? available : max;
 
+        buffer = malloc((size_t)take);
+        if (!buffer) {
+            net_fail(err, ERROR_MEMORY, "out of memory in 'recv'");
+            return NET_FAILED;
+        }
         memcpy(buffer, socket->rbuf + socket->rbuf_pos, (size_t)take);
         socket->rbuf_pos += take;
         if (socket->rbuf_pos >= socket->rbuf_len) {
             net_socket_reset_buffer(socket);
         }
-        total = take;
+        ObjString *buffered = object_string(buffer, take);
+
+        free(buffer);
+        *out = OBJ_VAL(buffered);
+        return NET_DONE;
     }
 
-    if (total == 0) {
-        int64_t deadline = net_deadline(socket->timeout_ms);
-        int ready = net_wait(socket->fd, POLLIN, deadline);
+    if (max == 0) {
+        *out = OBJ_VAL(object_string("", 0));
+        return NET_DONE;
+    }
 
-        if (ready == 0) {
-            free(buffer);
-            vm_runtime_error(ERROR_TIMEOUT, "'recv' timed out after %lld ms",
-                             (long long)socket->timeout_ms);
-            return NIL_VAL;
-        }
-        if (ready < 0) {
-            free(buffer);
-            NetError err;
+    buffer = malloc((size_t)max);
+    if (!buffer) {
+        net_fail(err, ERROR_MEMORY, "out of memory in 'recv'");
+        return NET_FAILED;
+    }
 
-            net_fail_errno(&err, errno, "recv failed");
-            net_raise(&err);
-            return NIL_VAL;
-        }
-
+    for (;;) {
         ssize_t received = recv(socket->fd, buffer, (size_t)max, 0);
 
-        if (received < 0) {
-            NetError err;
+        if (received > 0) {
+            ObjString *result = object_string(buffer, (int)received);
 
             free(buffer);
-            net_fail_errno(&err, errno, "recv failed");
-            net_raise(&err);
-            return NIL_VAL;
+            *out = OBJ_VAL(result);
+            return NET_DONE;
         }
         if (received == 0) {
             free(buffer);
-            return NIL_VAL; /* EOF */
+            *out = NIL_VAL; /* EOF */
+            return NET_DONE;
         }
-        total = (int)received;
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            free(buffer);
+            return NET_AGAIN;
+        }
+        net_fail_errno(err, errno, "recv failed");
+        free(buffer);
+        return NET_FAILED;
     }
-
-    ObjString *result = object_string(buffer, total);
-
-    free(buffer);
-    return OBJ_VAL(result);
 }
 
-static Value net_socket_recv_line(ObjSocket *socket, int max)
+/* Reads up to a newline, accumulating into the socket's read buffer so a
+ * would-block leaves the partial line intact for the next attempt. */
+static int net_do_recv_line(ObjSocket *socket, int max, Value *out, NetError *err)
 {
-    buf_t line;
-    int64_t deadline = net_deadline(socket->timeout_ms);
-
-    buf_init(&line);
-
     for (;;) {
-        if (socket->rbuf_pos < socket->rbuf_len) {
-            char *start = socket->rbuf + socket->rbuf_pos;
-            int available = socket->rbuf_len - socket->rbuf_pos;
-            char *newline = memchr(start, '\n', (size_t)available);
-            int take = newline ? (int)(newline - start) : available;
+        char *start = socket->rbuf + socket->rbuf_pos;
+        int available = socket->rbuf_len - socket->rbuf_pos;
+        char *newline = available > 0 ? memchr(start, '\n', (size_t)available) : NULL;
 
-            if (buf_append(&line, start, (size_t)take) != 0) {
-                buf_free(&line);
-                vm_runtime_error(ERROR_MEMORY, "out of memory in 'recv_line'");
-                return NIL_VAL;
+        if (newline) {
+            int length = (int)(newline - start);
+
+            if (length > 0 && start[length - 1] == '\r') {
+                length--;
             }
-            socket->rbuf_pos += take;
+            ObjString *result = object_string(start, length);
 
-            if (newline) {
-                socket->rbuf_pos++;
-                if (socket->rbuf_pos >= socket->rbuf_len) {
-                    net_socket_reset_buffer(socket);
-                }
-                int length = (int)line.len;
-
-                if (length > 0 && line.data[length - 1] == '\r') {
-                    length--;
-                }
-                ObjString *result = object_string(line.data ? line.data : "", length);
-
-                buf_free(&line);
-                return OBJ_VAL(result);
-            }
+            socket->rbuf_pos = (int)(newline - socket->rbuf) + 1;
             if (socket->rbuf_pos >= socket->rbuf_len) {
                 net_socket_reset_buffer(socket);
             }
-            if (line.len > (size_t)max) {
-                buf_free(&line);
-                vm_runtime_error(ERROR_VALUE, "'recv_line' exceeded the maximum of %d bytes", max);
-                return NIL_VAL;
+            *out = OBJ_VAL(result);
+            return NET_DONE;
+        }
+
+        if (available > max) {
+            net_fail(err, ERROR_VALUE, "'recv_line' exceeded the maximum of %d bytes", max);
+            return NET_FAILED;
+        }
+
+        if (socket->rbuf_len == socket->rbuf_cap) {
+            if (socket->rbuf_pos > 0) {
+                memmove(socket->rbuf, socket->rbuf + socket->rbuf_pos,
+                        (size_t)(socket->rbuf_len - socket->rbuf_pos));
+                socket->rbuf_len -= socket->rbuf_pos;
+                socket->rbuf_pos = 0;
             }
+            if (socket->rbuf_len == socket->rbuf_cap) {
+                if (socket->rbuf_cap > max) {
+                    net_fail(err, ERROR_VALUE, "'recv_line' exceeded the maximum of %d bytes", max);
+                    return NET_FAILED;
+                }
+                int capacity = socket->rbuf_cap * 2;
+                if (capacity > max + 1) {
+                    capacity = max + 1;
+                }
+                socket->rbuf = mem_realloc(socket->rbuf, (size_t)socket->rbuf_cap,
+                                           (size_t)capacity);
+                socket->rbuf_cap = capacity;
+            }
+        }
+
+        ssize_t received = recv(socket->fd, socket->rbuf + socket->rbuf_len,
+                                (size_t)(socket->rbuf_cap - socket->rbuf_len), 0);
+
+        if (received > 0) {
+            socket->rbuf_len += (int)received;
             continue;
         }
-
-        int ready = net_wait(socket->fd, POLLIN, deadline);
-
-        if (ready == 0) {
-            buf_free(&line);
-            vm_runtime_error(ERROR_TIMEOUT, "'recv_line' timed out after %lld ms",
-                             (long long)socket->timeout_ms);
-            return NIL_VAL;
-        }
-        if (ready < 0) {
-            buf_free(&line);
-            NetError err;
-
-            net_fail_errno(&err, errno, "recv failed");
-            net_raise(&err);
-            return NIL_VAL;
-        }
-
-        ssize_t received = recv(socket->fd, socket->rbuf, (size_t)socket->rbuf_cap, 0);
-
-        if (received < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;
-            }
-            NetError err;
-
-            buf_free(&line);
-            net_fail_errno(&err, errno, "recv failed");
-            net_raise(&err);
-            return NIL_VAL;
-        }
         if (received == 0) {
-            if (line.len == 0) {
-                buf_free(&line);
-                return NIL_VAL; /* EOF with nothing read */
+            if (available == 0) {
+                *out = NIL_VAL; /* EOF with nothing buffered */
+                return NET_DONE;
             }
-            ObjString *result = object_string(line.data ? line.data : "", (int)line.len);
+            int length = available;
 
-            buf_free(&line);
-            return OBJ_VAL(result);
+            if (length > 0 && start[length - 1] == '\r') {
+                length--;
+            }
+            ObjString *result = object_string(start, length);
+
+            net_socket_reset_buffer(socket);
+            *out = OBJ_VAL(result);
+            return NET_DONE;
         }
-        socket->rbuf_len = (int)received;
-        socket->rbuf_pos = 0;
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return NET_AGAIN;
+        }
+        net_fail_errno(err, errno, "recv failed");
+        return NET_FAILED;
     }
 }
 
@@ -1122,37 +1076,24 @@ static Value net_socket_address(ObjSocket *socket, bool peer)
 /* Server methods                                                      */
 /* ------------------------------------------------------------------ */
 
-static Value net_server_accept(ObjServer *server, int64_t timeout)
+static int net_do_accept(ObjServer *server, int64_t timeout, Value *out, NetError *err)
 {
-    int64_t deadline = net_deadline(timeout);
-
     for (;;) {
-        int ready = net_wait(server->fd, POLLIN, deadline);
-
-        if (ready == 0) {
-            return NIL_VAL; /* timed out: not an error for accept */
-        }
-        if (ready < 0) {
-            NetError err;
-
-            net_fail_errno(&err, errno, "accept failed");
-            net_raise(&err);
-            return NIL_VAL;
-        }
-
         int fd = accept(server->fd, NULL, NULL);
 
         if (fd >= 0) {
-            return OBJ_VAL(object_socket(fd, NET_TCP, timeout));
+            net_set_nonblocking(fd, true);
+            *out = OBJ_VAL(object_socket(fd, NET_TCP, timeout));
+            return NET_DONE;
         }
-        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK || errno == ECONNABORTED) {
+        if (errno == EINTR || errno == ECONNABORTED) {
             continue;
         }
-        NetError err;
-
-        net_fail_errno(&err, errno, "accept failed");
-        net_raise(&err);
-        return NIL_VAL;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return NET_AGAIN;
+        }
+        net_fail_errno(err, errno, "accept failed");
+        return NET_FAILED;
     }
 }
 
@@ -1190,12 +1131,470 @@ static Value net_server_close(ObjServer *server)
 }
 
 /* ------------------------------------------------------------------ */
+/* Coroutine waits                                                     */
+/* ------------------------------------------------------------------ */
+
+static const char *net_op_name(NetWaitOp op)
+{
+    switch (op) {
+    case NET_OP_WAIT: return "wait";
+    case NET_OP_RECV: return "recv";
+    case NET_OP_RECV_LINE: return "recv_line";
+    case NET_OP_SEND: return "send";
+    case NET_OP_ACCEPT: return "accept";
+    case NET_OP_SELECT: return "net_select";
+    }
+    return "operation";
+}
+
+static ObjCoroutine *net_waiters_head = NULL;
+static ObjCoroutine *net_waiters_tail = NULL;
+
+static void net_waiter_push(ObjCoroutine *coroutine)
+{
+    coroutine->wait_next = NULL;
+    if (net_waiters_tail) {
+        net_waiters_tail->wait_next = coroutine;
+    } else {
+        net_waiters_head = coroutine;
+    }
+    net_waiters_tail = coroutine;
+}
+
+bool net_has_waiters(void)
+{
+    return net_waiters_head != NULL;
+}
+
+void net_mark_waiters(void)
+{
+    for (ObjCoroutine *waiter = net_waiters_head; waiter; waiter = waiter->wait_next) {
+        vm_mark_object((Obj *)waiter);
+    }
+}
+
+/* Suspends the current coroutine until a descriptor is ready or `timeout_ms`
+ * (0 = forever) passes. */
+static int net_wait_begin(ObjCoroutine *self, NetWaitOp op, ObjSocket *socket, ObjServer *server,
+                          int events, int64_t timeout_ms, int arg, Value value)
+{
+    self->wait_kind = (events & NET_EVENT_WRITE) ? CORO_WAIT_WRITE : CORO_WAIT_READ;
+    self->wait_op = op;
+    self->wait_socket = socket;
+    self->wait_server = server;
+    self->wait_sockets = NULL;
+    self->wait_events = events;
+    self->wait_timeout = timeout_ms;
+    self->wait_deadline = timeout_ms > 0 ? net_now_ms() + timeout_ms : 0;
+    self->wait_arg = arg;
+    self->wait_value = value;
+    self->status = CORO_BLOCKED;
+    net_waiter_push(self);
+    return 1;
+}
+
+/* Registers a wait, or raises the documented error when the operation runs
+ * inside a native callback or an imported module and must not block. */
+static int net_block(ObjCoroutine *self, const char *operation, NetWaitOp op, ObjSocket *socket,
+                     ObjServer *server, int events, int64_t timeout_ms, int arg, Value value,
+                     Value *out)
+{
+    if (vm_run_depth() > 1) {
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a %s that would block cannot run inside a callback or a module",
+                         operation);
+        return -1;
+    }
+    *out = NIL_VAL;
+    return net_wait_begin(self, op, socket, server, events, timeout_ms, arg, value);
+}
+
+static void net_deferred_error(ObjCoroutine *waiter, ErrorType type, const char *message)
+{
+    snprintf(waiter->resume_error_buffer, sizeof(waiter->resume_error_buffer), "%s", message);
+    vm_wake_coroutine(waiter, NIL_VAL, waiter->resume_error_buffer);
+    waiter->resume_error_type = type;
+}
+
+static void net_timeout_wake(ObjCoroutine *waiter)
+{
+    if (waiter->wait_op == NET_OP_ACCEPT) {
+        vm_wake_coroutine(waiter, NIL_VAL, NULL); /* accept returns nil on timeout */
+        return;
+    }
+    if (waiter->wait_op == NET_OP_SELECT) {
+        mem_pause_gc();
+        ObjArray *empty = object_array();
+        mem_resume_gc();
+        vm_wake_coroutine(waiter, OBJ_VAL(empty), NULL);
+        return;
+    }
+    snprintf(waiter->resume_error_buffer, sizeof(waiter->resume_error_buffer),
+             "'%s' timed out after %lld ms", net_op_name(waiter->wait_op),
+             (long long)waiter->wait_timeout);
+    vm_wake_coroutine(waiter, NIL_VAL, waiter->resume_error_buffer);
+    waiter->resume_error_type = ERROR_TIMEOUT;
+}
+
+/* Performs (or reports) a waiter whose descriptor is ready or whose deadline
+ * passed. Returns true when the coroutine was woken. */
+static bool net_complete_waiter(ObjCoroutine *waiter, struct pollfd *fds, int base, bool candidate,
+                                bool expired, bool poll_failed)
+{
+    Value result = NIL_VAL;
+    NetError err;
+
+    if (poll_failed) {
+        net_deferred_error(waiter, ERROR_NETWORK, "network poll failed");
+        return true;
+    }
+
+    switch (waiter->wait_op) {
+    case NET_OP_WAIT:
+        if (candidate) {
+            vm_wake_coroutine(waiter, BOOL_VAL(true), NULL);
+            return true;
+        }
+        break;
+    case NET_OP_RECV:
+        if (candidate) {
+            int status = net_do_recv(waiter->wait_socket, waiter->wait_arg, &result, &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            return false;
+        }
+        break;
+    case NET_OP_RECV_LINE:
+        if (candidate) {
+            int status = net_do_recv_line(waiter->wait_socket, waiter->wait_arg, &result, &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            return false;
+        }
+        break;
+    case NET_OP_SEND:
+        if (candidate) {
+            ObjString *payload = AS_STRING(waiter->wait_value);
+            size_t progress = (size_t)waiter->wait_arg;
+            int status = net_do_send(waiter->wait_socket, payload, progress, &progress, &result,
+                                     &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            waiter->wait_arg = (int)progress;
+            return false;
+        }
+        break;
+    case NET_OP_ACCEPT:
+        if (candidate) {
+            int status = net_do_accept(waiter->wait_server, waiter->wait_arg, &result, &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            return false;
+        }
+        break;
+    case NET_OP_SELECT:
+        if (candidate) {
+            ObjArray *sockets = waiter->wait_sockets;
+
+            for (int i = 0; i < sockets->count; i++) {
+                if (AS_SOCKET(sockets->items[i])->is_closed) {
+                    net_deferred_error(waiter, ERROR_RUNTIME, "cannot select a closed socket");
+                    return true;
+                }
+            }
+
+            mem_pause_gc();
+            ObjArray *ready = object_array();
+            for (int i = 0; i < sockets->count; i++) {
+                if (fds[base + i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
+                    array_push(ready, INT_VAL(i));
+                }
+            }
+            mem_resume_gc();
+            vm_wake_coroutine(waiter, OBJ_VAL(ready), NULL);
+            return true;
+        }
+        break;
+    }
+
+    if (expired) {
+        net_timeout_wake(waiter);
+        return true;
+    }
+    return false;
+}
+
+void net_scheduler_poll(bool may_block)
+{
+    if (!net_waiters_head) {
+        return;
+    }
+
+    int count = 0;
+    for (ObjCoroutine *waiter = net_waiters_head; waiter; waiter = waiter->wait_next) {
+        count += waiter->wait_op == NET_OP_SELECT ? waiter->wait_sockets->count : 1;
+    }
+
+    struct pollfd *fds = count > 0 ? malloc(sizeof(struct pollfd) * (size_t)count) : NULL;
+
+    if (count > 0 && !fds) {
+        return; /* allocation failed: leave the waiters for the next round */
+    }
+
+    int index = 0;
+    for (ObjCoroutine *waiter = net_waiters_head; waiter; waiter = waiter->wait_next) {
+        if (waiter->wait_op == NET_OP_SELECT) {
+            ObjArray *sockets = waiter->wait_sockets;
+
+            for (int i = 0; i < sockets->count; i++) {
+                ObjSocket *socket = AS_SOCKET(sockets->items[i]);
+
+                fds[index].fd = socket->is_closed ? -1 : socket->fd;
+                fds[index].events = POLLIN;
+                fds[index].revents = 0;
+                index++;
+            }
+        } else {
+            int fd = waiter->wait_socket ? waiter->wait_socket->fd
+                                         : (waiter->wait_server ? waiter->wait_server->fd : -1);
+            short events = 0;
+
+            if (waiter->wait_events & NET_EVENT_READ) {
+                events |= POLLIN;
+            }
+            if (waiter->wait_events & NET_EVENT_WRITE) {
+                events |= POLLOUT;
+            }
+            fds[index].fd = fd;
+            fds[index].events = events;
+            fds[index].revents = 0;
+            index++;
+        }
+    }
+
+    int timeout = 0;
+    if (may_block) {
+        int64_t now = net_now_ms();
+
+        timeout = -1;
+        for (ObjCoroutine *waiter = net_waiters_head; waiter; waiter = waiter->wait_next) {
+            if (waiter->wait_deadline == 0) {
+                continue;
+            }
+            int64_t remaining = waiter->wait_deadline - now;
+            int ms = remaining <= 0 ? 0 : (remaining > INT32_MAX ? INT32_MAX : (int)remaining);
+
+            if (timeout < 0 || ms < timeout) {
+                timeout = ms;
+            }
+        }
+    }
+
+    int ready = -1;
+    bool poll_failed = false;
+
+    if (count > 0) {
+        do {
+            ready = poll(fds, (nfds_t)count, timeout);
+        } while (ready < 0 && errno == EINTR);
+        poll_failed = ready < 0;
+    }
+
+    int64_t now = net_now_ms();
+    ObjCoroutine *keep_head = NULL;
+    ObjCoroutine *keep_tail = NULL;
+
+    index = 0;
+    for (ObjCoroutine *waiter = net_waiters_head; waiter;) {
+        ObjCoroutine *next = waiter->wait_next;
+        int base = index;
+        bool candidate = false;
+        bool expired = waiter->wait_deadline != 0 && now >= waiter->wait_deadline;
+
+        if (waiter->wait_op == NET_OP_SELECT) {
+            ObjArray *sockets = waiter->wait_sockets;
+
+            for (int i = 0; i < sockets->count; i++) {
+                short revents = fds ? fds[index + i].revents : 0;
+
+                if (revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL) ||
+                    AS_SOCKET(sockets->items[i])->is_closed) {
+                    candidate = true;
+                }
+            }
+            index += sockets->count;
+        } else {
+            short revents = fds ? fds[index].revents : 0;
+
+            if (revents & (POLLIN | POLLOUT | POLLERR | POLLHUP | POLLNVAL)) {
+                candidate = true;
+            }
+            if ((waiter->wait_socket && waiter->wait_socket->is_closed) ||
+                (waiter->wait_server && waiter->wait_server->is_closed)) {
+                candidate = true;
+            }
+            index++;
+        }
+
+        bool completed = false;
+
+        if (poll_failed || candidate || expired) {
+            completed = net_complete_waiter(waiter, fds, base, candidate, expired, poll_failed);
+        }
+        if (!completed) {
+            waiter->wait_next = NULL;
+            if (keep_tail) {
+                keep_tail->wait_next = waiter;
+            } else {
+                keep_head = waiter;
+            }
+            keep_tail = waiter;
+        }
+        waiter = next;
+    }
+
+    free(fds);
+    net_waiters_head = keep_head;
+    net_waiters_tail = keep_tail;
+}
+
+static Value net_ready_indexes(ObjArray *sockets, struct pollfd *fds, int base)
+{
+    mem_pause_gc();
+    ObjArray *ready = object_array();
+
+    for (int i = 0; i < sockets->count; i++) {
+        if (fds[base + i].revents & (POLLIN | POLLERR | POLLHUP | POLLNVAL)) {
+            array_push(ready, INT_VAL(i));
+        }
+    }
+    mem_resume_gc();
+    return OBJ_VAL(ready);
+}
+
+static Value native_net_select(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'net_select' expects 1 or 2 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'net_select' expects an array of sockets, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjArray *sockets = AS_ARRAY(args[0]);
+    int64_t timeout = 0;
+
+    if (!net_optional_timeout(arg_count > 1 ? args[1] : NIL_VAL, arg_count, 1, "net_select",
+                              &timeout)) {
+        return NIL_VAL;
+    }
+    for (int i = 0; i < sockets->count; i++) {
+        if (!is_obj_type(sockets->items[i], OBJ_SOCKET)) {
+            vm_runtime_error(ERROR_TYPE, "'net_select' expects sockets, received %s",
+                             net_value_type(sockets->items[i]));
+            return NIL_VAL;
+        }
+        if (AS_SOCKET(sockets->items[i])->is_closed) {
+            vm_runtime_error(ERROR_RUNTIME, "cannot select a closed socket");
+            return NIL_VAL;
+        }
+    }
+
+    if (sockets->count == 0) {
+        return OBJ_VAL(object_array());
+    }
+
+    int count = sockets->count;
+    struct pollfd *fds;
+
+    if (count <= 0) {
+        return OBJ_VAL(object_array());
+    }
+    fds = malloc(sizeof(struct pollfd) * (size_t)count);
+
+    if (!fds) {
+        vm_runtime_error(ERROR_MEMORY, "out of memory in 'net_select'");
+        return NIL_VAL;
+    }
+    for (int i = 0; i < count; i++) {
+        fds[i].fd = AS_SOCKET(sockets->items[i])->fd;
+        fds[i].events = POLLIN;
+        fds[i].revents = 0;
+    }
+    int ready = poll(fds, (nfds_t)count, 0);
+
+    if (ready > 0) {
+        Value indexes = net_ready_indexes(sockets, fds, 0);
+
+        free(fds);
+        return indexes;
+    }
+    free(fds);
+
+    if (vm_run_depth() > 1) {
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a net_select that would block cannot run inside a callback or a module");
+        return NIL_VAL;
+    }
+
+    ObjCoroutine *self = vm_current_coroutine();
+
+    self->wait_kind = CORO_WAIT_READ;
+    self->wait_op = NET_OP_SELECT;
+    self->wait_socket = NULL;
+    self->wait_server = NULL;
+    self->wait_sockets = sockets;
+    self->wait_events = NET_EVENT_READ;
+    self->wait_timeout = timeout;
+    self->wait_deadline = timeout > 0 ? net_now_ms() + timeout : 0;
+    self->wait_arg = 0;
+    self->wait_value = NIL_VAL;
+    self->status = CORO_BLOCKED;
+    net_waiter_push(self);
+    vm_block_native();
+    return NIL_VAL;
+}
+
+/* ------------------------------------------------------------------ */
 /* Method dispatch                                                     */
 /* ------------------------------------------------------------------ */
 
-bool net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value *args, Value *out)
+int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value *args, Value *out)
 {
     const char *name = method->chars;
+    ObjCoroutine *self = vm_current_coroutine();
+    NetError err;
 
     if (is_obj_type(receiver, OBJ_SOCKET)) {
         ObjSocket *socket = AS_SOCKET(receiver);
@@ -1203,86 +1602,170 @@ bool net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value
         if (strcmp(name, "close") == 0) {
             if (arg_count != 0) {
                 vm_runtime_error(ERROR_ARITY, "'close' expects no arguments, received %d", arg_count);
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
             *out = net_socket_close(socket);
-            return true;
+            return 0;
+        }
+        if (strcmp(name, "wait") == 0 && arg_count <= 3) {
+            bool read = false;
+            bool write = false;
+            int64_t timeout = 0;
+
+            if (!net_socket_open(socket)) {
+                return -1;
+            }
+            if (arg_count >= 1 && !is_nil(args[0])) {
+                if (!is_bool(args[0])) {
+                    vm_runtime_error(ERROR_TYPE, "'wait' read must be a bool, received %s",
+                                     net_value_type(args[0]));
+                    return -1;
+                }
+                read = AS_BOOL(args[0]);
+            }
+            if (arg_count >= 2 && !is_nil(args[1])) {
+                if (!is_bool(args[1])) {
+                    vm_runtime_error(ERROR_TYPE, "'wait' write must be a bool, received %s",
+                                     net_value_type(args[1]));
+                    return -1;
+                }
+                write = AS_BOOL(args[1]);
+            }
+            if (!net_optional_timeout(arg_count > 2 ? args[2] : NIL_VAL, arg_count, 2, "wait",
+                                      &timeout)) {
+                return -1;
+            }
+            if (!read && !write) {
+                vm_runtime_error(ERROR_VALUE, "'wait' needs read and/or write to be true");
+                return -1;
+            }
+
+            short events = (short)((read ? POLLIN : 0) | (write ? POLLOUT : 0));
+            struct pollfd descriptor = { socket->fd, events, 0 };
+            int ready = poll(&descriptor, 1, 0);
+
+            if (ready > 0 && (descriptor.revents & (events | POLLERR | POLLHUP | POLLNVAL))) {
+                *out = BOOL_VAL(true);
+                return 0;
+            }
+            return net_block(self, "wait", NET_OP_WAIT, socket, NULL,
+                             (read ? NET_EVENT_READ : 0) | (write ? NET_EVENT_WRITE : 0),
+                             timeout, 0, NIL_VAL, out);
         }
         if (strcmp(name, "send") == 0 && arg_count == 1) {
-            if (net_socket_open(socket)) {
-                *out = net_socket_send(socket, args[0]);
-            } else {
-                *out = NIL_VAL;
+            if (!net_socket_open(socket)) {
+                return -1;
             }
-            return true;
+            if (!is_obj_type(args[0], OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'send' expects a string, received %s",
+                                 net_value_type(args[0]));
+                return -1;
+            }
+            if (socket->kind != NET_TCP) {
+                vm_runtime_error(ERROR_NETWORK, "'send' requires a TCP socket; use 'send_to' for UDP");
+                return -1;
+            }
+            ObjString *payload = AS_STRING(args[0]);
+
+            if (payload->length > INT32_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'send' payload is too large");
+                return -1;
+            }
+
+            size_t progress = 0;
+            int status = net_do_send(socket, payload, 0, &progress, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "send", NET_OP_SEND, socket, NULL, NET_EVENT_WRITE,
+                             socket->timeout_ms, (int)progress, args[0], out);
         }
         if (strcmp(name, "recv") == 0 && arg_count == 1) {
             int64_t max = 0;
 
             if (!net_int_argument(args[0], "recv", "size", &max)) {
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
-            if (net_socket_open(socket)) {
-                *out = net_socket_recv(socket, max);
-            } else {
-                *out = NIL_VAL;
+            if (max < 0 || max > NET_READ_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'recv' size out of valid range (0..%d)", NET_READ_MAX);
+                return -1;
             }
-            return true;
+            if (!net_socket_open(socket)) {
+                return -1;
+            }
+
+            int status = net_do_recv(socket, (int)max, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "recv", NET_OP_RECV, socket, NULL, NET_EVENT_READ,
+                             socket->timeout_ms, (int)max, NIL_VAL, out);
         }
         if (strcmp(name, "recv_line") == 0 && (arg_count == 0 || arg_count == 1)) {
             int64_t max = NET_LINE_DEFAULT_MAX;
 
             if (arg_count == 1 && !is_nil(args[0]) &&
                 !net_int_argument(args[0], "recv_line", "size", &max)) {
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
             if (max <= 0 || max > NET_READ_MAX) {
                 vm_runtime_error(ERROR_VALUE, "'recv_line' size out of valid range (1..%d)",
                                  NET_READ_MAX);
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
-            if (net_socket_open(socket)) {
-                *out = net_socket_recv_line(socket, (int)max);
-            } else {
-                *out = NIL_VAL;
+            if (!net_socket_open(socket)) {
+                return -1;
             }
-            return true;
+
+            int status = net_do_recv_line(socket, (int)max, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "recv_line", NET_OP_RECV_LINE, socket, NULL, NET_EVENT_READ,
+                             socket->timeout_ms, (int)max, NIL_VAL, out);
         }
         if (strcmp(name, "send_to") == 0 && arg_count == 3) {
-            if (net_socket_open(socket)) {
-                *out = net_socket_send_to(socket, args[0], args[1], args[2]);
-            } else {
-                *out = NIL_VAL;
+            if (!net_socket_open(socket)) {
+                return -1;
             }
-            return true;
+            *out = net_socket_send_to(socket, args[0], args[1], args[2]);
+            return vm_had_error() ? -1 : 0;
         }
         if (strcmp(name, "recv_from") == 0 && arg_count == 1) {
             int64_t max = 0;
 
             if (!net_int_argument(args[0], "recv_from", "size", &max)) {
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
-            if (net_socket_open(socket)) {
-                *out = net_socket_recv_from(socket, max);
-            } else {
-                *out = NIL_VAL;
+            if (!net_socket_open(socket)) {
+                return -1;
             }
-            return true;
+            *out = net_socket_recv_from(socket, max);
+            return vm_had_error() ? -1 : 0;
         }
         if ((strcmp(name, "peer") == 0 || strcmp(name, "local") == 0) && arg_count == 0) {
-            if (net_socket_open(socket)) {
-                *out = net_socket_address(socket, strcmp(name, "peer") == 0);
-            } else {
-                *out = NIL_VAL;
+            if (!net_socket_open(socket)) {
+                return -1;
             }
-            return true;
+            *out = net_socket_address(socket, strcmp(name, "peer") == 0);
+            return 0;
         }
-        return false;
+        return SPARK_NET_UNHANDLED;
     }
 
     if (is_obj_type(receiver, OBJ_SERVER)) {
@@ -1291,37 +1774,43 @@ bool net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value
         if (strcmp(name, "close") == 0) {
             if (arg_count != 0) {
                 vm_runtime_error(ERROR_ARITY, "'close' expects no arguments, received %d", arg_count);
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
             *out = net_server_close(server);
-            return true;
+            return 0;
         }
         if (strcmp(name, "accept") == 0 && (arg_count == 0 || arg_count == 1)) {
             int64_t timeout = 0;
 
             if (!net_optional_timeout(arg_count > 0 ? args[0] : NIL_VAL, arg_count, 0, "accept",
                                       &timeout)) {
-                *out = NIL_VAL;
-                return true;
+                return -1;
             }
-            if (net_server_open(server)) {
-                *out = net_server_accept(server, timeout);
-            } else {
-                *out = NIL_VAL;
+            if (!net_server_open(server)) {
+                return -1;
             }
-            return true;
+
+            int status = net_do_accept(server, timeout, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "accept", NET_OP_ACCEPT, NULL, server, NET_EVENT_READ, timeout,
+                             (int)timeout, NIL_VAL, out);
         }
         if (strcmp(name, "port") == 0 && arg_count == 0) {
-            if (net_server_open(server)) {
-                *out = net_server_port(server);
-            } else {
-                *out = NIL_VAL;
+            if (!net_server_open(server)) {
+                return -1;
             }
-            return true;
+            *out = net_server_port(server);
+            return 0;
         }
-        return false;
+        return SPARK_NET_UNHANDLED;
     }
 
-    return false;
+    return SPARK_NET_UNHANDLED;
 }

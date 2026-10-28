@@ -1,0 +1,9 @@
+wait ready: true
+line: hi
+wait timeout: TimeoutError
+select: [0]
+line2: yo
+guard: RuntimeError a recv that would block cannot run inside a callback or a module
+echo handled: 2
+echo replies: alpha+ok beta+ok
+async ok

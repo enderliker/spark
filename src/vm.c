@@ -106,10 +106,14 @@ typedef struct {
     ObjCoroutine *run_queue_tail;
     int run_depth;
     Value last_result;
+    /* Set by a blocking global native (net_select) that registered a network
+     * wait; OP_CALL turns it into INTERPRET_BLOCKED. */
+    bool native_blocked;
     /* Deferred error raised while a coroutine was blocked (for example a
      * sender woken because its channel closed). run_loop turns it into a
      * normal runtime error at the blocking call site. */
     const char *pending_error_message;
+    ErrorType pending_error_type;
     uint8_t *pending_error_ip;
 } VM;
 
@@ -511,6 +515,9 @@ static void blacken(Obj *object)
         mark_value(coroutine->result);
         mark_object((Obj *)coroutine->wait_channel);
         mark_object((Obj *)coroutine->wait_target);
+        mark_object((Obj *)coroutine->wait_socket);
+        mark_object((Obj *)coroutine->wait_server);
+        mark_object((Obj *)coroutine->wait_sockets);
         for (ObjCoroutine *joiner = coroutine->joiners; joiner;
              joiner = joiner->wait_next) {
             mark_object((Obj *)joiner);
@@ -589,6 +596,7 @@ static void mark_roots(void)
     for (ObjCoroutine *queued = vm.run_queue_head; queued; queued = queued->queue_next) {
         mark_object((Obj *)queued);
     }
+    net_mark_waiters();
 }
 
 static void sweep(void)
@@ -3594,8 +3602,6 @@ static bool dispatch_native_method(Value receiver, ObjString *method, int arg_co
             *out = native_merge(2, a);
             return true;
         }
-    } else if (is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER)) {
-        return net_dispatch_method(receiver, method, arg_count, args, out);
     }
     return false;
 }
@@ -3642,6 +3648,27 @@ bool vm_global_is_const(ObjString *name)
         int slot = (int)AS_NUMBER(existing);
 
         return slot >= 0 && slot < vm.global_count && vm.global_slots[slot].is_const;
+    }
+    return false;
+}
+
+/* True when `name` is a global bound to a native function. The compiler uses
+ * this to avoid tail-calling a native that may suspend the coroutine. */
+bool vm_name_is_native(const char *chars, int length)
+{
+    ObjString *name;
+    Value existing;
+
+    if (!vm_ready) {
+        return false;
+    }
+    name = object_string(chars, length);
+    if (vm.global_names.count > 0 && table_get(&vm.global_names, name, &existing)) {
+        int slot = (int)AS_NUMBER(existing);
+
+        if (slot >= 0 && slot < vm.global_count && vm.global_slots[slot].defined) {
+            return is_obj_type(vm.global_slots[slot].value, OBJ_NATIVE);
+        }
     }
     return false;
 }
@@ -3953,11 +3980,15 @@ static bool call_value(Value callee, int arg_count)
             /* Capture the base before the call so the native can use the stack
              * freely (including nested calls); we restore it afterwards. */
             Value *native_base = vm.stack_top - arg_count - 1;
+            vm.native_blocked = false;
             Value result = native->function(arg_count, native_base + 1);
 
             vm.stack_top = native_base;
             if (vm.has_exception) {
                 return false;
+            }
+            if (vm.native_blocked) {
+                return true; /* the caller turns this into INTERPRET_BLOCKED */
             }
             push(result);
             return true;
@@ -4568,10 +4599,46 @@ static void coroutine_wake(ObjCoroutine *coroutine, Value result, const char *er
     coroutine->wait_target = NULL;
     coroutine->wait_next = NULL;
     coroutine->wait_value = NIL_VAL;
+    coroutine->wait_socket = NULL;
+    coroutine->wait_server = NULL;
+    coroutine->wait_sockets = NULL;
+    coroutine->wait_events = 0;
+    coroutine->wait_deadline = 0;
     coroutine->has_resume_result = true;
     coroutine->resume_result = result;
     coroutine->resume_error = error;
+    coroutine->resume_error_type = ERROR_RUNTIME;
     coroutine_enqueue(coroutine);
+}
+
+void vm_wake_coroutine(ObjCoroutine *coroutine, Value result, const char *error)
+{
+    coroutine_wake(coroutine, result, error);
+}
+
+void vm_mark_object(Obj *object)
+{
+    mark_object(object);
+}
+
+ObjCoroutine *vm_current_coroutine(void)
+{
+    return vm.current;
+}
+
+int vm_run_depth(void)
+{
+    return vm.run_depth;
+}
+
+bool vm_had_error(void)
+{
+    return vm.had_error || vm.has_exception;
+}
+
+void vm_block_native(void)
+{
+    vm.native_blocked = true;
 }
 
 static void coroutine_finish(ObjCoroutine *coroutine, Value result)
@@ -4909,6 +4976,7 @@ static void coroutine_apply_resume(ObjCoroutine *coroutine)
     }
     if (coroutine->resume_error) {
         vm.pending_error_message = coroutine->resume_error;
+        vm.pending_error_type = coroutine->resume_error_type;
         vm.pending_error_ip = coroutine->resume_ip;
         coroutine->resume_error = NULL;
         coroutine->has_resume_result = false;
@@ -4949,9 +5017,22 @@ static InterpretResult vm_scheduler(void)
 
         ObjCoroutine *next = coroutine_dequeue();
 
-        if (!next) {
-            vm_runtime_error(ERROR_RUNTIME, "deadlock: every coroutine is blocked");
-            return INTERPRET_RUNTIME_ERROR;
+        /* Give ready descriptors a chance to wake their coroutine even while
+         * other coroutines are runnable, so a ready socket is not starved. */
+        if (net_has_waiters()) {
+            net_scheduler_poll(false);
+            if (!next) {
+                next = coroutine_dequeue();
+            }
+        }
+
+        while (!next) {
+            if (!net_has_waiters()) {
+                vm_runtime_error(ERROR_RUNTIME, "deadlock: every coroutine is blocked");
+                return INTERPRET_RUNTIME_ERROR;
+            }
+            net_scheduler_poll(true);
+            next = coroutine_dequeue();
         }
         coroutine_load_state(next);
         coroutine_apply_resume(next);
@@ -5096,7 +5177,7 @@ static InterpretResult run_loop(int base_frame)
         vm.pending_error_message = NULL;
         vm.pending_error_ip = NULL;
         frame->ip = error_ip + 1;
-        vm_runtime_error(ERROR_RUNTIME, "%s", message);
+        vm_runtime_error(vm.pending_error_type, "%s", message);
         if (vm.has_exception) {
             goto do_throw;
         }
@@ -5673,12 +5754,19 @@ static InterpretResult run_loop(int base_frame)
                     }
                 } else if (obj->type == OBJ_NATIVE) {
                     ObjNative *native = (ObjNative *)obj;
-                    if (native->arity >= 0 && arg_count == native->arity) {
+                    if (native->arity < 0 || arg_count == native->arity) {
                         frame->ip = ip + 2;
                         vm.frame_count = (int)(frame - vm.frames) + 1;
                         Value *native_base = sp - arg_count - 1;
                         vm.stack_top = sp;
+                        vm.native_blocked = false;
                         Value result = native->function(arg_count, native_base + 1);
+                        if (__builtin_expect(vm.native_blocked, 0)) {
+                            vm.native_blocked = false;
+                            vm.current->resume_ip = ip;
+                            vm.stack_top = native_base;
+                            return INTERPRET_BLOCKED;
+                        }
                         if (__builtin_expect(!vm.had_error && !vm.has_exception, 1)) {
                             *native_base = result;
                             sp = native_base + 1;
@@ -7059,6 +7147,7 @@ cold_dispatch:
 
         case OP_CALL: {
             int arg_count = READ_BYTE();
+            uint8_t *instruction_start = frame->ip - 2;
 
             if (!call_value(peek(arg_count), arg_count)) {
                 if (vm.has_exception) {
@@ -7068,6 +7157,11 @@ cold_dispatch:
                     goto do_throw;
                 }
                 goto handle_runtime_error;
+            }
+            if (__builtin_expect(vm.native_blocked, 0)) {
+                vm.native_blocked = false;
+                vm.current->resume_ip = instruction_start;
+                return INTERPRET_BLOCKED;
             }
             if (vm.has_exception) {
                 vm.had_error = false;
@@ -7689,14 +7783,27 @@ cold_dispatch:
             Value receiver = peek(arg_count);
 
             if (is_obj_type(receiver, OBJ_CHANNEL) ||
-                is_obj_type(receiver, OBJ_COROUTINE)) {
+                is_obj_type(receiver, OBJ_COROUTINE) ||
+                is_obj_type(receiver, OBJ_SOCKET) ||
+                is_obj_type(receiver, OBJ_SERVER)) {
                 Value result;
-                int status =
-                    is_obj_type(receiver, OBJ_CHANNEL)
-                        ? channel_method(AS_CHANNEL(receiver), method_name, arg_count,
-                                         vm.stack_top - arg_count, &result)
-                        : coroutine_method(AS_COROUTINE(receiver), method_name, arg_count,
-                                           &result);
+                int status;
+
+                if (is_obj_type(receiver, OBJ_CHANNEL)) {
+                    status = channel_method(AS_CHANNEL(receiver), method_name, arg_count,
+                                            vm.stack_top - arg_count, &result);
+                } else if (is_obj_type(receiver, OBJ_COROUTINE)) {
+                    status = coroutine_method(AS_COROUTINE(receiver), method_name, arg_count,
+                                              &result);
+                } else {
+                    status = net_dispatch_method(receiver, method_name, arg_count,
+                                                 vm.stack_top - arg_count, &result);
+                    if (status == SPARK_NET_UNHANDLED) {
+                        vm_runtime_error(ERROR_NAME, "method '%s' not found on %s",
+                                         method_name->chars, value_type_name(receiver));
+                        goto handle_runtime_error;
+                    }
+                }
 
                 if (status < 0) {
                     if (vm.has_exception) {
@@ -7927,7 +8034,9 @@ cold_dispatch:
             Value receiver = peek(0);
 
             if (is_obj_type(receiver, OBJ_CHANNEL) ||
-                is_obj_type(receiver, OBJ_COROUTINE)) {
+                is_obj_type(receiver, OBJ_COROUTINE) ||
+                is_obj_type(receiver, OBJ_SOCKET) ||
+                is_obj_type(receiver, OBJ_SERVER)) {
                 ObjArray *spread = AS_ARRAY(args_val);
                 int count = spread->count;
 
@@ -7942,11 +8051,22 @@ cold_dispatch:
                 mem_resume_gc();
 
                 Value result;
-                int status =
-                    is_obj_type(receiver, OBJ_CHANNEL)
-                        ? channel_method(AS_CHANNEL(receiver), method_name, count,
-                                         vm.stack_top - count, &result)
-                        : coroutine_method(AS_COROUTINE(receiver), method_name, count, &result);
+                int status;
+
+                if (is_obj_type(receiver, OBJ_CHANNEL)) {
+                    status = channel_method(AS_CHANNEL(receiver), method_name, count,
+                                            vm.stack_top - count, &result);
+                } else if (is_obj_type(receiver, OBJ_COROUTINE)) {
+                    status = coroutine_method(AS_COROUTINE(receiver), method_name, count, &result);
+                } else {
+                    status = net_dispatch_method(receiver, method_name, count, vm.stack_top - count,
+                                                 &result);
+                    if (status == SPARK_NET_UNHANDLED) {
+                        vm_runtime_error(ERROR_NAME, "method '%s' not found on %s",
+                                         method_name->chars, value_type_name(receiver));
+                        goto handle_runtime_error;
+                    }
+                }
 
                 if (status < 0) {
                     if (vm.has_exception) {

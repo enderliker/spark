@@ -1,0 +1,74 @@
+// Phase 16: one server coroutine under load, with descriptor hygiene.
+fn fd_count() {
+    return len(list_dir("/proc/self/fd"));
+}
+
+// utime + stime of this process, in clock ticks, from /proc/self/stat.
+fn cpu_ticks() {
+    var stat = read_file("/proc/self/stat");
+    var close_paren = stat.index_of(")");
+    var fields = stat.slice(close_paren + 2).split(" ");
+    return int(fields[11]) + int(fields[12]);
+}
+
+// An idle wait sleeps in the poll loop without burning CPU.
+var idle = udp_bind("127.0.0.1", 0, 500);
+var cpu_before = cpu_ticks();
+var start = clock();
+try {
+    idle.wait(true, false, 300);
+} catch (e) {
+}
+var elapsed = clock() - start;
+var cpu_used = cpu_ticks() - cpu_before;
+print("idle waited:", elapsed >= 0.25);
+print("idle cpu ok:", cpu_used <= 2);
+idle.close();
+
+var baseline = fd_count();
+var server = tcp_listen("127.0.0.1", 0);
+var port = server.port();
+
+fn echo_server() {
+    var handled = 0;
+    while (handled < 32) {
+        var connection = server.accept(5000);
+        if (connection == nil) {
+            break;
+        }
+        connection.send(connection.recv_line(64) + "\n");
+        connection.close();
+        handled += 1;
+    }
+    return handled;
+}
+
+fn client_call(id) {
+    var socket = tcp_connect("127.0.0.1", port, 5000);
+    var want = "client-" + str(id);
+    socket.send(want + "\n");
+    var line = socket.recv_line(64);
+    socket.close();
+    return line == want;
+}
+
+var server_job = spawn(echo_server);
+var clients = [];
+var i = 0;
+while (i < 32) {
+    push(clients, spawn(client_call, i));
+    i += 1;
+}
+
+var all_ok = true;
+for (var job in clients) {
+    if (!job.join()) {
+        all_ok = false;
+    }
+}
+print("handled:", server_job.join());
+print("all echoed:", all_ok);
+server.close();
+gc();
+print("fds back:", fd_count() == baseline);
+print("load ok");

@@ -1714,6 +1714,17 @@ static void compile_call_with_arguments(Compiler *compiler, Expr *expr, int line
     }
 }
 
+/* A call to a global native cannot be tail-called: the native may suspend the
+ * coroutine (for example net_select), which needs the caller's frame to remain.
+ * Falling back to a normal call + return keeps the resume path simple. */
+static bool tail_call_target_is_native(Expr *callee)
+{
+    if (callee->kind != EXPR_VARIABLE) {
+        return false;
+    }
+    return vm_name_is_native(callee->as.variable.chars, callee->as.variable.length);
+}
+
 static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int column)
 {
     if (compiler->type == FUNC_INITIALIZER) {
@@ -1734,7 +1745,8 @@ static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int co
         return;
     }
     if (expr->kind == EXPR_CALL && !expr->as.call.is_new &&
-        expr->as.call.callee->kind != EXPR_SUPER) {
+        expr->as.call.callee->kind != EXPR_SUPER &&
+        !tail_call_target_is_native(expr->as.call.callee)) {
         compile_expression(compiler, expr->as.call.callee);
         if (expr_list_has_spread(expr->as.call.arguments)) {
             compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);

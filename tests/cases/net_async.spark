@@ -1,0 +1,79 @@
+// Phase 16: blocking socket calls yield their coroutine instead of the process.
+var server = tcp_listen("127.0.0.1", 0);
+var client = tcp_connect("127.0.0.1", server.port(), 2000);
+var peer = server.accept(2000);
+
+// A coroutine waiting for readability lets another run, then wakes on data.
+fn waiter() {
+    return client.wait(true, false, 2000);
+}
+var job = spawn(waiter);
+sleep(50);
+peer.send("hi\n");
+print("wait ready:", job.join());
+print("line:", client.recv_line(16));
+
+// A deadline wakes the waiter with a timeout error.
+try {
+    client.wait(true, false, 50);
+} catch (e) {
+    print("wait timeout:", e.type);
+}
+
+// net_select reports which of several sockets are readable.
+fn sender() {
+    sleep(50);
+    peer.send("yo\n");
+}
+var job2 = spawn(sender);
+print("select:", net_select([client, peer], 2000));
+job2.join();
+print("line2:", client.recv_line(16));
+
+// A would-block call inside a native callback raises instead of stalling.
+try {
+    map([1], fn(x) {
+        client.recv(5);
+        return x;
+    });
+} catch (e) {
+    print("guard:", e.type, e.message);
+}
+
+client.close();
+peer.close();
+server.close();
+
+// One server coroutine serves two clients concurrently.
+var server2 = tcp_listen("127.0.0.1", 0);
+var port2 = server2.port();
+
+fn echo_server() {
+    var handled = 0;
+    while (handled < 2) {
+        var c = server2.accept(3000);
+        if (c == nil) {
+            break;
+        }
+        c.send(c.recv_line(64) + "+ok\n");
+        c.close();
+        handled += 1;
+    }
+    return handled;
+}
+
+fn client_call(message) {
+    var s = tcp_connect("127.0.0.1", port2, 2000);
+    s.send(message + "\n");
+    var line = s.recv_line(64);
+    s.close();
+    return line;
+}
+
+var server_job = spawn(echo_server);
+var first = spawn(client_call, "alpha");
+var second = spawn(client_call, "beta");
+print("echo handled:", server_job.join());
+print("echo replies:", first.join(), second.join());
+server2.close();
+print("async ok");

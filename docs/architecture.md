@@ -361,9 +361,38 @@ the global natives (`tcp_connect`, `tcp_listen`, `udp_bind`, `net_hostname`) fro
   bytes past the newline it returns; `recv` drains that buffer before reading again.
 - **Limits.** Reads are capped at 16 MiB and lines default to 64 KiB.
 
-Phase 16 turns these blocking waits into coroutine yields (new `CORO_WAIT_*` kinds and
-a poll step in the scheduler) so one process can serve many connections; until then a
-blocking call stalls every coroutine, as the limits section documents.
+### Asynchronous I/O (phase 16)
+
+The spike settled on `poll(2)` over `epoll`: the descriptor counts are small, `poll`
+keeps the layer dependency-free and portable, and a single call already supports the
+mix of readers, writers and deadlines. The integration is:
+
+- **Wait state.** `ObjCoroutine` gains `CORO_WAIT_READ`/`CORO_WAIT_WRITE` kinds plus the
+  pending operation (`NetWaitOp`), the awaited socket/server, the requested readiness
+  bits and an absolute monotonic deadline. `src/net.c` owns the linked list of waiters.
+- **Blocking is the fallback.** Each socket operation first tries a non-blocking
+  syscall (sockets are `O_NONBLOCK`). `EWOULDBLOCK` registers the coroutine and returns
+  `INTERPRET_BLOCKED`; a partial `send` remembers its progress and resumes where it
+  stopped. `tcp_connect` stays deadline-driven on a non-blocking descriptor.
+- **Wake path.** `vm_scheduler` calls `net_scheduler_poll(false)` after each coroutine
+  switch, so a ready descriptor is not starved while other coroutines run, and
+  `net_scheduler_poll(true)` when the run queue empties. The poll builds the descriptor
+  set, sleeps until the nearest deadline (no fixed granularity) and, for each ready or
+  expired waiter, performs its pending operation or raises the deferred error through
+  `coroutine_apply_resume`. Woken coroutines are enqueued by `vm_wake_coroutine`.
+- **GC.** The waiter list is a root in `mark_roots`, and `ObjCoroutine` traces its
+  awaited socket, server and select array, so a waiting socket survives collection.
+- **Guard.** A would-block operation inside a callback or module (`run_depth > 1`)
+  raises instead of suspending, exactly like channel waits.
+- **Tail calls.** `return <native>(...)` normally becomes `OP_TAIL_CALL`, whose frame
+  reuse cannot deliver a resumed result; the compiler therefore compiles a tail return
+  whose callee is a global native as an ordinary call.
+
+`tests/cases/net_load.spark` runs 32 concurrent echo clients against one server
+coroutine, asserts the descriptor count returns to baseline and checks that a 300 ms
+idle wait spends almost no CPU time; `tests/cases/net_async.spark` covers `sock.wait`,
+`net_select`, two clients on one server coroutine and the callback guard.
+`benchmarks/echo.spark` measures 2000 local round-trips.
 
 ## Modules and loading
 

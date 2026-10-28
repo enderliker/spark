@@ -1,0 +1,32 @@
+// Echo throughput: M request/response round-trips between a client and a
+// server coroutine over one local connection.
+var ROUNDS = 2000;
+
+var server = tcp_listen("127.0.0.1", 0);
+var port = server.port();
+
+fn echo_server() {
+    var connection = server.accept(10000);
+    var i = 0;
+    while (i < ROUNDS) {
+        connection.send(connection.recv_line(64) + "\n");
+        i += 1;
+    }
+    connection.close();
+}
+
+var job = spawn(echo_server);
+var socket = tcp_connect("127.0.0.1", port, 10000);
+
+var start = clock();
+var i = 0;
+while (i < ROUNDS) {
+    socket.send("ping\n");
+    socket.recv_line(64);
+    i += 1;
+}
+var elapsed = (clock() - start) * 1000;
+socket.close();
+job.join();
+server.close();
+print(elapsed);

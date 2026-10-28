@@ -571,6 +571,7 @@ Socket and server methods:
 | `sock.send(data)` | Writes all of `data`; returns the byte count. TCP only. |
 | `sock.recv(max)` | Up to `max` bytes, or `nil` at end of stream. |
 | `sock.recv_line(max?)` | Up to the next newline (the newline, and a preceding `\r`, are dropped); `nil` at end of stream. Default bound 64 KiB. |
+| `sock.wait(read?, write?, timeout_ms?)` | Suspends until the socket is readable/writable; `true` when ready, `TimeoutError` on the deadline. |
 | `sock.send_to(data, host, port)` | Sends one datagram; returns the byte count. UDP only. |
 | `sock.recv_from(max)` | A `{data, host, port}` map for one datagram. UDP only. |
 | `sock.peer()` / `sock.local()` | A `{host, port}` map with the numeric peer / local address. |
@@ -578,6 +579,7 @@ Socket and server methods:
 | `srv.accept(timeout_ms?)` | An accepted `socket`, or `nil` on timeout. |
 | `srv.port()` | The bound port. |
 | `srv.close()` | Closes the listener. |
+| `net_select(readables, timeout_ms?)` | Waits until any socket in the array is readable; returns the array of ready indexes (empty on timeout). |
 
 - `host` is a name, an IPv4 literal, or an IPv6 literal in brackets (`"[::1]"`).
   `getaddrinfo` resolves names and every resolved address is tried in turn, so
@@ -592,9 +594,27 @@ Socket and server methods:
 - Payload bounds: `recv`/`recv_from` accept at most 16 MiB and `recv_line` at most
   16 MiB (default 64 KiB); larger values raise `ValueError`.
 
-Until the coroutine-aware waits land (phase 16), a blocking socket operation stalls
-every coroutine in the process; bounding each operation with a timeout is the
-workaround.
+Blocking socket operations **yield the coroutine** instead of stalling the process: a
+call that would block registers a wait on its descriptor, the scheduler polls the
+registered sockets (sleeping until the nearest deadline), and wakes the coroutine when
+the descriptor is ready or the deadline passes. `tcp_connect`, `accept`, `recv`,
+`recv_line` and `send` all participate, so one process serves many connections with
+`spawn`. A would-block call inside a native callback (`map`, `each`, `sort_by`, ...) or
+an imported module raises a `RuntimeError` instead of suspending, because those run at
+a deeper `run_depth`.
+
+```spark
+fn echo(server) {
+    while (true) {
+        var client = server.accept();
+        if (client == nil) { break; }
+        client.send(client.recv_line() + "\n");
+        client.close();
+    }
+}
+var server = tcp_listen("127.0.0.1", 8080);
+var job = spawn(echo, server);
+```
 
 The global constants `pi` and `nan` are predefined, and the REPL keeps the result of
 the last expression in `_`.
@@ -1034,5 +1054,6 @@ Linter rules:
 - A `recv`/`recv_from` returns at most 16 MiB; `recv_line` is bounded to 16 MiB
   (default 64 KiB) and raises `ValueError` past that.
 - Ports are 16-bit (`0..65535`); port `0` asks the kernel for an ephemeral port.
-- A blocking socket call stalls the whole process until phase 16 makes it yield;
-  give every operation a timeout to bound it.
+- Blocking network calls yield only their coroutine; the scheduler sleeps in `poll(2)`
+  until a descriptor is ready or the nearest deadline fires, so an idle wait uses no
+  CPU. Inside a native callback or an imported module a would-block call is an error.

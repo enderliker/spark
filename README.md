@@ -52,6 +52,7 @@ for (var i = 0; i < 10; i += 1) {
   regular expressions and a string builder.
 - Networking: TCP and UDP sockets as GC-managed resources with timeouts, name
   resolution over IPv4 and IPv6, and typed `NetworkError`/`TimeoutError` failures.
+  Blocking calls yield only their coroutine, so one process serves many connections.
 - Tooling: REPL, bytecode disassembler (`--dump`), precompiled bytecode
   (`--compile`), interactive debugger (`--debug`), formatter (`--format`) and
   linter (`--lint`).
@@ -303,12 +304,15 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server`. |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket; returns a `socket`. |
+| `net_select(readables, timeout_ms?)` | Waits for any socket to be readable; returns the ready indexes. |
 | `net_hostname()` | The local host name. |
 
-Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.send_to`,
+Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.wait`, `sock.send_to`,
 `sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. Server methods:
 `srv.accept`, `srv.port` and `srv.close`. Hosts may be names, IPv4 literals or
-bracketed IPv6 literals; `localhost` works over either family.
+bracketed IPv6 literals; `localhost` works over either family. A blocking call suspends
+its coroutine and the scheduler polls the descriptors, so a single process serves many
+connections with `spawn`.
 
 ## Project layout
 
@@ -391,8 +395,7 @@ large strings.
 
 - Coroutines are cooperative and single-threaded: there are no OS threads or
   parallelism. `yield` and a blocking `send`/`receive`/`join` are rejected inside
-  native callbacks and imported modules. A blocking socket call stalls every
-  coroutine until phase 16 makes it yield; bound each operation with a timeout.
+  native callbacks and imported modules, and so is a would-block socket call.
 - Modules share one global namespace; there are no per-module namespaces.
 - Assignments are statements (`x = 1;`), not expressions.
 - Strings are immutable, so `s += x` in a loop is O(n²); use `string_builder`.
@@ -406,8 +409,9 @@ large strings.
   frames (tail calls reuse frames) and a value stack that grows from 2,048 to
   4,194,304 entries. Channels hold up to 16,777,216 values. See
   [docs/language.md](docs/language.md) section 19.
-- Sockets are blocking: a network call stalls the process until it returns or its
-  timeout fires (coroutine-aware waits arrive in phase 16).
+- Sockets are non-blocking under the hood: a call that would block suspends its
+  coroutine, and the scheduler sleeps in `poll(2)` until a descriptor is ready or the
+  nearest deadline fires.
 
 ## Ideas for the future
 

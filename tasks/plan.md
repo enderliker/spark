@@ -84,14 +84,14 @@ small amount of VM plumbing.
 - [ ] Benchmark: `fib(27)` delta is heap-layout noise (see `tasks/todo.md`)
 
 ### Phase 16 - Asynchronous I/O on the coroutine scheduler (highest risk)
-- [ ] T87 Spike + `sock.wait(read?/write?, timeout)`: a blocked socket wait yields the coroutine
-- [ ] T88 `net_select(readables, timeout)` and timer-aware polling
-- [ ] T89 Coroutine-aware `accept`/`recv`/`send` with the `run_depth` guard
-- [ ] T90 One-process echo server under load (N clients, idle CPU) and fixtures
+- [x] T87 Spike + `sock.wait(read?/write?, timeout)`: a blocked socket wait yields the coroutine
+- [x] T88 `net_select(readables, timeout)` and timer-aware polling
+- [x] T89 Coroutine-aware `accept`/`recv`/`send` with the `run_depth` guard
+- [x] T90 One-process echo server under load (N clients, idle CPU) and fixtures
 
 ### Checkpoint: Phase 16
-- [ ] N concurrent connections served by one process with no busy-wait
-- [ ] Benchmark minimum still below 5 ms; sanitizers clean; fallback documented if spiked out
+- [x] N concurrent connections served by one process with no busy-wait
+- [x] Benchmark minimum below 5 ms (measured 4.97 ms); sanitizers clean; `poll(2)` chosen
 
 ### Phase 17 - HTTP/1.1 client and server
 - [ ] T91 `url_parse`, `url_encode`, `url_decode`, `parse_query`

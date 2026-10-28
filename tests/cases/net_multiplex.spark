@@ -1,0 +1,48 @@
+// Phase 16: several sockets and independent deadlines in one scheduler.
+var receiver = udp_bind("127.0.0.1", 0);
+var silent1 = udp_bind("127.0.0.1", 0);
+var silent2 = udp_bind("127.0.0.1", 0);
+var sender = udp_bind("127.0.0.1", 0);
+
+fn poke() {
+    sleep(40);
+    sender.send_to("x", "127.0.0.1", receiver.local().port);
+}
+var job = spawn(poke);
+print("ready:", net_select([silent1, silent2, receiver], 1000));
+job.join();
+
+// Two waiters with distinct deadlines wake in order, with no fixed granularity.
+var a = udp_bind("127.0.0.1", 0, 1000);
+var b = udp_bind("127.0.0.1", 0, 1000);
+var order = [];
+
+fn first() {
+    try {
+        a.wait(true, false, 80);
+    } catch (e) {
+        push(order, "first");
+    }
+}
+
+fn second() {
+    try {
+        b.wait(true, false, 160);
+    } catch (e) {
+        push(order, "second");
+    }
+}
+
+var ja = spawn(first);
+var jb = spawn(second);
+ja.join();
+jb.join();
+print("order:", order);
+
+receiver.close();
+silent1.close();
+silent2.close();
+sender.close();
+a.close();
+b.close();
+print("multiplex ok");

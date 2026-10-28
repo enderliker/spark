@@ -15,10 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The main script now runs as a coroutine, so it can `yield` and use channels.
 - Channel waiters are traced by the collector: blocked coroutines, their stacks
   and the locals they captured stay alive across `gc()`.
-- Networking: `tcp_connect`, `tcp_listen`, `udp_bind` and `net_hostname`, plus
-  `socket` and `server` GC-managed resource objects. TCP clients and servers and
-  UDP datagrams, with timeouts, IPv4/IPv6 resolution (bracketed IPv6 literals
-  included) and categorized `NetworkError`/`TimeoutError` failures.
+- Networking: `tcp_connect`, `tcp_listen`, `udp_bind`, `net_hostname` and
+  `net_select`, plus `socket` and `server` GC-managed resource objects. TCP
+  clients and servers and UDP datagrams, with timeouts, IPv4/IPv6 resolution
+  (bracketed IPv6 literals included) and categorized `NetworkError`/`TimeoutError`
+  failures.
+- A socket call that would block suspends its coroutine: `accept`, `recv`,
+  `recv_line` and `send` are routed through the scheduler, which polls the
+  registered descriptors (`poll(2)`, sleeping until the nearest deadline), so one
+  process serves many connections with `spawn` and no busy-wait. The
+  `run_depth > 1` guard extends to these waits.
 
 ### Fixed
 

@@ -11,6 +11,7 @@ BENCH_DIR = ROOT / "benchmarks"
 
 BENCHMARKS = [
     ("fib(27)", BENCH_DIR / "fib.spark"),
+    ("echo (2k round-trips)", BENCH_DIR / "echo.spark"),
     ("int_loop (5M)", BENCH_DIR / "int_loop.spark"),
     ("float_loop (3M)", BENCH_DIR / "float_loop.spark"),
     ("closures (1M)", BENCH_DIR / "closures.spark"),
