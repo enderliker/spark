@@ -73,7 +73,8 @@ typedef enum {
     EXPR_METHOD_CALL,
     EXPR_SLICE,
     EXPR_UPDATE,
-    EXPR_OPTIONAL_CHAIN
+    EXPR_OPTIONAL_CHAIN,
+    EXPR_SUPER
 } ExprKind;
 
 struct Expr {
@@ -162,6 +163,10 @@ struct Expr {
             bool is_index;
             Expr *index;
         } opt_chain;
+        struct {
+            bool has_method;
+            Text method;
+        } super;
     } as;
 };
 
@@ -189,6 +194,7 @@ typedef enum {
 typedef struct ClassField {
     Text name;
     Expr *initializer;
+    bool is_static;
     struct ClassField *next;
 } ClassField;
 

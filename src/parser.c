@@ -523,6 +523,14 @@ static Expr *primary(Parser *parser)
         constructed->as.call.is_new = true;
         return constructed;
     }
+    if (match(parser, TOKEN_SUPER)) {
+        Expr *expr = new_expr(parser, EXPR_SUPER, token.line, token.column);
+
+        expr->as.super.has_method = false;
+        expr->as.super.method.chars = "";
+        expr->as.super.method.length = 0;
+        return expr;
+    }
     if (match(parser, TOKEN_IDENTIFIER)) {
         Expr *expr = new_expr(parser, EXPR_VARIABLE, token.line, token.column);
 
@@ -1520,12 +1528,46 @@ static Stmt *import_declaration(Parser *parser)
 static Stmt *class_declaration(Parser *parser)
 {
     Token name_tok = consume(parser, TOKEN_IDENTIFIER, "expected class name");
+    bool has_superclass = false;
+    Text superclass = {0};
+
+    if (match(parser, TOKEN_EXTENDS)) {
+        Token super_tok = consume(parser, TOKEN_IDENTIFIER, "expected superclass name after 'extends'");
+
+        has_superclass = true;
+        superclass = text_from_token(parser, super_tok);
+    }
     consume(parser, TOKEN_LEFT_BRACE, "expected '{' before class body");
 
+    ClassField *field_head = NULL;
+    ClassField *field_tail = NULL;
     ClassMethod *head = NULL;
     ClassMethod *tail = NULL;
 
     while (!check(parser, TOKEN_RIGHT_BRACE) && !check(parser, TOKEN_EOF)) {
+        bool is_static = match(parser, TOKEN_STATIC);
+
+        if (match(parser, TOKEN_VAR)) {
+            Token field_name = consume(parser, TOKEN_IDENTIFIER, "expected field name");
+            ClassField *field = new_node(parser, sizeof(ClassField));
+
+            field->name = text_from_token(parser, field_name);
+            field->initializer = NULL;
+            field->is_static = is_static;
+            field->next = NULL;
+            if (match(parser, TOKEN_EQUAL)) {
+                field->initializer = expression(parser);
+            }
+            consume(parser, TOKEN_SEMICOLON, "expected ';' after the field declaration");
+            if (field_tail) {
+                field_tail->next = field;
+            } else {
+                field_head = field;
+            }
+            field_tail = field;
+            continue;
+        }
+
         Token method_name = consume(parser, TOKEN_IDENTIFIER, "expected method name in class body");
         ParamList *params = NULL;
         ParamList *params_tail = NULL;
@@ -1543,8 +1585,12 @@ static Stmt *class_declaration(Parser *parser)
         method->param_count = count;
         method->body = body;
         method->is_init = (method->name.length == 4 && memcmp(method->name.chars, "init", 4) == 0);
+        method->is_static = is_static;
         method->next = NULL;
 
+        if (method->is_init && is_static) {
+            fail_at(parser, method_name, "'init' cannot be static");
+        }
         if (!head) {
             head = method;
         } else {
@@ -1557,6 +1603,9 @@ static Stmt *class_declaration(Parser *parser)
 
     Stmt *stmt = new_stmt(parser, STMT_CLASS, name_tok.line, name_tok.column);
     stmt->as.class_stmt.name = text_from_token(parser, name_tok);
+    stmt->as.class_stmt.has_superclass = has_superclass;
+    stmt->as.class_stmt.superclass = superclass;
+    stmt->as.class_stmt.fields = field_head;
     stmt->as.class_stmt.methods = head;
     return stmt;
 }

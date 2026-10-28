@@ -329,6 +329,70 @@ ObjMap *object_map(void)
     return map;
 }
 
+ObjClass *object_class(ObjString *name, ObjClass *superclass)
+{
+    ObjClass *klass;
+
+    /* The class is not reachable from the VM until OP_CLASS finishes. */
+    mem_pause_gc();
+    klass = allocate_obj(sizeof(ObjClass), OBJ_CLASS);
+    klass->name = name;
+    klass->superclass = superclass;
+    table_init(&klass->methods);
+    table_init(&klass->statics);
+    klass->field_init = NULL;
+    mem_resume_gc();
+    return klass;
+}
+
+ObjInstance *object_instance(ObjClass *klass)
+{
+    ObjInstance *instance;
+
+    mem_pause_gc();
+    instance = allocate_obj(sizeof(ObjInstance), OBJ_INSTANCE);
+    instance->klass = klass;
+    instance->fields = object_map();
+    mem_resume_gc();
+    return instance;
+}
+
+ObjClosure *class_find_method(ObjClass *klass, ObjString *name)
+{
+    for (ObjClass *current = klass; current; current = current->superclass) {
+        Value value;
+
+        if (table_get(&current->methods, name, &value) && is_obj_type(value, OBJ_CLOSURE)) {
+            return AS_CLOSURE(value);
+        }
+    }
+    return NULL;
+}
+
+Value *class_find_static(ObjClass *klass, ObjString *name)
+{
+    for (ObjClass *current = klass; current; current = current->superclass) {
+        for (int i = 0; i < current->statics.capacity; i++) {
+            TableEntry *entry = &current->statics.entries[i];
+
+            if (entry->key == name) {
+                return &entry->value;
+            }
+        }
+    }
+    return NULL;
+}
+
+bool class_is_subclass(ObjClass *klass, ObjClass *candidate)
+{
+    for (ObjClass *current = klass; current; current = current->superclass) {
+        if (current == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index)
 {
     if (map->capacity == 0 || map->count == 0) {
@@ -515,7 +579,6 @@ ObjFunction *object_function(void)
     function->arity = 0;
     function->min_arity = 0;
     function->is_varargs = false;
-    function->is_constructor = false;
     function->upvalue_count = 0;
     function->name = NULL;
     function->script_path = NULL;
@@ -537,6 +600,8 @@ ObjClosure *object_closure(ObjFunction *function)
     closure = allocate_obj(sizeof(ObjClosure), OBJ_CLOSURE);
     closure->function = function;
     closure->upvalue_count = function->upvalue_count;
+    closure->klass = NULL;
+    closure->is_static = false;
     if (closure->upvalue_count > 0) {
         closure->upvalues = mem_realloc(NULL, 0,
                                         sizeof(ObjUpvalue *) * (size_t)closure->upvalue_count);
@@ -666,6 +731,17 @@ void object_free(Obj *obj)
         mem_realloc(closure, sizeof(ObjClosure), 0);
         break;
     }
+    case OBJ_CLASS: {
+        ObjClass *klass = (ObjClass *)obj;
+        table_free(&klass->methods);
+        table_free(&klass->statics);
+        mem_realloc(klass, sizeof(ObjClass), 0);
+        break;
+    }
+    case OBJ_INSTANCE:
+        /* The fields map is a separate GC object and is swept on its own. */
+        mem_realloc(obj, sizeof(ObjInstance), 0);
+        break;
     case OBJ_NATIVE:
         mem_realloc(obj, sizeof(ObjNative), 0);
         break;
@@ -688,9 +764,6 @@ void object_free(Obj *obj)
         mem_realloc(sb, sizeof(ObjStringBuilder), 0);
         break;
     }
-    case OBJ_CLASS:
-    case OBJ_INSTANCE:
-        break;
     }
 }
 
@@ -884,9 +957,19 @@ static void value_format(buf_t *b, Value v, bool repr)
             buf_append_str(b, sb->chars ? sb->chars : "");
             break;
         }
-        case OBJ_CLASS:
-        case OBJ_INSTANCE:
+        case OBJ_CLASS: {
+            ObjClass *klass = (ObjClass *)AS_OBJ(v);
+            buf_appendf(b, "<class %s>", klass->name ? klass->name->chars : "?");
             break;
+        }
+        case OBJ_INSTANCE: {
+            ObjInstance *instance = (ObjInstance *)AS_OBJ(v);
+            buf_appendf(b, "<%s instance>",
+                        instance->klass && instance->klass->name
+                            ? instance->klass->name->chars
+                            : "?");
+            break;
+        }
         }
         break;
     }

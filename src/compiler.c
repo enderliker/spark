@@ -32,7 +32,8 @@ typedef struct {
 typedef enum {
     FUNC_SCRIPT,
     FUNC_FUNCTION,
-    FUNC_INITIALIZER
+    FUNC_INITIALIZER,
+    FUNC_METHOD
 } FunctionType;
 
 typedef struct LoopCtx {
@@ -79,6 +80,7 @@ typedef struct Compiler {
     int column;
     LoopCtx *loop;
     int try_depth;
+    bool has_self;
     CompileContext *ctx;
 } Compiler;
 
@@ -392,7 +394,8 @@ static VarRef resolve_variable(Compiler *compiler, Text name, int line)
         ref.index = upvalue;
         return ref;
     }
-    if ((compiler->type == FUNC_FUNCTION || compiler->type == FUNC_INITIALIZER) &&
+    if ((compiler->type == FUNC_FUNCTION || compiler->type == FUNC_INITIALIZER ||
+         compiler->type == FUNC_METHOD) &&
         name.length == 4 && memcmp(name.chars, "self", 4) == 0) {
         ref.kind = VAR_SELF;
         ref.index = 0;
@@ -588,6 +591,139 @@ static void compile_function_value(Compiler *enclosing, Text name, ParamList *pa
         emit_byte(enclosing, fn.upvalues[i].index, line);
     }
 }
+
+static void compile_method_value(Compiler *enclosing, Text name, ParamList *params, Stmt *body,
+                                 bool is_static, int line)
+{
+    Compiler fn;
+    FunctionType type = (!is_static && name.length == 4 && memcmp(name.chars, "init", 4) == 0)
+                            ? FUNC_INITIALIZER
+                            : FUNC_METHOD;
+
+    init_compiler(&fn, enclosing, type, enclosing->ctx);
+    fn.function->name = object_string(name.chars, name.length);
+    fn.locals[0].name = name;
+    fn.locals[0].is_const = true;
+
+    fn.function->arity = 0;
+    fn.function->min_arity = 0;
+    fn.function->is_varargs = false;
+    for (ParamList *param = params; param; param = param->next) {
+        add_local(&fn, param->name, line);
+        if (param->is_varargs) {
+            fn.function->is_varargs = true;
+        } else {
+            fn.function->arity++;
+            if (!param->default_value) {
+                fn.function->min_arity++;
+            }
+        }
+    }
+
+    int self_slot = -1;
+    if (!is_static) {
+        /* `self` lives in a local slot after the parameters so nested
+         * functions can capture it like any other local. The value is pushed
+         * once and stays on the stack: that slot is the local. */
+        self_slot = add_local(&fn, (Text){"self", 4}, line);
+        fn.locals[self_slot].is_const = true;
+        fn.has_self = true;
+        emit_byte(&fn, OP_SELF, line);
+        fn.locals[self_slot].depth = fn.scope_depth;
+        if (fn.locals[self_slot].debug_index >= 0) {
+            fn.function->debug_locals[fn.locals[self_slot].debug_index].start_pc = 0;
+        }
+    }
+
+    int param_slot = 1;
+    for (ParamList *param = params; param; param = param->next, param_slot++) {
+        if (param->default_value) {
+            emit_byte(&fn, OP_DEFAULT_ARG, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            emit_byte(&fn, 0xff, line);
+            emit_byte(&fn, 0xff, line);
+            int jump = fn.function->chunk.count - 2;
+            compile_expression(&fn, param->default_value);
+            emit_byte(&fn, OP_SET_LOCAL, line);
+            emit_byte(&fn, (uint8_t)param_slot, line);
+            patch_jump(&fn, jump);
+        }
+        fn.locals[param_slot].depth = fn.scope_depth;
+        if (fn.locals[param_slot].debug_index >= 0) {
+            fn.function->debug_locals[fn.locals[param_slot].debug_index].start_pc = 0;
+        }
+    }
+
+    if (body->kind != STMT_BLOCK) {
+        compile_error(enclosing, line, "the body of a method must be a block");
+    }
+    compile_statement(&fn, body);
+    emit_byte(&fn, type == FUNC_INITIALIZER ? OP_SELF : OP_NIL, body->line);
+    emit_byte(&fn, OP_RETURN, body->line);
+
+    int constant = chunk_add_constant(&enclosing->function->chunk, OBJ_VAL(fn.function));
+    if (constant > 0xffff) {
+        compile_error(enclosing, line, "too many constants in one function");
+    }
+    emit_byte(enclosing, OP_CLOSURE, line);
+    emit_u16(enclosing, (uint16_t)constant, line);
+    for (int i = 0; i < fn.upvalue_count; i++) {
+        emit_byte(enclosing, fn.upvalues[i].is_local ? 1 : 0, line);
+        emit_byte(enclosing, fn.upvalues[i].index, line);
+    }
+}
+
+/* Compiles the closure that initializes the fields this class declares. It
+ * runs on a fresh instance with `self` bound, before `init`. */
+static void compile_field_initializer(Compiler *enclosing, ClassField *fields, int line)
+{
+    Compiler fn;
+
+    init_compiler(&fn, enclosing, FUNC_METHOD, enclosing->ctx);
+    fn.function->name = object_string("<fields>", 8);
+    fn.function->arity = 0;
+    fn.function->min_arity = 0;
+    fn.function->is_varargs = false;
+    int self_slot = add_local(&fn, (Text){"self", 4}, line);
+
+    fn.locals[self_slot].is_const = true;
+    fn.has_self = true;
+    emit_byte(&fn, OP_SELF, line);
+    fn.locals[self_slot].depth = fn.scope_depth;
+    if (fn.locals[self_slot].debug_index >= 0) {
+        fn.function->debug_locals[fn.locals[self_slot].debug_index].start_pc = 0;
+    }
+
+    for (ClassField *field = fields; field; field = field->next) {
+        if (field->is_static) {
+            continue;
+        }
+        emit_byte(&fn, OP_SELF, line);
+        int name_index = add_constant(&fn, OBJ_VAL(name_constant(field->name)), line);
+        emit_byte(&fn, OP_CONSTANT, line);
+        emit_u16(&fn, (uint16_t)name_index, line);
+        if (field->initializer) {
+            compile_expression(&fn, field->initializer);
+        } else {
+            emit_byte(&fn, OP_NIL, line);
+        }
+        emit_byte(&fn, OP_INDEX_SET, line);
+    }
+    emit_byte(&fn, OP_NIL, line);
+    emit_byte(&fn, OP_RETURN, line);
+
+    int constant = chunk_add_constant(&enclosing->function->chunk, OBJ_VAL(fn.function));
+    if (constant > 0xffff) {
+        compile_error(enclosing, line, "too many constants in one function");
+    }
+    emit_byte(enclosing, OP_CLOSURE, line);
+    emit_u16(enclosing, (uint16_t)constant, line);
+    for (int i = 0; i < fn.upvalue_count; i++) {
+        emit_byte(enclosing, fn.upvalues[i].is_local ? 1 : 0, line);
+        emit_byte(enclosing, fn.upvalues[i].index, line);
+    }
+}
+
 
 static int compound_opcode(TokenType op)
 {
@@ -1291,114 +1427,75 @@ static void compile_class(Compiler *compiler, Stmt *stmt, int line)
                       name.length, name.chars);
     }
 
-    ClassMethod *init_method = NULL;
+    /* Reject duplicate members early: they would silently shadow each other. */
     for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
-        if (m->is_init) {
-            init_method = m;
-            break;
+        for (ClassMethod *other = m->next; other; other = other->next) {
+            if (text_equals(m->name, other->name)) {
+                compile_error(compiler, line, "duplicate method '%.*s' in class '%.*s'",
+                              m->name.length, m->name.chars, name.length, name.chars);
+            }
+        }
+        for (ClassField *f = stmt->as.class_stmt.fields; f; f = f->next) {
+            if (text_equals(m->name, f->name)) {
+                compile_error(compiler, line, "member '%.*s' is declared both as a field and a method",
+                              m->name.length, m->name.chars);
+            }
         }
     }
-
-    Compiler fn;
-    init_compiler(&fn, compiler, FUNC_INITIALIZER, compiler->ctx);
-    fn.function->name = object_string(name.chars, name.length);
-    fn.function->is_constructor = true;
-    fn.locals[0].name = name;
-    fn.locals[0].is_const = true;
-
-    ParamList *params = init_method ? init_method->params : NULL;
-    fn.function->arity = 0;
-    fn.function->min_arity = 0;
-    fn.function->is_varargs = false;
-
-    for (ParamList *param = params; param; param = param->next) {
-        add_local(&fn, param->name, line);
-        if (param->is_varargs) {
-            fn.function->is_varargs = true;
-        } else {
-            fn.function->arity++;
-            if (!param->default_value) {
-                fn.function->min_arity++;
+    for (ClassField *f = stmt->as.class_stmt.fields; f; f = f->next) {
+        for (ClassField *other = f->next; other; other = other->next) {
+            if (text_equals(f->name, other->name)) {
+                compile_error(compiler, line, "duplicate field '%.*s' in class '%.*s'",
+                              f->name.length, f->name.chars, name.length, name.chars);
             }
         }
     }
 
-    int param_slot = 1;
-    for (ParamList *param = params; param; param = param->next, param_slot++) {
-        if (param->default_value) {
-            emit_byte(&fn, OP_DEFAULT_ARG, line);
-            emit_byte(&fn, (uint8_t)param_slot, line);
-            emit_byte(&fn, 0xff, line);
-            emit_byte(&fn, 0xff, line);
-            int jump = fn.function->chunk.count - 2;
-            compile_expression(&fn, param->default_value);
-            emit_byte(&fn, OP_SET_LOCAL, line);
-            emit_byte(&fn, (uint8_t)param_slot, line);
-            patch_jump(&fn, jump);
-        }
-        fn.locals[param_slot].depth = fn.scope_depth;
-        if (fn.locals[param_slot].debug_index >= 0) {
-            fn.function->debug_locals[fn.locals[param_slot].debug_index].start_pc = 0;
+    if (stmt->as.class_stmt.has_superclass) {
+        VarRef ref = resolve_variable(compiler, stmt->as.class_stmt.superclass, line);
+
+        emit_get(compiler, ref, line);
+    } else {
+        emit_byte(compiler, OP_NIL, line);
+    }
+    int class_index = add_constant(compiler, OBJ_VAL(class_name), line);
+    emit_byte(compiler, OP_CLASS, line);
+    emit_u16(compiler, (uint16_t)class_index, line);
+
+    bool has_instance_fields = false;
+    for (ClassField *field = stmt->as.class_stmt.fields; field; field = field->next) {
+        if (!field->is_static) {
+            has_instance_fields = true;
+            break;
         }
     }
-
-    /* Create empty map and store in local 'self' */
-    emit_byte(&fn, OP_MAP, line);
-    emit_u16(&fn, 0, line);
-    int self_slot = add_local(&fn, (Text){"self", 4}, line);
-    fn.locals[self_slot].depth = fn.scope_depth;
-    if (fn.locals[self_slot].debug_index >= 0) {
-        fn.function->debug_locals[fn.locals[self_slot].debug_index].start_pc = fn.function->chunk.count;
+    if (has_instance_fields) {
+        compile_field_initializer(compiler, stmt->as.class_stmt.fields, line);
+        emit_byte(compiler, OP_CLASS_FIELD_INIT, line);
     }
 
-    /* Tag the instance with its class name so instanceof/type can resolve it. */
-    emit_byte(&fn, OP_GET_LOCAL, line);
-    emit_byte(&fn, (uint8_t)self_slot, line);
-    int class_key = add_constant(&fn, OBJ_VAL(object_string("__class", 7)), line);
-    emit_byte(&fn, OP_CONSTANT, line);
-    emit_u16(&fn, (uint16_t)class_key, line);
-    int class_value = add_constant(&fn, OBJ_VAL(class_name), line);
-    emit_byte(&fn, OP_CONSTANT, line);
-    emit_u16(&fn, (uint16_t)class_value, line);
-    emit_byte(&fn, OP_INDEX_SET, line);
-
-    /* Attach methods */
     for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
-        if (m->is_init) continue;
-        emit_byte(&fn, OP_GET_LOCAL, line);
-        emit_byte(&fn, (uint8_t)self_slot, line);
-
-        ObjString *mname = name_constant(m->name);
-        int mname_idx = add_constant(&fn, OBJ_VAL(mname), line);
-        emit_byte(&fn, OP_CONSTANT, line);
-        emit_u16(&fn, (uint16_t)mname_idx, line);
-
-        compile_function_value(&fn, m->name, m->params, m->body, line);
-
-        emit_byte(&fn, OP_INDEX_SET, line);
+        compile_method_value(compiler, m->name, m->params, m->body, m->is_static, line);
+        int name_index = add_constant(compiler, OBJ_VAL(name_constant(m->name)), line);
+        emit_byte(compiler, OP_METHOD, line);
+        emit_u16(compiler, (uint16_t)name_index, line);
+        emit_byte(compiler, m->is_static ? 1 : 0, line);
     }
 
-    /* Execute init statements if any */
-    if (init_method && init_method->body && init_method->body->kind == STMT_BLOCK) {
-        for (StmtList *s = init_method->body->as.block.statements; s; s = s->next) {
-            compile_statement(&fn, s->stmt);
+    for (ClassField *field = stmt->as.class_stmt.fields; field; field = field->next) {
+        if (!field->is_static) {
+            continue;
         }
-    }
-
-    /* Return self */
-    emit_byte(&fn, OP_GET_LOCAL, line);
-    emit_byte(&fn, (uint8_t)self_slot, line);
-    emit_byte(&fn, OP_RETURN, line);
-
-    int constant = chunk_add_constant(&compiler->function->chunk, OBJ_VAL(fn.function));
-    if (constant > 0xffff) {
-        compile_error(compiler, line, "too many constants in one function");
-    }
-    emit_byte(compiler, OP_CLOSURE, line);
-    emit_u16(compiler, (uint16_t)constant, line);
-    for (int i = 0; i < fn.upvalue_count; i++) {
-        emit_byte(compiler, fn.upvalues[i].is_local ? 1 : 0, line);
-        emit_byte(compiler, fn.upvalues[i].index, line);
+        emit_byte(compiler, OP_DUP, line);
+        int name_index = add_constant(compiler, OBJ_VAL(name_constant(field->name)), line);
+        emit_byte(compiler, OP_CONSTANT, line);
+        emit_u16(compiler, (uint16_t)name_index, line);
+        if (field->initializer) {
+            compile_expression(compiler, field->initializer);
+        } else {
+            emit_byte(compiler, OP_NIL, line);
+        }
+        emit_byte(compiler, OP_INDEX_SET, line);
     }
 
     if (is_global) {
@@ -1631,7 +1728,8 @@ static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int co
         emit_byte(compiler, OP_RETURN, line);
         return;
     }
-    if (expr->kind == EXPR_CALL) {
+    if (expr->kind == EXPR_CALL && !expr->as.call.is_new &&
+        expr->as.call.callee->kind != EXPR_SUPER) {
         compile_expression(compiler, expr->as.call.callee);
         if (expr_list_has_spread(expr->as.call.arguments)) {
             compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);
@@ -2139,6 +2237,11 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         break;
     }
 
+    case EXPR_SUPER:
+        compile_error(compiler, line,
+                      "'super' can only be used as a call: super(...) or super.method(...)");
+        break;
+
     case EXPR_CALL: {
         /* Superinstruction: self-recursive call with (local - constant) argument */
         if (!expr->as.call.is_new &&
@@ -2164,6 +2267,27 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         }
 
         Expr *callee = expr->as.call.callee;
+        if (callee->kind == EXPR_SUPER) {
+            if (expr->as.call.is_new) {
+                compile_error(compiler, line, "cannot construct an instance through 'super'");
+            }
+            if (!compiler->has_self) {
+                compile_error(compiler, line,
+                              "'super' can only be used inside an instance method");
+            }
+            if (expr_list_has_spread(expr->as.call.arguments)) {
+                compile_error(compiler, line,
+                              "the spread operator '...' is not supported with 'super'");
+            }
+            compiler->column = expr->column;
+            emit_byte(compiler, OP_SELF, line);
+            for (ExprList *arg = expr->as.call.arguments; arg; arg = arg->next) {
+                compile_expression(compiler, arg->expr);
+            }
+            emit_byte(compiler, OP_SUPER, line);
+            emit_byte(compiler, (uint8_t)expr->as.call.argument_count, line);
+            break;
+        }
         if (callee->kind == EXPR_OPTIONAL_CHAIN) {
             if (expr->as.call.is_new) {
                 compile_error(compiler, line, "cannot construct through '?.'");
@@ -2290,6 +2414,28 @@ static void compile_expression(Compiler *compiler, Expr *expr)
         break;
 
     case EXPR_METHOD_CALL: {
+        if (expr->as.method_call.receiver->kind == EXPR_SUPER) {
+            if (compiler->type != FUNC_METHOD && compiler->type != FUNC_INITIALIZER) {
+                compile_error(compiler, line,
+                              "'super' can only be used inside a method");
+            }
+            if (expr_list_has_spread(expr->as.method_call.arguments)) {
+                compile_error(compiler, line,
+                              "the spread operator '...' is not supported with 'super'");
+            }
+            ObjString *super_name = name_constant(expr->as.method_call.method);
+            int super_index = add_constant(compiler, OBJ_VAL(super_name), line);
+
+            compiler->column = expr->column;
+            emit_byte(compiler, compiler->has_self ? OP_SELF : OP_NIL, line);
+            for (ExprList *arg = expr->as.method_call.arguments; arg; arg = arg->next) {
+                compile_expression(compiler, arg->expr);
+            }
+            emit_byte(compiler, OP_SUPER_INVOKE, line);
+            emit_u16(compiler, (uint16_t)super_index, line);
+            emit_byte(compiler, (uint8_t)expr->as.method_call.argument_count, line);
+            break;
+        }
         compile_expression(compiler, expr->as.method_call.receiver);
         if (expr_list_has_spread(expr->as.method_call.arguments)) {
             compile_spread_arguments(compiler, expr->as.method_call.arguments,

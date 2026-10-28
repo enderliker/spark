@@ -168,6 +168,11 @@ const char *opcode_name(OpCode op)
     case OP_END_FINALLY: return "END_FINALLY";
     case OP_INVOKE: return "INVOKE";
     case OP_INVOKE_SPREAD: return "INVOKE_SPREAD";
+    case OP_CLASS: return "CLASS";
+    case OP_METHOD: return "METHOD";
+    case OP_CLASS_FIELD_INIT: return "CLASS_FIELD_INIT";
+    case OP_SUPER: return "SUPER";
+    case OP_SUPER_INVOKE: return "SUPER_INVOKE";
     case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST: return "JUMP_IF_NOT_LE_LC";
     case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST: return "JUMP_IF_NOT_GE_LC";
     case OP_JUMP_IF_EQUAL_LOCAL_CONST: return "JUMP_IF_EQ_LC";
@@ -349,6 +354,33 @@ int chunk_disassemble_instruction(const Chunk *chunk, int offset)
         value_print_repr(stdout, chunk->constants[index]);
         printf("' (spread)\n");
         return offset + 3;
+    }
+    case OP_CLASS: {
+        int index = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        printf("%-18s %4d '", opcode_name(op), index);
+        value_print_repr(stdout, chunk->constants[index]);
+        printf("'\n");
+        return offset + 3;
+    }
+    case OP_METHOD: {
+        int index = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        printf("%-18s %4d '", opcode_name(op), index);
+        value_print_repr(stdout, chunk->constants[index]);
+        printf("'%s\n", chunk->code[offset + 3] ? " (static)" : "");
+        return offset + 4;
+    }
+    case OP_SUPER_INVOKE: {
+        int index = (chunk->code[offset + 1] << 8) | chunk->code[offset + 2];
+        int count = chunk->code[offset + 3];
+        printf("%-18s %4d '", opcode_name(op), index);
+        value_print_repr(stdout, chunk->constants[index]);
+        printf("' (%d args)\n", count);
+        return offset + 4;
+    }
+    case OP_SUPER: {
+        int count = chunk->code[offset + 1];
+        printf("%-18s (%d args)\n", opcode_name(op), count);
+        return offset + 2;
     }
     default:
         return simple_instruction(opcode_name(op), offset);

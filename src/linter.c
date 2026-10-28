@@ -426,10 +426,20 @@ static void lint_statement(LinterContext *ctx, Stmt *stmt)
 
     case STMT_CLASS:
         declare_symbol(ctx, stmt->as.class_stmt.name, stmt->line, stmt->column, false);
+        if (stmt->as.class_stmt.has_superclass) {
+            use_variable(ctx, stmt->as.class_stmt.superclass);
+        }
+        for (ClassField *f = stmt->as.class_stmt.fields; f; f = f->next) {
+            if (f->initializer) {
+                lint_expression(ctx, f->initializer);
+            }
+        }
         for (ClassMethod *m = stmt->as.class_stmt.methods; m; m = m->next) {
             push_scope(ctx, true);
-            declare_symbol(ctx, (Text){"self", 4}, stmt->line, stmt->column, true);
-            use_variable(ctx, (Text){"self", 4});
+            if (!m->is_static) {
+                declare_symbol(ctx, (Text){"self", 4}, stmt->line, stmt->column, true);
+                use_variable(ctx, (Text){"self", 4});
+            }
             for (ParamList *param = m->params; param; param = param->next) {
                 declare_symbol(ctx, param->name, stmt->line, stmt->column, true);
             }

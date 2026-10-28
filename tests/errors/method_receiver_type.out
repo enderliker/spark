@@ -1,2 +1,2 @@
 exit: 70
-stderr: method call receiver must be a map, received number
+stderr: method call receiver must be a map, an instance or a class, received number

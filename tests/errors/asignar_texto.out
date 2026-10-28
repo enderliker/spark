@@ -1,2 +1,2 @@
 exit: 70
-stderr: can only assign to an array or a map
+stderr: can only assign to an array, a map, an instance or a class

@@ -95,7 +95,6 @@ typedef struct {
     bool has_exception;
     Value exception_value;
     bool had_error;
-    bool constructing;
     bool debug_mode;
 } VM;
 
@@ -125,6 +124,8 @@ static inline bool numeric_fast(Value v)
 
 static InterpretResult run(int base_frame);
 static bool call_callback(Value callee, int arg_count, Value *result);
+static bool call_callback_bound(Value callee, int arg_count, Value self, Value *result);
+static ObjString *vm_value_to_string(Value value);
 static inline bool compare_values(bool greater, Value a, Value b, bool *out);
 static bool import_module(ObjString *path_str, ObjString *importer_path);
 
@@ -238,6 +239,92 @@ static const char *value_type_name(Value value)
     return "unknown";
 }
 
+/* Class of an instance, or the class itself when the value is a class. */
+static ObjClass *value_class(Value value)
+{
+    if (is_obj_type(value, OBJ_INSTANCE)) {
+        return AS_INSTANCE(value)->klass;
+    }
+    if (is_obj_type(value, OBJ_CLASS)) {
+        return AS_CLASS(value);
+    }
+    return NULL;
+}
+
+static bool class_has_name(ObjClass *klass, ObjString *name)
+{
+    return klass->name && klass->name->length == name->length &&
+           memcmp(klass->name->chars, name->chars, (size_t)name->length) == 0;
+}
+
+/* True when `value` is an instance of `target` or of any of its subclasses. */
+static bool value_is_instance_of(Value value, ObjClass *target)
+{
+    ObjClass *klass = value_class(value);
+
+    return klass != NULL && class_is_subclass(klass, target);
+}
+
+typedef enum {
+    DUNDER_ABSENT,
+    DUNDER_OK,
+    DUNDER_ERROR
+} DunderStatus;
+
+/* Calls the special method `name` on `receiver` with `arg_count` arguments.
+ * Returns DUNDER_ABSENT when the instance does not define it. The receiver and
+ * arguments are pushed while the lookup and the call run so the collector can
+ * see them even though they only live in C locals here. */
+static DunderStatus call_dunder(Value receiver, const char *name, int arg_count,
+                                const Value *args, Value *out)
+{
+    if (!is_obj_type(receiver, OBJ_INSTANCE)) {
+        return DUNDER_ABSENT;
+    }
+    ObjInstance *instance = AS_INSTANCE(receiver);
+    int depth = (int)(vm.stack_top - vm.stack);
+
+    mem_pause_gc();
+    if (!ensure_stack(arg_count + 2)) {
+        mem_resume_gc();
+        return DUNDER_ERROR;
+    }
+    push(receiver);
+    for (int i = 0; i < arg_count; i++) {
+        push(args[i]);
+    }
+    mem_resume_gc();
+
+    ObjString *method_name = object_string(name, (int)strlen(name));
+    ObjClosure *method = class_find_method(instance->klass, method_name);
+
+    if (!method) {
+        vm.stack_top = vm.stack + depth;
+        return DUNDER_ABSENT;
+    }
+    if (!call_callback_bound(OBJ_VAL(method), arg_count, receiver, out)) {
+        vm.stack_top = vm.stack + depth;
+        return DUNDER_ERROR;
+    }
+    vm.stack_top = vm.stack + depth;
+    return DUNDER_OK;
+}
+
+/* Dunder that implements an arithmetic opcode, or NULL when the opcode has
+ * no overloadable counterpart. */
+static const char *arithmetic_dunder(uint8_t op)
+{
+    switch (op) {
+    case OP_ADD: return "__add__";
+    case OP_SUBTRACT: return "__sub__";
+    case OP_MULTIPLY: return "__mul__";
+    case OP_DIVIDE: return "__div__";
+    case OP_MODULO: return "__mod__";
+    case OP_POW: return "__pow__";
+    default: return NULL;
+    }
+}
+
 /* Numeric comparison: exact for two integers, otherwise by promoting. */
 static inline bool numeric_less(Value a, Value b)
 {
@@ -334,6 +421,7 @@ static void blacken(Obj *object)
         ObjClosure *closure = (ObjClosure *)object;
 
         mark_object((Obj *)closure->function);
+        mark_object((Obj *)closure->klass);
         for (int i = 0; i < closure->upvalue_count; i++) {
             mark_object((Obj *)closure->upvalues[i]);
         }
@@ -345,6 +433,37 @@ static void blacken(Obj *object)
     case OBJ_UPVALUE:
         mark_value(((ObjUpvalue *)object)->closed);
         break;
+    case OBJ_CLASS: {
+        ObjClass *klass = (ObjClass *)object;
+
+        mark_object((Obj *)klass->name);
+        mark_object((Obj *)klass->superclass);
+        mark_object((Obj *)klass->field_init);
+        for (int i = 0; i < klass->methods.capacity; i++) {
+            TableEntry *entry = &klass->methods.entries[i];
+
+            if (entry->key) {
+                mark_object((Obj *)entry->key);
+                mark_value(entry->value);
+            }
+        }
+        for (int i = 0; i < klass->statics.capacity; i++) {
+            TableEntry *entry = &klass->statics.entries[i];
+
+            if (entry->key) {
+                mark_object((Obj *)entry->key);
+                mark_value(entry->value);
+            }
+        }
+        break;
+    }
+    case OBJ_INSTANCE: {
+        ObjInstance *instance = (ObjInstance *)object;
+
+        mark_object((Obj *)instance->klass);
+        mark_object((Obj *)instance->fields);
+        break;
+    }
     case OBJ_FILE: {
         ObjFile *file = (ObjFile *)object;
         if (file->path) {
@@ -353,8 +472,6 @@ static void blacken(Obj *object)
         break;
     }
     case OBJ_STRING_BUILDER:
-    case OBJ_CLASS:
-    case OBJ_INSTANCE:
         break;
     }
 }
@@ -498,11 +615,20 @@ static int utf8_char_length(const ObjString *string, int byte_index)
 
 static Value native_print(int arg_count, Value *args)
 {
+    (void)args;
     for (int i = 0; i < arg_count; i++) {
         if (i > 0) {
             fputc(' ', stdout);
         }
-        value_print(stdout, args[i]);
+        /* A to_string() override can grow the VM stack, so re-read the native
+         * arguments from the stack instead of keeping the original pointer. */
+        Value *current = vm.stack_top - arg_count;
+        ObjString *text = vm_value_to_string(current[i]);
+
+        if (!text) {
+            return NIL_VAL;
+        }
+        fwrite(text->chars, 1, (size_t)text->length, stdout);
     }
     fputc('\n', stdout);
     fflush(stdout);
@@ -525,8 +651,24 @@ static Value native_len(int arg_count, Value *args)
     if (is_obj_type(value, OBJ_MAP)) {
         return INT_VAL(AS_MAP(value)->count);
     }
-    vm_runtime_error(ERROR_TYPE, "'len' expects a string, an array or a map, received %s",
-                     value_type_name(value));
+    if (is_obj_type(value, OBJ_INSTANCE)) {
+        Value result;
+        DunderStatus status = call_dunder(value, "__len__", 0, NULL, &result);
+
+        if (status == DUNDER_ERROR) {
+            return NIL_VAL;
+        }
+        if (status == DUNDER_OK) {
+            if (!is_int(result) || AS_INT(result) < 0) {
+                vm_runtime_error(ERROR_TYPE, "'__len__' must return a non-negative integer, "
+                                 "received %s", value_type_name(result));
+                return NIL_VAL;
+            }
+            return result;
+        }
+    }
+    vm_runtime_error(ERROR_TYPE, "'len' expects a string, an array, a map or an instance "
+                     "with '__len__', received %s", value_type_name(value));
     return NIL_VAL;
 }
 
@@ -569,7 +711,9 @@ static Value native_pop(int arg_count, Value *args)
 static Value native_str(int arg_count, Value *args)
 {
     (void)arg_count;
-    return OBJ_VAL(value_to_string(args[0]));
+    ObjString *text = vm_value_to_string(args[0]);
+
+    return text ? OBJ_VAL(text) : NIL_VAL;
 }
 
 static Value native_num(int arg_count, Value *args)
@@ -605,12 +749,11 @@ static Value native_type(int arg_count, Value *args)
     const char *name;
 
     (void)arg_count;
-    if (is_obj_type(args[0], OBJ_MAP)) {
-        /* Instances created from a class report the class name. */
-        Value cls;
-        if (map_get(AS_MAP(args[0]), OBJ_VAL(object_string("__class", 7)), &cls) &&
-            is_obj_type(cls, OBJ_STRING)) {
-            return cls;
+    if (is_obj_type(args[0], OBJ_INSTANCE)) {
+        ObjClass *klass = AS_INSTANCE(args[0])->klass;
+
+        if (klass && klass->name) {
+            return OBJ_VAL(klass->name);
         }
     }
     if (is_obj(args[0]) &&
@@ -1496,8 +1639,12 @@ static Value native_join(int arg_count, Value *args)
             buf_free(&buffer);
             return NIL_VAL;
         }
-        ObjString *piece = value_to_string(array->items[i]);
+        ObjString *piece = vm_value_to_string(array->items[i]);
 
+        if (!piece) {
+            buf_free(&buffer);
+            return NIL_VAL;
+        }
         if (!buf_append_checked(&buffer, piece->chars, (size_t)piece->length, "join")) {
             buf_free(&buffer);
             return NIL_VAL;
@@ -2876,33 +3023,36 @@ static Value native_zip(int arg_count, Value *args)
 static Value native_isinstance(int arg_count, Value *args)
 {
     (void)arg_count;
-    ObjString *target_type = NULL;
-
+    if (is_obj_type(args[1], OBJ_CLASS)) {
+        return BOOL_VAL(value_is_instance_of(args[0], AS_CLASS(args[1])));
+    }
     if (is_obj_type(args[1], OBJ_STRING)) {
-        target_type = AS_STRING(args[1]);
-    } else if (is_obj_type(args[1], OBJ_CLOSURE)) {
-        target_type = AS_CLOSURE(args[1])->function->name;
-    } else if (is_obj_type(args[1], OBJ_FUNCTION)) {
-        target_type = AS_FUNCTION(args[1])->name;
-    }
-    if (!target_type) {
-        vm_runtime_error(ERROR_TYPE,
-                         "'isinstance' second argument must be a type name or a class");
-        return NIL_VAL;
-    }
-    const char *actual_type = value_type_name(args[0]);
-    if (strcmp(target_type->chars, actual_type) == 0) {
-        return BOOL_VAL(true);
-    }
-    if (is_obj_type(args[0], OBJ_MAP)) {
-        Value cls;
-        if (map_get(AS_MAP(args[0]), OBJ_VAL(object_string("__class", 7)), &cls)) {
-            if (is_obj_type(cls, OBJ_STRING) && strcmp(AS_STRING(cls)->chars, target_type->chars) == 0) {
+        ObjString *target_type = AS_STRING(args[1]);
+        ObjClass *klass = value_class(args[0]);
+
+        if (!klass) {
+            return BOOL_VAL(strcmp(target_type->chars, value_type_name(args[0])) == 0);
+        }
+        for (ObjClass *current = klass; current; current = current->superclass) {
+            if (class_has_name(current, target_type)) {
                 return BOOL_VAL(true);
             }
         }
+        return BOOL_VAL(false);
     }
-    return BOOL_VAL(false);
+    vm_runtime_error(ERROR_TYPE, "'isinstance' second argument must be a class or a type name");
+    return NIL_VAL;
+}
+
+static Value native_is_a(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[1], OBJ_CLASS)) {
+        vm_runtime_error(ERROR_TYPE, "'is_a' expects a class as its second argument, received %s",
+                         value_type_name(args[1]));
+        return NIL_VAL;
+    }
+    return BOOL_VAL(value_is_instance_of(args[0], AS_CLASS(args[1])));
 }
 
 static Value native_copy(int arg_count, Value *args)
@@ -3075,7 +3225,11 @@ static Value native_sb_append(int arg_count, Value *args)
         return NIL_VAL;
     }
     ObjStringBuilder *sb = AS_STRING_BUILDER(args[0]);
-    ObjString *s = is_obj_type(args[1], OBJ_STRING) ? AS_STRING(args[1]) : value_to_string(args[1]);
+    ObjString *s = is_obj_type(args[1], OBJ_STRING) ? AS_STRING(args[1])
+                                                   : vm_value_to_string(args[1]);
+    if (!s) {
+        return NIL_VAL;
+    }
     string_builder_append(sb, s->chars, s->length);
     return args[0];
 }
@@ -3606,17 +3760,6 @@ static bool call_closure(ObjClosure *closure, int arg_count)
 {
     ObjFunction *function = closure->function;
 
-    if (function->is_constructor && !vm.constructing) {
-        vm_runtime_error(ERROR_TYPE, "class '%s' must be constructed with 'new %s(...)'",
-                         function->name ? function->name->chars : "?",
-                         function->name ? function->name->chars : "?");
-        return false;
-    }
-    if (!function->is_constructor && vm.constructing) {
-        vm_runtime_error(ERROR_TYPE, "'new' expects a class, received a function");
-        return false;
-    }
-
     if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
         if (function->is_varargs) {
             vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
@@ -3689,6 +3832,14 @@ static bool call_value(Value callee, int arg_count)
         switch (AS_OBJ(callee)->type) {
         case OBJ_CLOSURE:
             return call_closure((ObjClosure *)AS_OBJ(callee), arg_count);
+        case OBJ_CLASS: {
+            ObjClass *klass = (ObjClass *)AS_OBJ(callee);
+
+            vm_runtime_error(ERROR_TYPE, "class '%s' must be constructed with 'new %s(...)'",
+                             klass->name ? klass->name->chars : "?",
+                             klass->name ? klass->name->chars : "?");
+            return false;
+        }
         case OBJ_NATIVE: {
             ObjNative *native = (ObjNative *)AS_OBJ(callee);
 
@@ -3718,6 +3869,68 @@ static bool call_value(Value callee, int arg_count)
     return false;
 }
 
+/* Calls `closure` with the arguments already on the VM stack and binds
+ * `receiver` as `self` on the new frame. The receiver is kept reachable while
+ * call_closure makes room for default arguments, which may allocate. */
+static bool call_method(ObjClosure *closure, int arg_count, Value receiver)
+{
+    Value *slot = vm.stack_top - arg_count - 1;
+    bool ok;
+
+    *slot = OBJ_VAL(closure);
+    mem_pause_gc();
+    ok = call_closure(closure, arg_count);
+    if (ok) {
+        vm.frames[vm.frame_count - 1].self = receiver;
+    }
+    mem_resume_gc();
+    return ok;
+}
+
+/* Runs the field initializers of `klass` and its ancestors base-first. */
+static bool initialize_instance_fields(ObjClass *klass, Value instance);
+
+/* Implements `new`: the class and its arguments are on the VM stack at
+ * vm.stack_top - arg_count - 1. On success the init frame (if any) is ready to
+ * run, or the new instance replaces the class value. */
+static bool invoke_constructor(int arg_count)
+{
+    Value *slot = vm.stack_top - arg_count - 1;
+    Value class_value = *slot;
+
+    if (!is_obj_type(class_value, OBJ_CLASS)) {
+        vm_runtime_error(ERROR_TYPE, "'new' expects a class, received %s",
+                         value_type_name(class_value));
+        return false;
+    }
+
+    ObjClass *klass = AS_CLASS(class_value);
+    ObjInstance *instance = object_instance(klass);
+    Value instance_value = OBJ_VAL(instance);
+
+    /* The class value is no longer needed; leaving the instance in its place
+     * keeps it reachable while the field initializers run. */
+    *slot = instance_value;
+
+    if (!initialize_instance_fields(klass, instance_value)) {
+        return false;
+    }
+
+    ObjClosure *init = class_find_method(klass, object_string("init", 4));
+    if (!init) {
+        if (arg_count != 0) {
+            vm_runtime_error(ERROR_ARITY,
+                             "class '%s' does not define 'init' but received %d argument(s)",
+                             klass->name ? klass->name->chars : "?", arg_count);
+            return false;
+        }
+        vm.stack_top = slot + 1;
+        return true;
+    }
+
+    return call_method(init, arg_count, instance_value);
+}
+
 /* ------------------------------------------------------------------ */
 /* Binary operations shared by the superinstructions                   */
 /* ------------------------------------------------------------------ */
@@ -3744,6 +3957,68 @@ static inline bool compare_values(bool greater, Value a, Value b, bool *out)
                      "(received %s and %s)",
                      value_type_name(a), value_type_name(b));
     return false;
+}
+
+/* Evaluates one ordering operator, trying the instance dunder first. The
+ * primitive fallback can be expressed as `!(a > b)` for `<=` and `>=`, so
+ * `greater` and `invert` describe that fallback while the dunder is used
+ * directly. `out` receives the truth value of the operator itself. */
+static bool compare_operator(Value a, Value b, const char *dunder, bool greater, bool invert,
+                             bool *out)
+{
+    if (is_obj_type(a, OBJ_INSTANCE)) {
+        Value result;
+        DunderStatus status = call_dunder(a, dunder, 1, &b, &result);
+
+        if (status == DUNDER_OK) {
+            *out = !value_is_falsey(result);
+            return true;
+        }
+        if (status == DUNDER_ERROR) {
+            return false;
+        }
+    }
+    if (!compare_values(greater, a, b, out)) {
+        return false;
+    }
+    if (invert) {
+        *out = !*out;
+    }
+    return true;
+}
+
+/* Equality with an instance dunder. Nil keeps its identity semantics so
+ * `value == nil` stays a reliable null check even for overloaded classes. */
+static bool equality_values(Value a, Value b, bool *out)
+{
+    if (!is_nil(a) && !is_nil(b)) {
+        if (is_obj_type(a, OBJ_INSTANCE)) {
+            Value result;
+            DunderStatus status = call_dunder(a, "__eq__", 1, &b, &result);
+
+            if (status == DUNDER_OK) {
+                *out = !value_is_falsey(result);
+                return true;
+            }
+            if (status == DUNDER_ERROR) {
+                return false;
+            }
+        }
+        if (is_obj_type(b, OBJ_INSTANCE)) {
+            Value result;
+            DunderStatus status = call_dunder(b, "__eq__", 1, &a, &result);
+
+            if (status == DUNDER_OK) {
+                *out = !value_is_falsey(result);
+                return true;
+            }
+            if (status == DUNDER_ERROR) {
+                return false;
+            }
+        }
+    }
+    *out = values_equal(a, b);
+    return true;
 }
 
 /* Fast path for the comparison-and-jump superinstructions. Returns false when
@@ -3823,10 +4098,16 @@ static inline bool fused_comparison_jump(OpCode op, Value a, Value b, bool *jump
     switch (op) {
     case OP_JUMP_IF_EQUAL_LOCAL_CONST:
     case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+        if (is_obj_type(a, OBJ_INSTANCE) || is_obj_type(b, OBJ_INSTANCE)) {
+            return false;
+        }
         *jump = values_equal(a, b);
         return true;
     case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST:
     case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL:
+        if (is_obj_type(a, OBJ_INSTANCE) || is_obj_type(b, OBJ_INSTANCE)) {
+            return false;
+        }
         *jump = !values_equal(a, b);
         return true;
     default:
@@ -3834,40 +4115,60 @@ static inline bool fused_comparison_jump(OpCode op, Value a, Value b, bool *jump
     }
 }
 
-/* General path for the ordering variants: reports a runtime error when the
- * operands are not comparable. */
+/* General path for the ordering variants, plus equality when an instance
+ * participates and the fused path cannot decide it: reports a runtime error
+ * when the operands are not comparable. */
 static bool slow_comparison_jump(OpCode op, Value a, Value b, bool *jump)
 {
-    bool greater;
-    bool negate;
+    const char *dunder = NULL;
+    bool greater = false;
+    bool invert = false;
+    bool negate = false;
 
     switch (op) {
     case OP_JUMP_IF_NOT_LESS_LOCAL_CONST:
     case OP_JUMP_IF_NOT_LESS_LOCAL_LOCAL:
-        greater = false;
+        dunder = "__lt__";
         negate = true;
         break;
     case OP_JUMP_IF_NOT_GREATER_LOCAL_CONST:
     case OP_JUMP_IF_NOT_GREATER_LOCAL_LOCAL:
+        dunder = "__gt__";
         greater = true;
         negate = true;
         break;
     case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST:
     case OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_LOCAL:
+        dunder = "__le__";
         greater = true;
-        negate = false;
+        invert = true;
+        negate = true;
         break;
     case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_CONST:
     case OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL:
-        greater = false;
-        negate = false;
+        dunder = "__ge__";
+        invert = true;
+        negate = true;
         break;
+    case OP_JUMP_IF_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_EQUAL_LOCAL_LOCAL:
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_CONST:
+    case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL: {
+        bool equal;
+
+        if (!equality_values(a, b, &equal)) {
+            return false;
+        }
+        *jump = (op == OP_JUMP_IF_EQUAL_LOCAL_CONST ||
+                 op == OP_JUMP_IF_EQUAL_LOCAL_LOCAL) ? equal : !equal;
+        return true;
+    }
     default:
         return false;
     }
 
     bool result;
-    if (!compare_values(greater, a, b, &result)) {
+    if (!compare_operator(a, b, dunder, greater, invert, &result)) {
         return false;
     }
     *jump = negate ? !result : result;
@@ -3876,6 +4177,22 @@ static bool slow_comparison_jump(OpCode op, Value a, Value b, bool *jump)
 
 static inline bool arithmetic_values(uint8_t op, Value a, Value b, Value *out)
 {
+    if (is_obj_type(a, OBJ_INSTANCE)) {
+        const char *dunder = arithmetic_dunder(op);
+
+        if (dunder) {
+            Value result;
+            DunderStatus status = call_dunder(a, dunder, 1, &b, &result);
+
+            if (status == DUNDER_OK) {
+                *out = result;
+                return true;
+            }
+            if (status == DUNDER_ERROR) {
+                return false;
+            }
+        }
+    }
     if (!value_is_numeric(a) || !value_is_numeric(b)) {
         vm_runtime_error(ERROR_TYPE, "arithmetic operators expect numbers (received %s and %s)",
                          value_type_name(a), value_type_name(b));
@@ -3989,6 +4306,18 @@ static inline bool bitwise_values(uint8_t op, Value a, Value b, Value *out)
 
 static inline bool add_values(Value a, Value b, Value *out)
 {
+    if (is_obj_type(a, OBJ_INSTANCE)) {
+        Value result;
+        DunderStatus status = call_dunder(a, "__add__", 1, &b, &result);
+
+        if (status == DUNDER_OK) {
+            *out = result;
+            return true;
+        }
+        if (status == DUNDER_ERROR) {
+            return false;
+        }
+    }
     if (value_is_numeric(a) && value_is_numeric(b)) {
         if (a.type == VAL_INT && b.type == VAL_INT) {
             int64_t result;
@@ -4678,7 +5007,7 @@ static InterpretResult run(int base_frame)
                     ObjClosure *closure = (ObjClosure *)obj;
                     ObjFunction *function = closure->function;
 
-                    if (!function->is_varargs && !function->is_constructor &&
+                    if (!function->is_varargs &&
                         arg_count >= function->min_arity &&
                         arg_count <= function->arity && frame < &vm.frames[FRAMES_MAX - 1]) {
                         int original_argc = arg_count;
@@ -4741,7 +5070,7 @@ static InterpretResult run(int base_frame)
                             ObjClosure *closure = (ObjClosure *)method_obj;
                             ObjFunction *function = closure->function;
 
-                            if (!function->is_varargs && !function->is_constructor &&
+                            if (!function->is_varargs &&
                                 arg_count >= function->min_arity &&
                                 arg_count <= function->arity &&
                                 frame < &vm.frames[FRAMES_MAX - 1]) {
@@ -4782,7 +5111,7 @@ static InterpretResult run(int base_frame)
                     ObjClosure *closure = (ObjClosure *)obj;
                     ObjFunction *function = closure->function;
 
-                    if (!function->is_varargs && !function->is_constructor &&
+                    if (!function->is_varargs &&
                         arg_count >= function->min_arity &&
                         arg_count <= function->arity) {
                         if (__builtin_expect(vm.open_upvalues != NULL, 0)) {
@@ -5203,6 +5532,73 @@ cold_dispatch:
                 if (map_get(AS_MAP(object), index, &stored)) {
                     result = stored;
                 }
+            } else if (is_obj_type(object, OBJ_INSTANCE)) {
+                ObjInstance *instance = AS_INSTANCE(object);
+
+                /* A string key always addresses a field first. Dot access is
+                 * compiled as a string index, so this also keeps `self.x`
+                 * usable inside `__index__`; the dunder handles other keys. */
+                if (is_obj_type(index, OBJ_STRING) &&
+                    map_get(instance->fields, index, &result)) {
+                    /* Field found. */
+                } else if (is_obj_type(index, OBJ_STRING) &&
+                           !class_find_method(instance->klass,
+                                              object_string("__index__", 9))) {
+                    vm_runtime_error(ERROR_NAME, "field '%s' not found on instance of '%s'",
+                                     AS_STRING(index)->chars,
+                                     instance->klass && instance->klass->name
+                                         ? instance->klass->name->chars
+                                         : "?");
+                    goto handle_runtime_error;
+                } else {
+                    DunderStatus dunder = call_dunder(object, "__index__", 1, &index, &result);
+
+                    if (dunder == DUNDER_ERROR) {
+                        goto handle_runtime_error;
+                    }
+                    if (dunder == DUNDER_ABSENT) {
+                        if (!is_obj_type(index, OBJ_STRING)) {
+                            vm_runtime_error(ERROR_TYPE,
+                                             "cannot index an instance of '%s' with %s; "
+                                             "define '__index__' or use a string field name",
+                                             instance->klass && instance->klass->name
+                                                 ? instance->klass->name->chars
+                                                 : "?",
+                                             value_type_name(index));
+                        } else {
+                            vm_runtime_error(ERROR_NAME,
+                                             "field '%s' not found on instance of '%s'",
+                                             AS_STRING(index)->chars,
+                                             instance->klass && instance->klass->name
+                                                 ? instance->klass->name->chars
+                                                 : "?");
+                        }
+                        goto handle_runtime_error;
+                    }
+                }
+            } else if (is_obj_type(object, OBJ_CLASS)) {
+                ObjClass *klass = AS_CLASS(object);
+
+                if (!is_obj_type(index, OBJ_STRING)) {
+                    vm_runtime_error(ERROR_TYPE, "a class member name must be a string, received %s",
+                                     value_type_name(index));
+                    goto handle_runtime_error;
+                }
+                Value *static_value = class_find_static(klass, AS_STRING(index));
+
+                if (static_value) {
+                    result = *static_value;
+                } else {
+                    ObjClosure *method = class_find_method(klass, AS_STRING(index));
+
+                    if (!method) {
+                        vm_runtime_error(ERROR_NAME, "class '%s' has no member '%s'",
+                                         klass->name ? klass->name->chars : "?",
+                                         AS_STRING(index)->chars);
+                        goto handle_runtime_error;
+                    }
+                    result = OBJ_VAL(method);
+                }
             } else if (is_obj_type(object, OBJ_STRING)) {
                 ObjString *string = AS_STRING(object);
                 int position;
@@ -5260,8 +5656,44 @@ cold_dispatch:
                 array->items[position] = value;
             } else if (is_obj_type(object, OBJ_MAP)) {
                 map_set(AS_MAP(object), index, value);
+            } else if (is_obj_type(object, OBJ_INSTANCE)) {
+                /* String keys are fields: dot assignment compiles as a string
+                 * index, so this keeps `self.x = v` working inside
+                 * `__index_set__` instead of recursing. */
+                if (is_obj_type(index, OBJ_STRING)) {
+                    map_set(AS_INSTANCE(object)->fields, index, value);
+                } else {
+                    Value args[2] = { index, value };
+                    Value ignored;
+                    DunderStatus dunder =
+                        call_dunder(object, "__index_set__", 2, args, &ignored);
+
+                    if (dunder == DUNDER_ERROR) {
+                        goto handle_runtime_error;
+                    }
+                    if (dunder == DUNDER_ABSENT) {
+                        vm_runtime_error(ERROR_TYPE,
+                                         "cannot assign an index of type %s on an instance of "
+                                         "'%s'; define '__index_set__' or use a string field name",
+                                         value_type_name(index),
+                                         AS_INSTANCE(object)->klass &&
+                                                 AS_INSTANCE(object)->klass->name
+                                             ? AS_INSTANCE(object)->klass->name->chars
+                                             : "?");
+                        goto handle_runtime_error;
+                    }
+                }
+            } else if (is_obj_type(object, OBJ_CLASS)) {
+                if (!is_obj_type(index, OBJ_STRING)) {
+                    vm_runtime_error(ERROR_TYPE, "a class member name must be a string, received %s",
+                                     value_type_name(index));
+                    goto handle_runtime_error;
+                }
+                table_set(&AS_CLASS(object)->statics, AS_STRING(index), value);
             } else {
-                vm_runtime_error(ERROR_TYPE, "can only assign to an array or a map, tried to assign to a %s",
+                vm_runtime_error(ERROR_TYPE,
+                                 "can only assign to an array, a map, an instance or a class, "
+                                 "tried to assign to a %s",
                                  value_type_name(object));
                 goto handle_runtime_error;
             }
@@ -5451,8 +5883,28 @@ cold_dispatch:
                 length = AS_MAP(value)->count;
             } else if (is_obj_type(value, OBJ_STRING)) {
                 length = utf8_length(AS_STRING(value)->chars, AS_STRING(value)->length);
+            } else if (is_obj_type(value, OBJ_INSTANCE)) {
+                Value result;
+                DunderStatus status = call_dunder(value, "__len__", 0, NULL, &result);
+
+                if (status == DUNDER_ERROR) {
+                    goto handle_runtime_error;
+                }
+                if (status == DUNDER_ABSENT) {
+                    vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map, a string or an "
+                                     "instance with '__len__', received %s",
+                                     value_type_name(value));
+                    goto handle_runtime_error;
+                }
+                if (!is_int(result) || AS_INT(result) < 0) {
+                    vm_runtime_error(ERROR_TYPE, "'__len__' must return a non-negative integer, "
+                                     "received %s", value_type_name(result));
+                    goto handle_runtime_error;
+                }
+                length = AS_INT(result);
             } else {
-                vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map or a string, received %s",
+                vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map, a string or an "
+                                 "instance with '__len__', received %s",
                                  value_type_name(value));
                 goto handle_runtime_error;
             }
@@ -5462,15 +5914,25 @@ cold_dispatch:
             break;
         }
 
-        case OP_TO_STRING:
-            vm.stack_top[-1] = OBJ_VAL(value_to_string(peek(0)));
+        case OP_TO_STRING: {
+            ObjString *text = vm_value_to_string(peek(0));
+
+            if (!text) {
+                goto handle_runtime_error;
+            }
+            vm.stack_top[-1] = OBJ_VAL(text);
             break;
+        }
 
         case OP_EQUAL: {
             Value b = pop();
             Value a = pop();
+            bool equal;
 
-            push(BOOL_VAL(values_equal(a, b)));
+            if (!equality_values(a, b, &equal)) {
+                goto handle_runtime_error;
+            }
+            push(BOOL_VAL(equal));
             break;
         }
 
@@ -5480,8 +5942,9 @@ cold_dispatch:
             Value b = frame->closure->function->chunk.constants[READ_U16()];
             bool result;
 
-            if (!compare_values(instruction == OP_GREATER_LOCAL_CONST, frame->slots[slot], b,
-                                &result)) {
+            if (!compare_operator(frame->slots[slot], b,
+                                  instruction == OP_GREATER_LOCAL_CONST ? "__gt__" : "__lt__",
+                                  instruction == OP_GREATER_LOCAL_CONST, false, &result)) {
                 goto handle_runtime_error;
             }
             push(BOOL_VAL(result));
@@ -5494,7 +5957,8 @@ cold_dispatch:
             Value a = pop();
             bool result;
 
-            if (!compare_values(instruction == OP_GREATER, a, b, &result)) {
+            if (!compare_operator(a, b, instruction == OP_GREATER ? "__gt__" : "__lt__",
+                                  instruction == OP_GREATER, false, &result)) {
                 goto handle_runtime_error;
             }
             push(BOOL_VAL(result));
@@ -5522,11 +5986,14 @@ cold_dispatch:
                 break;
             }
             /* Strings have a total order, so `a <= b` is `!(a > b)` and
-             * `a >= b` is `!(a < b)`; anything else is a type error. */
-            if (!compare_values(instruction == OP_LESS_OR_EQUAL, a, b, &result)) {
+             * `a >= b` is `!(a < b)`; instances may define their own dunder and
+             * anything else is a type error. */
+            if (!compare_operator(a, b,
+                                  instruction == OP_LESS_OR_EQUAL ? "__le__" : "__ge__",
+                                  instruction == OP_LESS_OR_EQUAL, true, &result)) {
                 goto handle_runtime_error;
             }
-            push(BOOL_VAL(!result));
+            push(BOOL_VAL(result));
             break;
         }
 
@@ -5617,6 +6084,19 @@ cold_dispatch:
         case OP_POW: {
             Value b = pop();
             Value a = pop();
+            Value result;
+
+            if (is_obj_type(a, OBJ_INSTANCE)) {
+                DunderStatus status = call_dunder(a, "__pow__", 1, &b, &result);
+
+                if (status == DUNDER_OK) {
+                    push(result);
+                    break;
+                }
+                if (status == DUNDER_ERROR) {
+                    goto handle_runtime_error;
+                }
+            }
             if (!value_is_numeric(a) || !value_is_numeric(b)) {
                 vm_runtime_error(ERROR_TYPE, "operands of '**' must be numbers");
                 goto handle_runtime_error;
@@ -5664,25 +6144,34 @@ cold_dispatch:
             Value target = pop();
             Value inst = pop();
             bool result = false;
-            ObjString *target_name = NULL;
 
-            /* The right operand may be the class value (its constructor) or a name. */
-            if (is_obj_type(target, OBJ_STRING)) {
-                target_name = AS_STRING(target);
-            } else if (is_obj_type(target, OBJ_CLOSURE)) {
-                target_name = AS_CLOSURE(target)->function->name;
-            } else if (is_obj_type(target, OBJ_FUNCTION)) {
-                target_name = AS_FUNCTION(target)->name;
-            }
-            if (target_name && is_obj_type(inst, OBJ_MAP)) {
-                Value c;
-                if (map_get(AS_MAP(inst), OBJ_VAL(object_string("__class", 7)), &c) &&
-                    is_obj_type(c, OBJ_STRING)) {
-                    ObjString *actual = AS_STRING(c);
+            if (is_obj_type(target, OBJ_CLASS)) {
+                result = value_is_instance_of(inst, AS_CLASS(target));
+            } else {
+                ObjString *target_name = NULL;
 
-                    result = actual->length == target_name->length &&
-                             memcmp(actual->chars, target_name->chars,
-                                    (size_t)target_name->length) == 0;
+                /* A type name also works; the class chain is searched so
+                 * `instance instanceof "Base"` respects inheritance. */
+                if (is_obj_type(target, OBJ_STRING)) {
+                    target_name = AS_STRING(target);
+                } else if (is_obj_type(target, OBJ_CLOSURE)) {
+                    target_name = AS_CLOSURE(target)->function->name;
+                } else if (is_obj_type(target, OBJ_FUNCTION)) {
+                    target_name = AS_FUNCTION(target)->name;
+                }
+                if (target_name) {
+                    ObjClass *klass = value_class(inst);
+
+                    if (klass) {
+                        for (ObjClass *current = klass; current; current = current->superclass) {
+                            if (class_has_name(current, target_name)) {
+                                result = true;
+                                break;
+                            }
+                        }
+                    } else {
+                        result = strcmp(value_type_name(inst), target_name->chars) == 0;
+                    }
                 }
             }
             push(BOOL_VAL(result));
@@ -5788,6 +6277,18 @@ cold_dispatch:
         case OP_NEGATE: {
             Value value = pop();
 
+            if (is_obj_type(value, OBJ_INSTANCE)) {
+                Value result;
+                DunderStatus status = call_dunder(value, "__neg__", 0, NULL, &result);
+
+                if (status == DUNDER_OK) {
+                    push(result);
+                    break;
+                }
+                if (status == DUNDER_ERROR) {
+                    goto handle_runtime_error;
+                }
+            }
             if (value.type == VAL_INT) {
                 int64_t integer = AS_INT(value);
 
@@ -5938,20 +6439,74 @@ cold_dispatch:
             break;
         }
 
-        case OP_NEW: {
-            int arg_count = READ_BYTE();
-            Value callee = peek(arg_count);
+        case OP_CLASS: {
+            uint16_t name_slot = READ_U16();
+            ObjString *name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
+            Value super_val = pop();
+            ObjClass *superclass = NULL;
 
-            if (!is_obj_type(callee, OBJ_CLOSURE) ||
-                !AS_CLOSURE(callee)->function->is_constructor) {
-                vm_runtime_error(ERROR_TYPE, "'new' expects a class, received %s",
-                                 value_type_name(callee));
+            if (!is_nil(super_val)) {
+                if (!is_obj_type(super_val, OBJ_CLASS)) {
+                    vm_runtime_error(ERROR_TYPE,
+                                     "a class can only extend another class, received %s",
+                                     value_type_name(super_val));
+                    goto handle_runtime_error;
+                }
+                superclass = AS_CLASS(super_val);
+            }
+            push(OBJ_VAL(object_class(name, superclass)));
+            break;
+        }
+
+        case OP_CLASS_FIELD_INIT: {
+            Value closure_val = peek(0);
+            ObjClass *klass = AS_CLASS(peek(1));
+
+            if (!is_obj_type(closure_val, OBJ_CLOSURE)) {
+                vm_runtime_error(ERROR_TYPE, "field initializers must be functions");
                 goto handle_runtime_error;
             }
-            vm.constructing = true;
-            bool ok = call_value(callee, arg_count);
-            vm.constructing = false;
-            if (!ok) {
+            AS_CLOSURE(closure_val)->klass = klass;
+            klass->field_init = AS_CLOSURE(closure_val);
+            pop();
+            break;
+        }
+
+        case OP_METHOD: {
+            uint16_t name_slot = READ_U16();
+            bool is_static = READ_BYTE() != 0;
+            ObjString *name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
+            Value method_val = peek(0);
+            ObjClass *klass = AS_CLASS(peek(1));
+
+            if (!is_obj_type(method_val, OBJ_CLOSURE)) {
+                vm_runtime_error(ERROR_TYPE, "methods must be functions");
+                goto handle_runtime_error;
+            }
+            AS_CLOSURE(method_val)->klass = klass;
+            AS_CLOSURE(method_val)->is_static = is_static;
+            Table *target = is_static ? &klass->statics : &klass->methods;
+
+            table_set(target, name, method_val);
+            pop();
+            break;
+        }
+
+        case OP_SUPER: {
+            uint8_t arg_count = READ_BYTE();
+            ObjClass *klass = frame->closure->klass;
+
+            if (!klass || !klass->superclass) {
+                vm_runtime_error(ERROR_NAME, "'super' requires a superclass");
+                goto handle_runtime_error;
+            }
+            ObjClosure *method = class_find_method(klass->superclass, object_string("init", 4));
+            if (!method) {
+                vm_runtime_error(ERROR_NAME, "the superclass '%s' does not define 'init'",
+                                 klass->superclass->name ? klass->superclass->name->chars : "?");
+                goto handle_runtime_error;
+            }
+            if (!call_method(method, arg_count, peek(arg_count))) {
                 if (vm.has_exception) {
                     vm.had_error = false;
                     push(vm.exception_value);
@@ -5960,11 +6515,93 @@ cold_dispatch:
                 }
                 goto handle_runtime_error;
             }
-            if (vm.has_exception) {
-                vm.had_error = false;
-                push(vm.exception_value);
-                vm.has_exception = false;
-                goto do_throw;
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_SUPER_INVOKE: {
+            uint16_t name_slot = READ_U16();
+            uint8_t arg_count = READ_BYTE();
+            ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
+            ObjClass *klass = frame->closure->klass;
+            bool is_static = frame->closure->is_static;
+
+            if (!klass || !klass->superclass) {
+                vm_runtime_error(ERROR_NAME, "'super' requires a superclass");
+                goto handle_runtime_error;
+            }
+
+            if (is_static) {
+                Value *static_value = class_find_static(klass->superclass, method_name);
+
+                if (!static_value) {
+                    vm_runtime_error(ERROR_NAME,
+                                     "static method '%s' not found in the superclass of '%s'",
+                                     method_name->chars,
+                                     klass->name ? klass->name->chars : "?");
+                    goto handle_runtime_error;
+                }
+                if (is_obj_type(*static_value, OBJ_CLOSURE)) {
+                    if (!call_method(AS_CLOSURE(*static_value), arg_count, NIL_VAL)) {
+                        if (vm.has_exception) {
+                            vm.had_error = false;
+                            push(vm.exception_value);
+                            vm.has_exception = false;
+                            goto do_throw;
+                        }
+                        goto handle_runtime_error;
+                    }
+                    frame = &vm.frames[vm.frame_count - 1];
+                    break;
+                }
+                if (is_obj_type(*static_value, OBJ_NATIVE)) {
+                    *(vm.stack_top - arg_count - 1) = *static_value;
+                    if (!call_value(*static_value, arg_count)) {
+                        if (vm.has_exception) {
+                            vm.had_error = false;
+                            push(vm.exception_value);
+                            vm.has_exception = false;
+                            goto do_throw;
+                        }
+                        goto handle_runtime_error;
+                    }
+                    break;
+                }
+                vm_runtime_error(ERROR_TYPE, "static '%s' is not a function", method_name->chars);
+                goto handle_runtime_error;
+            }
+
+            ObjClosure *method = class_find_method(klass->superclass, method_name);
+            if (!method) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found in the superclass of '%s'",
+                                 method_name->chars,
+                                 klass->name ? klass->name->chars : "?");
+                goto handle_runtime_error;
+            }
+            if (!call_method(method, arg_count, peek(arg_count))) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
+                goto handle_runtime_error;
+            }
+            frame = &vm.frames[vm.frame_count - 1];
+            break;
+        }
+
+        case OP_NEW: {
+            int arg_count = READ_BYTE();
+
+            if (!invoke_constructor(arg_count)) {
+                if (vm.has_exception) {
+                    vm.had_error = false;
+                    push(vm.exception_value);
+                    vm.has_exception = false;
+                    goto do_throw;
+                }
+                goto handle_runtime_error;
             }
             if (vm.had_error) {
                 goto handle_runtime_error;
@@ -5979,13 +6616,6 @@ cold_dispatch:
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
-                if (function->is_constructor) {
-                    vm_runtime_error(ERROR_TYPE,
-                                     "class '%s' must be constructed with 'new %s(...)'",
-                                     function->name ? function->name->chars : "?",
-                                     function->name ? function->name->chars : "?");
-                    goto handle_runtime_error;
-                }
                 if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
                     if (function->is_varargs) {
                         vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
@@ -6106,17 +6736,7 @@ cold_dispatch:
             for (int i = 0; i < count; i++) {
                 push(arr->items[i]);
             }
-            Value callee = peek(count);
-            if (!is_obj_type(callee, OBJ_CLOSURE) ||
-                !AS_CLOSURE(callee)->function->is_constructor) {
-                vm_runtime_error(ERROR_TYPE, "'new' expects a class, received %s",
-                                 value_type_name(callee));
-                goto handle_runtime_error;
-            }
-            vm.constructing = true;
-            bool ok = call_value(callee, count);
-            vm.constructing = false;
-            if (!ok) {
+            if (!invoke_constructor(count)) {
                 if (vm.has_exception) {
                     vm.had_error = false;
                     push(vm.exception_value);
@@ -6124,12 +6744,6 @@ cold_dispatch:
                     goto do_throw;
                 }
                 goto handle_runtime_error;
-            }
-            if (vm.has_exception) {
-                vm.had_error = false;
-                push(vm.exception_value);
-                vm.has_exception = false;
-                goto do_throw;
             }
             if (vm.had_error) {
                 goto handle_runtime_error;
@@ -6191,13 +6805,6 @@ cold_dispatch:
                 push(arr->items[i]);
             }
             Value callee = peek(arg_count);
-            if (is_obj_type(callee, OBJ_CLOSURE) &&
-                AS_CLOSURE(callee)->function->is_constructor) {
-                vm_runtime_error(ERROR_TYPE, "class '%s' must be constructed with 'new %s(...)'",
-                                 AS_CLOSURE(callee)->function->name->chars,
-                                 AS_CLOSURE(callee)->function->name->chars);
-                goto handle_runtime_error;
-            }
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
@@ -6514,6 +7121,115 @@ cold_dispatch:
                 }
             }
 
+            if (is_obj_type(receiver, OBJ_INSTANCE)) {
+                ObjInstance *instance = AS_INSTANCE(receiver);
+                Value field_value;
+
+                /* A field holding a function shadows a method, so callbacks
+                 * stored on instances keep working. */
+                if (map_get(instance->fields, OBJ_VAL(method_name), &field_value)) {
+                    if (is_obj_type(field_value, OBJ_CLOSURE)) {
+                        if (!call_method(AS_CLOSURE(field_value), arg_count, receiver)) {
+                            if (vm.has_exception) {
+                                vm.had_error = false;
+                                push(vm.exception_value);
+                                vm.has_exception = false;
+                                goto do_throw;
+                            }
+                            goto handle_runtime_error;
+                        }
+                        frame = &vm.frames[vm.frame_count - 1];
+                        break;
+                    }
+                    if (is_obj_type(field_value, OBJ_NATIVE)) {
+                        if (!call_value(field_value, arg_count)) {
+                            if (vm.has_exception) {
+                                vm.had_error = false;
+                                push(vm.exception_value);
+                                vm.has_exception = false;
+                                goto do_throw;
+                            }
+                            goto handle_runtime_error;
+                        }
+                        break;
+                    }
+                    if (is_nil(field_value)) {
+                        vm_runtime_error(ERROR_TYPE, "field '%s' is nil; check it before calling",
+                                         method_name->chars);
+                        goto handle_runtime_error;
+                    }
+                    vm_runtime_error(ERROR_TYPE, "field '%s' is not a function", method_name->chars);
+                    goto handle_runtime_error;
+                }
+
+                ObjClosure *method = class_find_method(instance->klass, method_name);
+                if (!method) {
+                    vm_runtime_error(ERROR_NAME, "method '%s' not found on instance of '%s'",
+                                     method_name->chars,
+                                     instance->klass && instance->klass->name
+                                         ? instance->klass->name->chars
+                                         : "?");
+                    goto handle_runtime_error;
+                }
+                if (!call_method(method, arg_count, receiver)) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    goto handle_runtime_error;
+                }
+                frame = &vm.frames[vm.frame_count - 1];
+                break;
+            }
+
+            if (is_obj_type(receiver, OBJ_CLASS)) {
+                ObjClass *receiver_class = AS_CLASS(receiver);
+                Value *static_value = class_find_static(receiver_class, method_name);
+
+                if (!static_value) {
+                    if (class_find_method(receiver_class, method_name)) {
+                        vm_runtime_error(ERROR_TYPE,
+                                         "method '%s' is an instance method; call it on an instance of '%s'",
+                                         method_name->chars,
+                                         receiver_class->name ? receiver_class->name->chars : "?");
+                    } else {
+                        vm_runtime_error(ERROR_NAME, "class '%s' has no static method '%s'",
+                                         receiver_class->name ? receiver_class->name->chars : "?",
+                                         method_name->chars);
+                    }
+                    goto handle_runtime_error;
+                }
+                if (is_obj_type(*static_value, OBJ_CLOSURE)) {
+                    if (!call_method(AS_CLOSURE(*static_value), arg_count, NIL_VAL)) {
+                        if (vm.has_exception) {
+                            vm.had_error = false;
+                            push(vm.exception_value);
+                            vm.has_exception = false;
+                            goto do_throw;
+                        }
+                        goto handle_runtime_error;
+                    }
+                    frame = &vm.frames[vm.frame_count - 1];
+                    break;
+                }
+                if (is_obj_type(*static_value, OBJ_NATIVE)) {
+                    if (!call_value(*static_value, arg_count)) {
+                        if (vm.has_exception) {
+                            vm.had_error = false;
+                            push(vm.exception_value);
+                            vm.has_exception = false;
+                            goto do_throw;
+                        }
+                        goto handle_runtime_error;
+                    }
+                    break;
+                }
+                vm_runtime_error(ERROR_TYPE, "static '%s' is not a function", method_name->chars);
+                goto handle_runtime_error;
+            }
+
             Value native_res;
             if (dispatch_native_method(receiver, method_name, arg_count, &native_res)) {
                 if (vm.has_exception) {
@@ -6537,7 +7253,9 @@ cold_dispatch:
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,
                                  value_type_name(receiver));
             } else {
-                vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
+                vm_runtime_error(ERROR_TYPE,
+                                 "method call receiver must be a map, an instance or a class, "
+                                 "received %s",
                                  value_type_name(receiver));
             }
             goto handle_runtime_error;
@@ -6555,15 +7273,44 @@ cold_dispatch:
             }
 
             Value receiver = peek(0);
-            if (!is_obj_type(receiver, OBJ_MAP)) {
-                vm_runtime_error(ERROR_TYPE, "method call receiver must be a map, received %s",
+            Value method_val = NIL_VAL;
+            bool found = false;
+            bool bind_self = true;
+
+            if (is_obj_type(receiver, OBJ_MAP)) {
+                found = map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val);
+            } else if (is_obj_type(receiver, OBJ_INSTANCE)) {
+                ObjInstance *instance = AS_INSTANCE(receiver);
+
+                if (map_get(instance->fields, OBJ_VAL(method_name), &method_val)) {
+                    found = true;
+                } else {
+                    ObjClosure *method = class_find_method(instance->klass, method_name);
+
+                    if (method) {
+                        method_val = OBJ_VAL(method);
+                        found = true;
+                    }
+                }
+            } else if (is_obj_type(receiver, OBJ_CLASS)) {
+                Value *static_value = class_find_static(AS_CLASS(receiver), method_name);
+
+                if (static_value) {
+                    method_val = *static_value;
+                    found = true;
+                    bind_self = false;
+                }
+            } else {
+                vm_runtime_error(ERROR_TYPE,
+                                 "method call receiver must be a map, an instance or a class, "
+                                 "received %s",
                                  value_type_name(receiver));
                 goto handle_runtime_error;
             }
 
-            Value method_val;
-            if (!map_get(AS_MAP(receiver), OBJ_VAL(method_name), &method_val)) {
-                vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
+            if (!found) {
+                vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,
+                                 value_type_name(receiver));
                 goto handle_runtime_error;
             }
 
@@ -6581,7 +7328,8 @@ cold_dispatch:
             }
 
             if (is_obj_type(method_val, OBJ_CLOSURE)) {
-                if (!call_closure((ObjClosure *)AS_OBJ(method_val), count)) {
+                if (!call_method(AS_CLOSURE(method_val), count,
+                                 bind_self ? receiver : NIL_VAL)) {
                     if (vm.has_exception) {
                         vm.had_error = false;
                         push(vm.exception_value);
@@ -6590,8 +7338,6 @@ cold_dispatch:
                     }
                     goto handle_runtime_error;
                 }
-                /* Bind self on the newly created frame */
-                vm.frames[vm.frame_count - 1].self = receiver;
                 frame = &vm.frames[vm.frame_count - 1];
             } else if (is_obj_type(method_val, OBJ_NATIVE)) {
                 if (!call_value(method_val, count)) {
@@ -6668,7 +7414,8 @@ handle_runtime_error:
 
 /* Calls `callee` with `arg_count` arguments already pushed on the stack and
  * stores its return value in *result. Used by higher-order natives. */
-static bool call_callback(Value callee, int arg_count, Value *result)
+static bool call_callback_impl(Value callee, int arg_count, Value self, bool bind_self,
+                               Value *result)
 {
     if (!ensure_stack(arg_count + 256)) {
         return false;
@@ -6703,9 +7450,21 @@ static bool call_callback(Value callee, int arg_count, Value *result)
 
     int base_frame = vm.frame_count;
 
+    /* `self` is only a C local until the frame starts; keep the collector from
+     * freeing it while call_closure makes room for default arguments. */
+    if (bind_self) {
+        mem_pause_gc();
+    }
     if (!call_closure((ObjClosure *)AS_OBJ(callee), arg_count)) {
+        if (bind_self) {
+            mem_resume_gc();
+        }
         vm.stack_top = vm.stack + args_offset;
         return false;
+    }
+    if (bind_self) {
+        vm.frames[vm.frame_count - 1].self = self;
+        mem_resume_gc();
     }
 
     InterpretResult status = run(base_frame);
@@ -6715,6 +7474,64 @@ static bool call_callback(Value callee, int arg_count, Value *result)
     }
     *result = pop();
     return true;
+}
+
+static bool call_callback(Value callee, int arg_count, Value *result)
+{
+    return call_callback_impl(callee, arg_count, NIL_VAL, false, result);
+}
+
+static bool call_callback_bound(Value callee, int arg_count, Value self, Value *result)
+{
+    return call_callback_impl(callee, arg_count, self, true, result);
+}
+
+/* Runs the field initializers of `klass` and its ancestors base-first. */
+static bool initialize_instance_fields(ObjClass *klass, Value instance)
+{
+    ObjClass *chain[64];
+    int depth = 0;
+
+    for (ObjClass *current = klass; current; current = current->superclass) {
+        if (depth == (int)(sizeof(chain) / sizeof(chain[0]))) {
+            vm_runtime_error(ERROR_RUNTIME, "class hierarchy is too deep");
+            return false;
+        }
+        chain[depth++] = current;
+    }
+
+    for (int i = depth - 1; i >= 0; i--) {
+        if (!chain[i]->field_init) {
+            continue;
+        }
+        Value result;
+
+        if (!call_callback_bound(OBJ_VAL(chain[i]->field_init), 0, instance, &result)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static ObjString *vm_value_to_string(Value value)
+{
+    if (is_obj_type(value, OBJ_INSTANCE)) {
+        Value result;
+        DunderStatus status = call_dunder(value, "to_string", 0, NULL, &result);
+
+        if (status == DUNDER_ERROR) {
+            return NULL;
+        }
+        if (status == DUNDER_OK) {
+            if (!is_obj_type(result, OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "to_string() must return a string, received %s",
+                                 value_type_name(result));
+                return NULL;
+            }
+            return AS_STRING(result);
+        }
+    }
+    return value_to_string(value);
 }
 
 /* ------------------------------------------------------------------ */
@@ -6826,6 +7643,7 @@ void vm_init(void)
     define_native("enumerate", native_enumerate, 1);
     define_native("zip", native_zip, 2);
     define_native("isinstance", native_isinstance, 2);
+    define_native("is_a", native_is_a, 2);
     define_native("copy", native_copy, 1);
     define_native("list_dir", native_list_dir, 1);
     define_native("mkdir", native_mkdir, 1);

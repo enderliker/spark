@@ -94,6 +94,11 @@ typedef enum {
     OP_END_FINALLY,
     OP_INVOKE,        /* u16: constant method name, u8: arg count */
     OP_INVOKE_SPREAD, /* u16: constant method name */
+    OP_CLASS,         /* u16: constant class name; pops the superclass or nil */
+    OP_METHOD,        /* u16: constant method name, u8: 1 when static */
+    OP_CLASS_FIELD_INIT, /* pops a closure that initializes declared fields */
+    OP_SUPER,         /* u8: arg count; calls the superclass method with this name */
+    OP_SUPER_INVOKE,  /* u16: constant method name, u8: arg count */
     /* Comparison-and-jump superinstructions. The branch is taken when the
      * condition is false, matching the "jump over the then-branch" shape. */
     OP_JUMP_IF_NOT_LESS_OR_EQUAL_LOCAL_CONST,    /* u8: slot, u16: const, u16: offset */

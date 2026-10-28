@@ -5,7 +5,12 @@
 #include <stdio.h>
 
 #include "chunk.h"
+#include "table.h"
 #include "value.h"
+
+struct ObjClass;
+struct ObjInstance;
+struct ObjClosure;
 
 struct ObjString {
     Obj obj;
@@ -49,7 +54,6 @@ typedef struct ObjFunction {
     int arity;
     int min_arity;
     bool is_varargs;
-    bool is_constructor;
     int upvalue_count;
     Chunk chunk;
     ObjString *name;
@@ -67,12 +71,36 @@ typedef struct ObjUpvalue {
     struct ObjUpvalue *next;
 } ObjUpvalue;
 
-typedef struct {
+typedef struct ObjClosure {
     Obj obj;
     ObjFunction *function;
     ObjUpvalue **upvalues;
     int upvalue_count;
+    /* Class that declared the method, or NULL for plain functions. `super`
+     * starts its lookup at klass->superclass. */
+    struct ObjClass *klass;
+    /* True when this closure is stored in a class's static table. */
+    bool is_static;
 } ObjClosure;
+
+/* A class: instance methods, static members and the closure that initializes
+ * the fields this class declares (base classes are initialized first). */
+typedef struct ObjClass {
+    Obj obj;
+    ObjString *name;
+    struct ObjClass *superclass;
+    Table methods;
+    Table statics;
+    struct ObjClosure *field_init;
+} ObjClass;
+
+/* A class instance. Fields live in a map so field access reuses the same hash
+ * table as maps; methods are looked up through the class chain. */
+typedef struct ObjInstance {
+    Obj obj;
+    ObjClass *klass;
+    ObjMap *fields;
+} ObjInstance;
 
 typedef struct ObjFile {
     Obj obj;
@@ -93,6 +121,8 @@ typedef struct {
 #define AS_ARRAY(v) ((ObjArray *)(v).as.obj)
 #define AS_MAP(v) ((ObjMap *)(v).as.obj)
 #define AS_FILE(v) ((ObjFile *)(v).as.obj)
+#define AS_CLASS(v) ((ObjClass *)(v).as.obj)
+#define AS_INSTANCE(v) ((ObjInstance *)(v).as.obj)
 
 typedef Value (*NativeFn)(int arg_count, Value *args);
 
@@ -122,6 +152,13 @@ bool map_get(ObjMap *map, Value key, Value *out);
 bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index);
 bool map_set(ObjMap *map, Value key, Value value);
 bool map_delete(ObjMap *map, Value key);
+
+ObjClass *object_class(ObjString *name, ObjClass *superclass);
+ObjInstance *object_instance(ObjClass *klass);
+/* Finds `name` in `klass` or any superclass. */
+ObjClosure *class_find_method(ObjClass *klass, ObjString *name);
+Value *class_find_static(ObjClass *klass, ObjString *name);
+bool class_is_subclass(ObjClass *klass, ObjClass *candidate);
 
 ObjFunction *object_function(void);
 ObjClosure *object_closure(ObjFunction *function);
