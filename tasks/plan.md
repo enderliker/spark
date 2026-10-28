@@ -161,10 +161,11 @@ Decided on 2026-10-28 (recorded in `docs/intent/networking.md`):
 - **Q12 (blocking semantics) - DECIDED:** an operation that would block yields the
   coroutine, consistent with channels. The `run_depth > 1` guard extends to these
   waits.
+- **Q13 (HTTP server scope) - DECIDED (phase 17):** an HTTP server is in scope, built
+  as a Spark library on the socket layer (`lib/http.spark`) so the native surface
+  stays small, rather than as a large set of server natives.
 
 Still open (answer at the start of the relevant phase):
-- **Q13 (HTTP server scope).** Is an HTTP server wanted, or is the client enough and
-  the server stays an example?
 - **Q14 (test certificates).** Acceptable to embed a throwaway self-signed
   certificate and key under `tests/` for local TLS tests?
 - **Q15 (UDP).** In scope now (T86) or deferred until something needs it?
