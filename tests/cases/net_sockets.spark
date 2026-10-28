@@ -1,0 +1,51 @@
+// TCP sockets: resource objects, a local echo round-trip and descriptor hygiene.
+fn fd_count() {
+    return len(list_dir("/proc/self/fd"));
+}
+
+var baseline = fd_count();
+
+// A listener picks an ephemeral port, so the fixture never races for one.
+var server = tcp_listen("127.0.0.1", 0);
+var port = server.port();
+print("types:", type(server), port > 0);
+
+// The operating system completes the handshake before accept() is called, so
+// the client can connect first.
+var client = tcp_connect("127.0.0.1", port, 2000);
+var peer = server.accept(2000);
+print("accepted:", peer != nil, type(peer));
+
+// Send in pieces, then read a whole line.
+print("sent:", client.send("hello "), client.send("world\n"));
+print("line:", peer.recv_line(64));
+
+// Addresses are numeric host/port maps.
+var local = peer.local();
+print("local:", local.host, local.port == port);
+print("peer host:", client.peer().host);
+
+// Raw reads return the bytes available; EOF is nil once the peer closes.
+client.send("raw!!");
+print("raw:", peer.recv(5));
+client.close();
+print("eof:", peer.recv(5) == nil);
+
+peer.close();
+server.close();
+print("closed type:", type(peer));
+print("fds back:", fd_count() == baseline);
+
+// An unreferenced socket is released by the collector's finalizer.
+fn churn() {
+    var i = 0;
+    while (i < 40) {
+        var temp = udp_bind("127.0.0.1", 0);
+        i += 1;
+    }
+}
+
+churn();
+gc();
+print("fds after gc:", fd_count() == baseline);
+print("net sockets ok");

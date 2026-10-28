@@ -446,7 +446,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
-| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, or the class name of an instance. |
+| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, or the class name of an instance. |
 | `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string also works. |
 | `is_a(x, Class)` | `true` when `x` is an instance of `Class` or one of its subclasses. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
@@ -509,6 +509,10 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `write(file, data)` | Writes string data to file handle; returns count of bytes written. |
 | `close(file)` | Closes file handle; using a closed handle is an error. |
 | `eof(file)` | Whether file handle has reached end of file. |
+| `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
+| `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server` (port `0` binds an ephemeral port). |
+| `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket for datagrams; returns a `socket`. |
+| `net_hostname()` | The local host name. |
 | `list_dir(path)` | Array with the names of the entries in a directory. |
 | `mkdir(path)` | Creates a directory (succeeds when it already exists). |
 | `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
@@ -531,6 +535,66 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`.
+
+### Networking
+
+Sockets and servers are GC-managed resources: each owns a file descriptor and is
+released by `close()`, by the collector's finalizer when it becomes unreachable, and
+at shutdown. Using a closed handle is a runtime error and `type()` reports `"socket"`
+or `"server"`.
+
+```spark
+// TCP client
+var socket = tcp_connect("localhost", 8080, 5000); // 5 s deadline
+socket.send("ping\n");
+print(socket.recv_line());      // up to the next newline
+print(socket.recv(1024));       // up to 1024 bytes, or nil at EOF
+socket.close();
+
+// TCP server
+var server = tcp_listen("127.0.0.1", 0); // 0 binds an ephemeral port
+var client = server.accept(5000);        // nil when nothing connects in time
+client.send("pong\n");
+client.close();
+server.close();
+
+// UDP
+var datagram = udp_bind("127.0.0.1", 0);
+datagram.send_to("ping", "127.0.0.1", 9999);
+var message = datagram.recv_from(1024);  // {data, host, port}
+```
+
+Socket and server methods:
+
+| Call | Result |
+| --- | --- |
+| `sock.send(data)` | Writes all of `data`; returns the byte count. TCP only. |
+| `sock.recv(max)` | Up to `max` bytes, or `nil` at end of stream. |
+| `sock.recv_line(max?)` | Up to the next newline (the newline, and a preceding `\r`, are dropped); `nil` at end of stream. Default bound 64 KiB. |
+| `sock.send_to(data, host, port)` | Sends one datagram; returns the byte count. UDP only. |
+| `sock.recv_from(max)` | A `{data, host, port}` map for one datagram. UDP only. |
+| `sock.peer()` / `sock.local()` | A `{host, port}` map with the numeric peer / local address. |
+| `sock.close()` | Closes the socket. |
+| `srv.accept(timeout_ms?)` | An accepted `socket`, or `nil` on timeout. |
+| `srv.port()` | The bound port. |
+| `srv.close()` | Closes the listener. |
+
+- `host` is a name, an IPv4 literal, or an IPv6 literal in brackets (`"[::1]"`).
+  `getaddrinfo` resolves names and every resolved address is tried in turn, so
+  `localhost` works over either family.
+- `port` must be in `0..65535`.
+- `timeout_ms` on `tcp_connect`/`udp_bind` is stored as the socket's default deadline
+  and bounds its later reads and writes; an accepted socket inherits the `accept`
+  timeout. Omitted or `nil` means "wait forever"; a negative value is an error.
+- Failure categories: `NetworkError` for an unknown host, a refused connection, an
+  invalid port, a reset connection or descriptor exhaustion; `TimeoutError` when an
+  operation exceeds its deadline. `accept` returns `nil` on timeout instead of raising.
+- Payload bounds: `recv`/`recv_from` accept at most 16 MiB and `recv_line` at most
+  16 MiB (default 64 KiB); larger values raise `ValueError`.
+
+Until the coroutine-aware waits land (phase 16), a blocking socket operation stalls
+every coroutine in the process; bounding each operation with a timeout is the
+workaround.
 
 The global constants `pi` and `nan` are predefined, and the REPL keeps the result of
 the last expression in `_`.
@@ -581,6 +645,8 @@ The categories are:
 | `AssertionError` | `assert` fails |
 | `RecursionError` | the call-depth limit is reached |
 | `MemoryError` | an allocation fails or a result would be too large |
+| `NetworkError` | a socket or name-resolution failure (refused, unknown host, invalid port, reset, descriptor exhaustion) |
+| `TimeoutError` | a network operation exceeded its deadline |
 | `RuntimeError` | any other runtime failure |
 
 Interpreter exit codes:
@@ -965,3 +1031,8 @@ Linter rules:
 - 16,777,216 values of channel capacity.
 - Coroutines are cooperative and single-threaded; each keeps its own operand
   stack (up to 4,194,304 items) and up to 4096 call frames.
+- A `recv`/`recv_from` returns at most 16 MiB; `recv_line` is bounded to 16 MiB
+  (default 64 KiB) and raises `ValueError` past that.
+- Ports are 16-bit (`0..65535`); port `0` asks the kernel for an ephemeral port.
+- A blocking socket call stalls the whole process until phase 16 makes it yield;
+  give every operation a timeout to bound it.

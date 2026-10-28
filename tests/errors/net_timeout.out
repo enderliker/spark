@@ -1,0 +1,2 @@
+exit: 70
+stderr: TimeoutError at line 4: 'recv' timed out after 50 ms

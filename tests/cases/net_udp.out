@@ -1,0 +1,8 @@
+types: socket socket
+sent: 4
+data: ping
+sender host: 127.0.0.1
+sender port ok: true
+fds back: true
+timeout: true
+udp ok

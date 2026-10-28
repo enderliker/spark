@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The main script now runs as a coroutine, so it can `yield` and use channels.
 - Channel waiters are traced by the collector: blocked coroutines, their stacks
   and the locals they captured stay alive across `gc()`.
+- Networking: `tcp_connect`, `tcp_listen`, `udp_bind` and `net_hostname`, plus
+  `socket` and `server` GC-managed resource objects. TCP clients and servers and
+  UDP datagrams, with timeouts, IPv4/IPv6 resolution (bracketed IPv6 literals
+  included) and categorized `NetworkError`/`TimeoutError` failures.
 
 ### Fixed
 
@@ -31,6 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rename it.
 - Class names may no longer be `coroutine` or `channel`, which join the existing
   reserved type names.
+- Class names may no longer be `socket` or `server`, which are now reserved type
+  names.
 - The bytecode file format version is now `5` (needed for `OP_YIELD`).
   `.sparkc` files compiled by an earlier build are rejected with exit code 65;
   recompile them with `spark --compile`.

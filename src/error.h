@@ -17,6 +17,8 @@ typedef enum {
     ERROR_ASSERT,        /* a failed assert */
     ERROR_RECURSION,     /* call depth exhausted */
     ERROR_MEMORY,        /* allocation failure or an oversized result */
+    ERROR_NETWORK,       /* a socket or name-resolution failure */
+    ERROR_TIMEOUT,       /* a network operation exceeded its deadline */
     ERROR_RUNTIME        /* any other runtime failure */
 } ErrorType;
 

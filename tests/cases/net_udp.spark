@@ -1,0 +1,33 @@
+// UDP datagrams: bind, send_to and recv_from report the sender address.
+fn fd_count() {
+    return len(list_dir("/proc/self/fd"));
+}
+
+var baseline = fd_count();
+var receiver = udp_bind("127.0.0.1", 0, 2000);
+var sender = udp_bind("127.0.0.1", 0, 2000);
+print("types:", type(receiver), type(sender));
+
+var receiver_port = receiver.local().port;
+print("sent:", sender.send_to("ping", "127.0.0.1", receiver_port));
+
+var message = receiver.recv_from(64);
+print("data:", message.data);
+print("sender host:", message.host);
+print("sender port ok:", message.port > 0 and message.port != receiver_port);
+
+sender.close();
+receiver.close();
+print("fds back:", fd_count() == baseline);
+
+// recv_from honours its timeout.
+var lonely = udp_bind("127.0.0.1", 0, 50);
+var timed_out = false;
+try {
+    lonely.recv_from(16);
+} catch (e) {
+    timed_out = e.type == "TimeoutError";
+}
+print("timeout:", timed_out);
+lonely.close();
+print("udp ok");

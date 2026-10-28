@@ -39,7 +39,9 @@ typedef enum {
     OBJ_CLASS,
     OBJ_INSTANCE,
     OBJ_COROUTINE,
-    OBJ_CHANNEL
+    OBJ_CHANNEL,
+    OBJ_SOCKET,
+    OBJ_SERVER
 } ObjType;
 
 struct Obj {

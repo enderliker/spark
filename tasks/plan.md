@@ -72,15 +72,16 @@ small amount of VM plumbing.
 ## Task List
 
 ### Phase 15 - Sockets (blocking core, no new dependencies)
-- [ ] T82 `ObjSocket`/`ObjServer`: the resource object model and `src/net.c` skeleton
-- [ ] T83 TCP client: `tcp_connect`, `send`, `recv`, `recv_line`, timeouts
-- [ ] T84 TCP server: `tcp_listen`, `accept`, `close`, ephemeral ports
-- [ ] T85 Name resolution, IPv4/IPv6, error categories and fd limits
-- [ ] T86 UDP: `udp_bind`, `send_to`, `recv_from`
+- [x] T82 `ObjSocket`/`ObjServer`: the resource object model and `src/net.c` skeleton
+- [x] T83 TCP client: `tcp_connect`, `send`, `recv`, `recv_line`, timeouts
+- [x] T84 TCP server: `tcp_listen`, `accept`, `close`, ephemeral ports
+- [x] T85 Name resolution, IPv4/IPv6, error categories and fd limits
+- [x] T86 UDP: `udp_bind`, `send_to`, `recv_from`
 
 ### Checkpoint: Phase 15
-- [ ] Suite green (optimized and ASan/UBSan), `-Werror` build, benchmark unchanged
-- [ ] A Spark client talks to a Spark server on localhost
+- [x] Suite green (optimized and ASan/UBSan), `-Werror` build
+- [x] A Spark client talks to a Spark server on localhost
+- [ ] Benchmark: `fib(27)` delta is heap-layout noise (see `tasks/todo.md`)
 
 ### Phase 16 - Asynchronous I/O on the coroutine scheduler (highest risk)
 - [ ] T87 Spike + `sock.wait(read?/write?, timeout)`: a blocked socket wait yields the coroutine

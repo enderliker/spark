@@ -27,6 +27,7 @@ result / error
 | `chunk.c` | Code, lines and constants arrays; recursive disassembler. |
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
+| `net.c` | TCP/UDP sockets, name resolution and the network natives. |
 | `table.c` | Hash table used for the global `name -> slot` map (open addressing, tombstones). |
 | `memory.c` | Byte accounting and the GC threshold. |
 | `value.h` | `Value` (tag + union) and the `Obj` header. |
@@ -79,6 +80,8 @@ Concrete types:
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
 - `ObjNative`: C function pointer, arity (`-1` = variadic) and name.
 - `ObjFile`: GC-managed file stream handle (`FILE *stream`, `is_closed`, `path`), automatically closed upon garbage collection if not closed explicitly.
+- `ObjSocket`: GC-managed socket descriptor (`fd`, `is_closed`, `NET_TCP`/`NET_UDP`, a stored `timeout_ms` and a small read buffer used by `recv_line`), closed by `close()`, the finalizer or shutdown.
+- `ObjServer`: GC-managed listening descriptor for TCP servers, released the same way.
 - `ObjCoroutine`: a green thread: private value stack, snapshot of its frames and try handlers, scheduler links, wait state and result.
 - `ObjChannel`: FIFO buffer of `Value` (head, count, capacity, `closed`) plus the queues of blocked senders and receivers.
 
@@ -333,6 +336,34 @@ for strings. The same rule applies to a callback result that is stored after
   and leaves the globals intact; the REPL can continue.
 - The REPL compiles in `repl_mode`, which turns each expression statement into
   `PRINT_REPL` to show its value.
+
+## Networking
+
+The socket layer lives in `src/net.c` and adds no dependencies. `net_init()` registers
+the global natives (`tcp_connect`, `tcp_listen`, `udp_bind`, `net_hostname`) from
+`vm_init`, and the VM routes method calls on socket and server receivers to
+`net_dispatch_method`.
+
+- **Resource model.** `ObjSocket` and `ObjServer` follow `ObjFile`: they own a file
+  descriptor, are closed by `close()`, by `object_free` when the collector finalizes
+  them, and on `vm_free`. `type()` reports `"socket"`/`"server"` and using a closed
+  handle is a runtime error.
+- **Timeouts.** Each operation turns its millisecond timeout into an absolute deadline
+  on a monotonic clock and waits with `poll(2)` before the blocking syscall (a timeout
+  of `0` waits forever). The handshake runs on a temporarily non-blocking descriptor so
+  `connect` honours the deadline, and `send` retries short writes until the buffer is
+  drained.
+- **Resolution.** `getaddrinfo` resolves names, IPv4 literals and bracketed IPv6
+  literals; every address in the result list is tried in turn, so `localhost` works over
+  either family. Failures become `NetworkError` / `TimeoutError` with a small, stable set
+  of messages.
+- **Buffering.** Each TCP socket keeps a read buffer so `recv_line` never consumes
+  bytes past the newline it returns; `recv` drains that buffer before reading again.
+- **Limits.** Reads are capped at 16 MiB and lines default to 64 KiB.
+
+Phase 16 turns these blocking waits into coroutine yields (new `CORO_WAIT_*` kinds and
+a poll step in the scheduler) so one process can serve many connections; until then a
+blocking call stalls every coroutine, as the limits section documents.
 
 ## Modules and loading
 

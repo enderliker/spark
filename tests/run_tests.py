@@ -464,6 +464,26 @@ def test_cli() -> None:
             lint_modern.unlink()
 
 
+def test_network_limits() -> None:
+    print("\nNetwork limits")
+    script = ROOT / "tests" / "net_fd_exhausted.spark"
+    # A low RLIMIT_NOFILE makes descriptor exhaustion deterministic. bash drops
+    # the limit before exec, so it applies to the interpreter itself.
+    completed = subprocess.run(
+        ["bash", "-c", f"ulimit -n 64; exec '{BINARY}' '{script}'"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    report(
+        "descriptor exhaustion raises a categorized error",
+        completed.returncode == 0
+        and "NetworkError: too many open descriptors" in completed.stdout,
+        completed.stdout + completed.stderr,
+    )
+
+
 def main() -> int:
     if not BINARY.exists():
         print("missing binary; run 'make' first", file=sys.stderr)
@@ -473,6 +493,7 @@ def main() -> int:
     test_errors()
     test_repl()
     test_error_snippets()
+    test_network_limits()
     test_cli()
 
     failed = [name for name, ok, _ in results if not ok]

@@ -1,0 +1,5 @@
+var server = tcp_listen("127.0.0.1", 0);
+var client = tcp_connect("127.0.0.1", server.port(), 1000);
+server.accept(1000);
+client.close();
+client.send("x");

@@ -1,0 +1,5 @@
+// Bind a port, release it, then connect: the kernel refuses the connection.
+var server = tcp_listen("127.0.0.1", 0);
+var port = server.port();
+server.close();
+tcp_connect("127.0.0.1", port, 2000);

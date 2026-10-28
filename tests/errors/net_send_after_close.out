@@ -1,0 +1,2 @@
+exit: 70
+stderr: NetworkError at line 10: connection reset by peer

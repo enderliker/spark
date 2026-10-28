@@ -188,6 +188,36 @@ typedef struct ObjFile {
     ObjString *path;
 } ObjFile;
 
+/* Transport of a socket object. TCP sockets are byte streams; UDP sockets are
+ * datagram endpoints that must use send_to/recv_from. */
+typedef enum {
+    NET_TCP,
+    NET_UDP
+} NetKind;
+
+/* A GC-managed socket, modeled on ObjFile: it owns a file descriptor that is
+ * released by close(), by the collector's finalizer and on VM shutdown. TCP
+ * sockets also keep a small read buffer so recv_line never consumes bytes past
+ * the end of the line it returns. */
+typedef struct ObjSocket {
+    Obj obj;
+    int fd;
+    bool is_closed;
+    NetKind kind;
+    int64_t timeout_ms; /* default deadline for this socket; 0 = wait forever */
+    char *rbuf; /* buffered but unconsumed bytes for recv_line (may be NULL) */
+    int rbuf_cap;
+    int rbuf_len;
+    int rbuf_pos;
+} ObjSocket;
+
+/* A listening TCP server: owns the listening descriptor. */
+typedef struct ObjServer {
+    Obj obj;
+    int fd;
+    bool is_closed;
+} ObjServer;
+
 typedef struct {
     Obj obj;
     char *chars;
@@ -200,6 +230,8 @@ typedef struct {
 #define AS_ARRAY(v) ((ObjArray *)(v).as.obj)
 #define AS_MAP(v) ((ObjMap *)(v).as.obj)
 #define AS_FILE(v) ((ObjFile *)(v).as.obj)
+#define AS_SOCKET(v) ((ObjSocket *)(v).as.obj)
+#define AS_SERVER(v) ((ObjServer *)(v).as.obj)
 #define AS_CLASS(v) ((ObjClass *)(v).as.obj)
 #define AS_INSTANCE(v) ((ObjInstance *)(v).as.obj)
 #define AS_COROUTINE(v) ((ObjCoroutine *)(v).as.obj)
@@ -248,6 +280,8 @@ ObjUpvalue *object_upvalue(Value *slot);
 ObjCoroutine *object_coroutine(void);
 ObjChannel *object_channel(int capacity);
 ObjFile *object_file(FILE *stream, ObjString *path);
+ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms);
+ObjServer *object_server(int fd);
 ObjStringBuilder *object_string_builder(int initial_capacity);
 bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len);
 void string_builder_clear(ObjStringBuilder *sb);

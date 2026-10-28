@@ -1,0 +1,2 @@
+exit: 70
+stderr: NetworkError at line 1: unknown host 'no-such-host.invalid'

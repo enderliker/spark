@@ -23,6 +23,10 @@ void vm_free(void);
 void vm_set_args(int argc, char **argv);
 void vm_set_debug_mode(bool debug);
 bool vm_get_debug_mode(void);
+/* Registers a global native. `function` has the NativeFn signature from
+ * object.h; spelled out here so vm.h does not depend on object.h. */
+void vm_define_native(const char *name, Value (*function)(int arg_count, Value *args),
+                      int arity);
 int vm_frame_count(void);
 CallFrame *vm_current_frame(void);
 const char *vm_frame_source(CallFrame *frame);

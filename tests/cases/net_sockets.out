@@ -1,0 +1,12 @@
+types: server true
+accepted: true socket
+sent: 6 6
+line: hello world
+local: 127.0.0.1 true
+peer host: 127.0.0.1
+raw: raw!!
+eof: true
+closed type: socket
+fds back: true
+fds after gc: true
+net sockets ok

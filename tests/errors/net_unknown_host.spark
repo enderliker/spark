@@ -1,0 +1,1 @@
+tcp_connect("no-such-host.invalid", 80, 2000);

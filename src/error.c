@@ -17,6 +17,8 @@ const char *error_type_name(ErrorType type)
     case ERROR_ASSERT: return "AssertionError";
     case ERROR_RECURSION: return "RecursionError";
     case ERROR_MEMORY: return "MemoryError";
+    case ERROR_NETWORK: return "NetworkError";
+    case ERROR_TIMEOUT: return "TimeoutError";
     case ERROR_RUNTIME: return "RuntimeError";
     }
     return "Error";

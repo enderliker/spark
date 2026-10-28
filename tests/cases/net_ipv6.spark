@@ -1,0 +1,22 @@
+// Name resolution over IPv4 and IPv6, including the bracketed literal form.
+fn round_trip(host) {
+    var server = tcp_listen(host, 0);
+    var client = tcp_connect(host, server.port(), 2000);
+    var peer = server.accept(2000);
+    peer.send("pong\n");
+    var line = client.recv_line(16);
+    client.close();
+    peer.close();
+    server.close();
+    return line;
+}
+
+// "localhost" may resolve to either family; both must work.
+print("localhost:", round_trip("localhost"));
+// An IPv6 literal keeps its brackets at the API boundary.
+print("ipv6 literal:", round_trip("[::1]"));
+print("hostname:", len(net_hostname()) > 0);
+var v6 = tcp_listen("[::1]", 0);
+print("v6 port:", type(v6), v6.port() > 0);
+v6.close();
+print("net addresses ok");

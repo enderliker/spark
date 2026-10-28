@@ -25,12 +25,12 @@ open questions); nothing here is implemented yet.
 `"server"` from `type()`. New `src/net.c` / `src/net.h` hold the natives, registered
 from `vm_init`. No I/O yet.
 **Acceptance criteria:**
-- [ ] `type(sock)` is `"socket"` / `"server"` and using a closed handle raises a clear runtime error.
-- [ ] Descriptors do not leak: the finalizer closes an unreferenced socket and `vm_free` closes the rest.
-- [ ] The build picks the new module up unchanged and stays warning-free.
+- [x] `type(sock)` is `"socket"` / `"server"` and using a closed handle raises a clear runtime error.
+- [x] Descriptors do not leak: the finalizer closes an unreferenced socket and `vm_free` closes the rest.
+- [x] The build picks the new module up unchanged and stays warning-free.
 **Verification:**
-- [ ] Positive fixture (`tests/cases/`) plus error fixtures for the closed handle; fd-count assertion in the fixture.
-- [ ] Suite + ASan/UBSan.
+- [x] Positive fixture (`tests/cases/`) plus error fixtures for the closed handle; fd-count assertion in the fixture.
+- [x] Suite + ASan/UBSan.
 **Dependencies:** None.
 **Files:** `src/value.h`, `src/object.h`, `src/object.c`, `src/vm.c`, `src/net.c`, `src/net.h`, `tests/`.
 **Scope:** M.
@@ -41,11 +41,11 @@ from `vm_init`. No I/O yet.
 returns up to `max` bytes or `nil` at EOF; `sock.recv_line(max?)` reads up to a
 newline (bounded); `sock.close()`, `sock.peer()`, `sock.local()`.
 **Acceptance criteria:**
-- [ ] Round-trip against a local echo server: several sends, a `recv_line`, then EOF as `nil`.
-- [ ] `timeout_ms` bounds connect and read; exceeding it raises a timeout error instead of hanging.
-- [ ] Short writes are completed; sending after the peer closed raises a network error.
+- [x] Round-trip against a local echo server: several sends, a `recv_line`, then EOF as `nil`.
+- [x] `timeout_ms` bounds connect and read; exceeding it raises a timeout error instead of hanging.
+- [x] Short writes are completed; sending after the peer closed raises a network error.
 **Verification:**
-- [ ] Fixtures driven by a local server; suite; ASan/UBSan.
+- [x] Fixtures driven by a local server; suite; ASan/UBSan.
 **Dependencies:** T82.
 **Files:** `src/net.c`, `src/net.h`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -56,11 +56,11 @@ newline (bounded); `sock.close()`, `sock.peer()`, `sock.local()`.
 when the server is closed; `srv.port()` reports the bound port (0 binds an ephemeral
 one, which the fixtures rely on); `srv.close()`.
 **Acceptance criteria:**
-- [ ] A Spark server accepts a Spark client and echoes it back; binding port 0 then reading `srv.port()` works.
-- [ ] Closing the server releases the port and a second listen on the same port succeeds.
-- [ ] `accept` wakes on a pending connection and returns `nil` on timeout.
+- [x] A Spark server accepts a Spark client and echoes it back; binding port 0 then reading `srv.port()` works.
+- [x] Closing the server releases the port and a second listen on the same port succeeds.
+- [x] `accept` wakes on a pending connection and returns `nil` on timeout.
 **Verification:**
-- [ ] Fixture with server and client in the same program; suite; ASan/UBSan.
+- [x] Fixture with server and client in the same program; suite; ASan/UBSan.
 **Dependencies:** T82.
 **Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -71,11 +71,11 @@ add `ERROR_NETWORK` and `ERROR_TIMEOUT` to `src/error.h` with distinct messages 
 unknown host, refused connection, invalid port and descriptor exhaustion; add
 `net_hostname()`.
 **Acceptance criteria:**
-- [ ] Refused, unknown host, invalid port and timeout produce distinct categories and messages (error fixtures).
-- [ ] `localhost` works over both families and an IPv6 literal (`[::1]`) connects.
-- [ ] Running out of descriptors raises a clear error rather than crashing.
+- [x] Refused, unknown host, invalid port and timeout produce distinct categories and messages (error fixtures).
+- [x] `localhost` works over both families and an IPv6 literal (`[::1]`) connects.
+- [x] Running out of descriptors raises a clear error rather than crashing.
 **Verification:**
-- [ ] `tests/errors` fixtures for each failure; suite.
+- [x] `tests/errors` fixtures for each failure; suite.
 **Dependencies:** T82-T84.
 **Files:** `src/error.h`, `src/error.c`, `src/net.c`, `src/net.h`, `tests/errors`, `docs/language.md`.
 **Scope:** M.
@@ -85,17 +85,22 @@ unknown host, refused connection, invalid port and descriptor exhaustion; add
 `sock.send_to(data, host, port)`; `sock.recv_from(max)` returns
 `{data, host, port}`; `sock.close()`.
 **Acceptance criteria:**
-- [ ] Two sockets exchange a datagram and `recv_from` reports the sender address and port.
-- [ ] `timeout_ms` bounds `recv_from` and the payload cap is enforced.
+- [x] Two sockets exchange a datagram and `recv_from` reports the sender address and port.
+- [x] `timeout_ms` bounds `recv_from` and the payload cap is enforced.
 **Verification:**
-- [ ] Fixture; suite; ASan/UBSan.
+- [x] Fixture; suite; ASan/UBSan.
 **Dependencies:** T82.
 **Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
 ## Checkpoint: Phase 15
-- [ ] Suite green (optimized and ASan/UBSan), `-Werror` build, benchmark minimum unchanged
-- [ ] A Spark client talks to a Spark server on localhost
+- [x] Suite green (optimized and ASan/UBSan), `-Werror` build
+- [x] A Spark client talks to a Spark server on localhost
+- [ ] Benchmark minimum unchanged: `fib(27)` measures ~1-5% higher than the
+      pre-change build, but the delta tracks the number/length of registered
+      natives (adding four dummy natives to the pre-change build reproduces it),
+      so it is heap-layout noise in the benchmark, not a hot-path change. The
+      baseline itself measured ~5.1-5.25 ms on this (shared) machine.
 - [ ] Review with the user before Phase 16
 
 ---

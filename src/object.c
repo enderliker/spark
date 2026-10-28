@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "buf.h"
 #include "memory.h"
@@ -689,6 +690,35 @@ ObjFile *object_file(FILE *stream, ObjString *path)
     return file;
 }
 
+ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms)
+{
+    ObjSocket *socket;
+
+    /* The socket is not reachable from a root until the caller returns it, so
+     * no collection may run while its read buffer is allocated. */
+    mem_pause_gc();
+    socket = allocate_obj(sizeof(ObjSocket), OBJ_SOCKET);
+    socket->fd = fd;
+    socket->is_closed = false;
+    socket->kind = kind;
+    socket->timeout_ms = timeout_ms;
+    socket->rbuf_cap = 8192;
+    socket->rbuf = mem_realloc(NULL, 0, (size_t)socket->rbuf_cap);
+    socket->rbuf_len = 0;
+    socket->rbuf_pos = 0;
+    mem_resume_gc();
+    return socket;
+}
+
+ObjServer *object_server(int fd)
+{
+    ObjServer *server = allocate_obj(sizeof(ObjServer), OBJ_SERVER);
+
+    server->fd = fd;
+    server->is_closed = false;
+    return server;
+}
+
 ObjStringBuilder *object_string_builder(int initial_capacity)
 {
     if (initial_capacity < 16) {
@@ -818,6 +848,23 @@ void object_free(Obj *obj)
         mem_realloc(file, sizeof(ObjFile), 0);
         break;
     }
+    case OBJ_SOCKET: {
+        ObjSocket *socket = (ObjSocket *)obj;
+        if (!socket->is_closed && socket->fd >= 0) {
+            close(socket->fd);
+        }
+        mem_realloc(socket->rbuf, (size_t)socket->rbuf_cap, 0);
+        mem_realloc(socket, sizeof(ObjSocket), 0);
+        break;
+    }
+    case OBJ_SERVER: {
+        ObjServer *server = (ObjServer *)obj;
+        if (!server->is_closed && server->fd >= 0) {
+            close(server->fd);
+        }
+        mem_realloc(server, sizeof(ObjServer), 0);
+        break;
+    }
     case OBJ_STRING_BUILDER: {
         ObjStringBuilder *sb = (ObjStringBuilder *)obj;
         mem_realloc(sb->chars, (size_t)sb->capacity, 0);
@@ -870,6 +917,8 @@ const char *obj_type_name(ObjType type)
     case OBJ_INSTANCE: return "instance";
     case OBJ_COROUTINE: return "coroutine";
     case OBJ_CHANNEL: return "channel";
+    case OBJ_SOCKET: return "socket";
+    case OBJ_SERVER: return "server";
     }
     return "object";
 }
@@ -1049,6 +1098,25 @@ static void value_format(buf_t *b, Value v, bool repr)
                 buf_append_str(b, "<channel unbuffered>");
             } else {
                 buf_appendf(b, "<channel capacity=%d>", channel->capacity);
+            }
+            break;
+        }
+        case OBJ_SOCKET: {
+            ObjSocket *socket = (ObjSocket *)AS_OBJ(v);
+            if (socket->is_closed) {
+                buf_append_str(b, "<socket closed>");
+            } else {
+                buf_appendf(b, "<socket %s fd=%d>",
+                            socket->kind == NET_UDP ? "udp" : "tcp", socket->fd);
+            }
+            break;
+        }
+        case OBJ_SERVER: {
+            ObjServer *server = (ObjServer *)AS_OBJ(v);
+            if (server->is_closed) {
+                buf_append_str(b, "<server closed>");
+            } else {
+                buf_appendf(b, "<server fd=%d>", server->fd);
             }
             break;
         }

@@ -25,6 +25,7 @@
 #include "debugger.h"
 #include "json.h"
 #include "memory.h"
+#include "net.h"
 #include "object.h"
 #include "parser.h"
 #include "regex.h"
@@ -539,6 +540,10 @@ static void blacken(Obj *object)
         break;
     }
     case OBJ_STRING_BUILDER:
+        break;
+    case OBJ_SOCKET:
+    case OBJ_SERVER:
+        /* No object-valued fields: the descriptor is not traced. */
         break;
     }
 }
@@ -3589,6 +3594,8 @@ static bool dispatch_native_method(Value receiver, ObjString *method, int arg_co
             *out = native_merge(2, a);
             return true;
         }
+    } else if (is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER)) {
+        return net_dispatch_method(receiver, method, arg_count, args, out);
     }
     return false;
 }
@@ -3705,6 +3712,12 @@ static void define_native(const char *name, NativeFn function, int arity)
     vm.global_slots[slot].value = OBJ_VAL(native);
     vm.global_slots[slot].defined = true;
     pop();
+}
+
+void vm_define_native(const char *name, Value (*function)(int arg_count, Value *args),
+                      int arity)
+{
+    define_native(name, function, arity);
 }
 
 void vm_runtime_error(ErrorType type, const char *fmt, ...)
@@ -7886,7 +7899,8 @@ cold_dispatch:
             if (is_obj_type(receiver, OBJ_MAP)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
             } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_ARRAY) ||
-                       is_obj_type(receiver, OBJ_STRING_BUILDER) || is_obj_type(receiver, OBJ_FILE)) {
+                       is_obj_type(receiver, OBJ_STRING_BUILDER) || is_obj_type(receiver, OBJ_FILE) ||
+                       is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,
                                  value_type_name(receiver));
             } else {
@@ -8343,6 +8357,7 @@ void vm_init(void)
     define_native("sb_to_string", native_sb_to_string, 1);
     define_native("sb_len", native_sb_len, 1);
     define_native("sb_clear", native_sb_clear, 1);
+    net_init();
     vm_set_args(0, NULL);
 
     int underscore_slot = vm_global_slot(object_string("_", 1));

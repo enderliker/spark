@@ -1,0 +1,15 @@
+// Opens datagram sockets until the descriptor table runs out. Run by the test
+// harness under a low RLIMIT_NOFILE so the limit is reached quickly; the point
+// is that exhaustion raises a categorized error instead of crashing.
+var last = "none";
+var i = 0;
+while (i < 100000) {
+    try {
+        udp_bind("127.0.0.1", 0);
+    } catch (e) {
+        last = e.type + ": " + e.message;
+        break;
+    }
+    i += 1;
+}
+print(last);

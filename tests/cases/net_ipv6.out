@@ -1,0 +1,5 @@
+localhost: pong
+ipv6 literal: pong
+hostname: true
+v6 port: server true
+net addresses ok

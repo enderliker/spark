@@ -1,0 +1,12 @@
+// The peer closes; later writes fail instead of hanging or crashing.
+var server = tcp_listen("127.0.0.1", 0);
+var client = tcp_connect("127.0.0.1", server.port(), 1000);
+var peer = server.accept(1000);
+peer.close();
+
+var payload = "x".repeat(1000000);
+var i = 0;
+while (i < 20) {
+    client.send(payload);
+    i += 1;
+}
