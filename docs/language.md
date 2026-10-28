@@ -408,6 +408,30 @@ print(upper("hola"), trim("  x  "));
   `lower` only change ASCII letters; `trim` only removes ASCII whitespace. Other
   characters are left untouched.
 
+### Building strings
+
+Strings are immutable, so `s += x` creates a new string every time: repeating it in a
+loop copies the whole accumulator on each step and the total cost grows **quadratically**
+with the result. For a handful of fragments that is fine; for thousands, assemble the
+text with `string_builder()` (section 10), which appends into one growable buffer in
+amortized **O(1)** per append:
+
+```spark
+var builder = string_builder();              // also: string_builder("seed"), string_builder(4096)
+for (var i in range(3)) {
+    builder.append("row ").append(i).append("; ");
+}
+print(builder.to_string());                  // row 0; row 1; row 2;
+print(builder.len());                        // 21
+```
+
+`append` stringifies whatever it is given, so numbers, booleans and maps can be
+appended directly. Collecting the fragments in an array and using `join(parts, "")` is
+the other linear option.
+
+Appending 200,000 single characters takes about 6 ms with `string_builder` and about
+2.2 s with `s += x` on the development machine (`benchmarks/string_build.spark`).
+
 ## 10. Natives
 
 | Call | Result |
@@ -482,6 +506,14 @@ print(upper("hola"), trim("  x  "));
 | `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
 | `spawn(fn, a, b, ...)` | Starts a coroutine that calls `fn` with the given arguments; returns the coroutine object. |
 | `channel(n?)` | Creates a channel; without `n` it is unbuffered, with `n` it buffers `n` values. |
+| `string_builder(initial?)` | New string builder; a string argument seeds its content, an integer sets the initial capacity. |
+| `sb_append(sb, value)` | Stringifies `value` and appends it; returns the builder (so calls can be chained). |
+| `sb_to_string(sb)` | The accumulated text as an immutable string. |
+| `sb_len(sb)` | Length of the accumulated text in UTF-8 characters. |
+| `sb_clear(sb)` | Empties the builder; returns it. |
+
+Builders also accept the method form, which reads better when chaining:
+`sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`.
 
 The script arguments are accessible through the global array `argv`, where `argv[0]`
 is the script file path and subsequent elements are arguments passed on the command line

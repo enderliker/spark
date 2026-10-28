@@ -79,6 +79,53 @@ Concrete types:
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
 - `ObjNative`: C function pointer, arity (`-1` = variadic) and name.
 - `ObjFile`: GC-managed file stream handle (`FILE *stream`, `is_closed`, `path`), automatically closed upon garbage collection if not closed explicitly.
+- `ObjCoroutine`: a green thread: private value stack, snapshot of its frames and try handlers, scheduler links, wait state and result.
+- `ObjChannel`: FIFO buffer of `Value` (head, count, capacity, `closed`) plus the queues of blocked senders and receivers.
+
+## String concatenation
+
+`ObjString` is an immutable, interned block: it stores the length, a cached FNV-1a hash
+and the bytes inline after the header (`char chars[]`). Equal strings share one object,
+so equality and map lookups can start from a pointer comparison. `object_string_concat`
+continues the hash fold from the left operand instead of re-hashing the prefix, builds
+the bytes in a temporary buffer, and returns an existing interned string when the
+content already exists.
+
+Because the value is immutable, `s += x` allocates a new string and copies the whole
+accumulator on every step, so building an N-character string one piece at a time costs
+O(N^2). That is the trade-off Python and Lua make too, and the language keeps it: a
+well-behaved implementation cannot mutate the accumulator in place without proving it
+has no other reference.
+
+`string_builder` is the sanctioned way to assemble large strings. `ObjStringBuilder`
+owns a `malloc`ed buffer that doubles when full, so an append costs amortized O(1) and
+building an N-character string is O(N); `sb_to_string` copies the buffer once through
+the interning path, so the result is an ordinary immutable string.
+
+Measured on the development machine (`benchmarks/string_build.spark` and the same loop
+written with `+=`), 200,000 single-character appends:
+
+| Idiom | Time |
+| --- | --- |
+| `sb_append(builder, "x")` | ~6 ms (linear) |
+| `s += "x"` | ~2.2 s (quadratic) |
+
+Alternatives that were considered and not taken:
+
+- **Appending in place when the accumulator is "uniquely owned".** It needs escape
+  tracking (marking every slot, container and call argument that receives the string),
+  and a missed site silently produces wrong output once two variables share a buffer.
+- **Rope (cons) strings with lazy flattening.** Appends would be O(1) with no ownership
+  check, but every read has to flatten, so `->chars` would have to be routed through a
+  helper everywhere, and `s += x; print(s)` stays quadratic anyway.
+- **Promoting an accumulator variable to a builder at compile time.** Sound, and it
+  would make `+=` itself amortized, but it needs new opcodes, materialization on every
+  read and a flag check on global reads (which the numeric hot paths share), so the
+  explicit builder buys the same guarantee without touching the existing semantics.
+
+`tests/cases/string_builder_scale.spark` guards the amortized behavior: it measures the
+same loop at two sizes and fails when quadrupling the work multiplies the time by more
+than about 8 (linear is ~4, quadratic ~16).
 
 ## Bytecode
 

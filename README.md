@@ -179,6 +179,8 @@ The full reference is in [docs/language.md](docs/language.md) and the internals 
 | `map(array, fn)` / `filter(array, fn)` | Transform / select with a callback. |
 | `reduce(array, fn, initial?)` / `each(array, fn)` | Fold and iterate with a callback. |
 | `sort(array)` / `sort_by(array, fn)` | Sort in place (numbers or strings) with an optional comparator. |
+| `string_builder(initial?)` / `sb_append(sb, value)` | Build a large string in amortized O(1) per append (see `docs/language.md`). |
+| `sb_to_string(sb)` / `sb_len(sb)` / `sb_clear(sb)` | Builder helpers: text, character length and reset. |
 
 ## Project layout
 
