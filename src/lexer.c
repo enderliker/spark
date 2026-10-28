@@ -219,6 +219,9 @@ static TokenType identifier_type(const Lexer *lexer)
     case 'v':
         if (IS("var")) return TOKEN_VAR;
         break;
+    case 'y':
+        if (IS("yield")) return TOKEN_YIELD;
+        break;
     case 'w':
         if (IS("while")) return TOKEN_WHILE;
         break;
@@ -625,6 +628,7 @@ const char *token_type_name(TokenType type)
     case TOKEN_BREAK: return "'break'";
     case TOKEN_CONTINUE: return "'continue'";
     case TOKEN_IMPORT: return "'import'";
+    case TOKEN_YIELD: return "'yield'";
     case TOKEN_TRY: return "'try'";
     case TOKEN_CATCH: return "'catch'";
     case TOKEN_FINALLY: return "'finally'";

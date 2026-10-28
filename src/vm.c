@@ -96,6 +96,20 @@ typedef struct {
     Value exception_value;
     bool had_error;
     bool debug_mode;
+
+    /* Cooperative scheduler. The main script runs as a coroutine too so that
+     * yield and channel waits use the same state-swapping code. */
+    ObjCoroutine *current;
+    ObjCoroutine *main_coroutine;
+    ObjCoroutine *run_queue_head;
+    ObjCoroutine *run_queue_tail;
+    int run_depth;
+    Value last_result;
+    /* Deferred error raised while a coroutine was blocked (for example a
+     * sender woken because its channel closed). run_loop turns it into a
+     * normal runtime error at the blocking call site. */
+    const char *pending_error_message;
+    uint8_t *pending_error_ip;
 } VM;
 
 static VM vm;
@@ -123,6 +137,8 @@ static inline bool numeric_fast(Value v)
 }
 
 static InterpretResult run(int base_frame);
+static InterpretResult run_loop(int base_frame);
+static InterpretResult vm_scheduler(void);
 static bool call_callback(Value callee, int arg_count, Value *result);
 static bool call_callback_bound(Value callee, int arg_count, Value self, Value *result);
 static ObjString *vm_value_to_string(Value value);
@@ -192,6 +208,10 @@ static bool grow_stack(int needed)
     vm.stack = new_stack;
     vm.stack_capacity = new_capacity;
     vm.stack_top += delta;
+    if (vm.current && vm.current->stack == old_stack) {
+        vm.current->stack = new_stack;
+        vm.current->stack_capacity = new_capacity;
+    }
 
     for (int i = 0; i < vm.frame_count; i++) {
         vm.frames[i].slots += delta;
@@ -432,6 +452,7 @@ static void blacken(Obj *object)
         break;
     case OBJ_UPVALUE:
         mark_value(((ObjUpvalue *)object)->closed);
+        mark_object((Obj *)((ObjUpvalue *)object)->owner);
         break;
     case OBJ_CLASS: {
         ObjClass *klass = (ObjClass *)object;
@@ -462,6 +483,52 @@ static void blacken(Obj *object)
 
         mark_object((Obj *)instance->klass);
         mark_object((Obj *)instance->fields);
+        break;
+    }
+    case OBJ_COROUTINE: {
+        ObjCoroutine *coroutine = (ObjCoroutine *)object;
+        CallFrame *frames = (CallFrame *)coroutine->frames;
+
+        for (int i = 0; i < coroutine->stack_count; i++) {
+            mark_value(coroutine->stack[i]);
+        }
+        for (int i = 0; i < coroutine->frame_count; i++) {
+            mark_object((Obj *)frames[i].closure);
+            mark_value(frames[i].self);
+        }
+        for (ObjUpvalue *upvalue = coroutine->open_upvalues; upvalue;
+             upvalue = upvalue->next) {
+            mark_object((Obj *)upvalue);
+        }
+        if (coroutine->has_exception) {
+            mark_value(coroutine->exception_value);
+        }
+        mark_value(coroutine->wait_value);
+        if (coroutine->has_resume_result) {
+            mark_value(coroutine->resume_result);
+        }
+        mark_value(coroutine->result);
+        mark_object((Obj *)coroutine->wait_channel);
+        mark_object((Obj *)coroutine->wait_target);
+        for (ObjCoroutine *joiner = coroutine->joiners; joiner;
+             joiner = joiner->wait_next) {
+            mark_object((Obj *)joiner);
+        }
+        break;
+    }
+    case OBJ_CHANNEL: {
+        ObjChannel *channel = (ObjChannel *)object;
+        for (int i = 0; i < channel->count; i++) {
+            mark_value(channel->buffer[(channel->head + i) % channel->capacity]);
+        }
+        for (ObjCoroutine *sender = channel->waiting_senders; sender;
+             sender = sender->wait_next) {
+            mark_object((Obj *)sender);
+        }
+        for (ObjCoroutine *receiver = channel->waiting_receivers; receiver;
+             receiver = receiver->wait_next) {
+            mark_object((Obj *)receiver);
+        }
         break;
     }
     case OBJ_FILE: {
@@ -510,6 +577,12 @@ static void mark_roots(void)
     }
     if (vm.has_exception) {
         mark_value(vm.exception_value);
+    }
+    mark_value(vm.last_result);
+    mark_object((Obj *)vm.main_coroutine);
+    mark_object((Obj *)vm.current);
+    for (ObjCoroutine *queued = vm.run_queue_head; queued; queued = queued->queue_next) {
+        mark_object((Obj *)queued);
     }
 }
 
@@ -3736,6 +3809,7 @@ static ObjUpvalue *capture_upvalue(Value *local)
 
     ObjUpvalue *created = object_upvalue(local);
 
+    created->owner = vm.current;
     created->next = upvalue;
     if (previous) {
         previous->next = created;
@@ -3752,28 +3826,43 @@ static void close_upvalues(Value *last)
 
         upvalue->closed = *upvalue->location;
         upvalue->location = &upvalue->closed;
+        upvalue->owner = NULL;
         vm.open_upvalues = upvalue->next;
     }
+}
+
+/* Reports the usual arity diagnostics. Shared by direct calls, tail calls and
+ * `spawn`, which validates the arguments before queueing the coroutine. */
+static bool check_closure_arity(ObjFunction *function, int arg_count)
+{
+    if (arg_count >= function->min_arity &&
+        (function->is_varargs || arg_count <= function->arity)) {
+        return true;
+    }
+    if (function->is_varargs) {
+        vm_runtime_error(ERROR_ARITY,
+                         "the function '%s' expects at least %d argument(s) but received %d",
+                         function->name ? function->name->chars : "anonymous",
+                         function->min_arity, arg_count);
+    } else if (function->min_arity == function->arity) {
+        vm_runtime_error(ERROR_ARITY,
+                         "the function '%s' expects %d argument(s) but received %d",
+                         function->name ? function->name->chars : "anonymous",
+                         function->arity, arg_count);
+    } else {
+        vm_runtime_error(ERROR_ARITY,
+                         "the function '%s' expects between %d and %d arguments but received %d",
+                         function->name ? function->name->chars : "anonymous",
+                         function->min_arity, function->arity, arg_count);
+    }
+    return false;
 }
 
 static bool call_closure(ObjClosure *closure, int arg_count)
 {
     ObjFunction *function = closure->function;
 
-    if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
-        if (function->is_varargs) {
-            vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
-                             function->name ? function->name->chars : "anonymous",
-                             function->min_arity, arg_count);
-        } else if (function->min_arity == function->arity) {
-            vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
-                             function->name ? function->name->chars : "anonymous", function->arity,
-                             arg_count);
-        } else {
-            vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
-                             function->name ? function->name->chars : "anonymous",
-                             function->min_arity, function->arity, arg_count);
-        }
+    if (!check_closure_arity(function, arg_count)) {
         return false;
     }
     if (vm.frame_count == FRAMES_MAX) {
@@ -4348,6 +4437,523 @@ static inline bool add_values(Value a, Value b, Value *out)
 }
 
 /* ------------------------------------------------------------------ */
+/* Cooperative scheduler and channels                                  */
+/* ------------------------------------------------------------------ */
+
+static void coroutine_enqueue(ObjCoroutine *coroutine)
+{
+    coroutine->status = CORO_RUNNABLE;
+    coroutine->queue_next = NULL;
+    if (vm.run_queue_tail) {
+        vm.run_queue_tail->queue_next = coroutine;
+    } else {
+        vm.run_queue_head = coroutine;
+    }
+    vm.run_queue_tail = coroutine;
+}
+
+static ObjCoroutine *coroutine_dequeue(void)
+{
+    ObjCoroutine *coroutine = vm.run_queue_head;
+
+    if (!coroutine) {
+        return NULL;
+    }
+    vm.run_queue_head = coroutine->queue_next;
+    if (!vm.run_queue_head) {
+        vm.run_queue_tail = NULL;
+    }
+    coroutine->queue_next = NULL;
+    return coroutine;
+}
+
+static void coroutine_reserve_frames(ObjCoroutine *coroutine, int needed)
+{
+    if (needed <= coroutine->frame_capacity) {
+        return;
+    }
+    int capacity = coroutine->frame_capacity < 8 ? 8 : coroutine->frame_capacity;
+    while (capacity < needed) {
+        capacity *= 2;
+    }
+    size_t bytes = sizeof(CallFrame) * (size_t)capacity;
+    coroutine->frames = mem_realloc(coroutine->frames, coroutine->frame_bytes, bytes);
+    coroutine->frame_capacity = capacity;
+    coroutine->frame_bytes = bytes;
+}
+
+static void coroutine_reserve_handlers(ObjCoroutine *coroutine, int needed)
+{
+    if (needed <= coroutine->try_handler_capacity) {
+        return;
+    }
+    int capacity = coroutine->try_handler_capacity < 8 ? 8 : coroutine->try_handler_capacity;
+    while (capacity < needed) {
+        capacity *= 2;
+    }
+    size_t bytes = sizeof(TryHandler) * (size_t)capacity;
+    coroutine->try_handlers =
+        mem_realloc(coroutine->try_handlers, coroutine->try_handler_bytes, bytes);
+    coroutine->try_handler_capacity = capacity;
+    coroutine->try_handler_bytes = bytes;
+}
+
+/* Copies the VM's live execution state into the coroutine. The stack stays
+ * owned by the coroutine, so frame slot pointers remain valid; only the small
+ * frame and handler snapshots are copied. */
+static void coroutine_save_state(ObjCoroutine *coroutine)
+{
+    coroutine->stack = vm.stack;
+    coroutine->stack_capacity = vm.stack_capacity;
+    coroutine->stack_count = (int)(vm.stack_top - vm.stack);
+    coroutine_reserve_frames(coroutine, vm.frame_count);
+    memcpy(coroutine->frames, vm.frames, sizeof(CallFrame) * (size_t)vm.frame_count);
+    coroutine->frame_count = vm.frame_count;
+    coroutine->open_upvalues = vm.open_upvalues;
+    coroutine_reserve_handlers(coroutine, vm.try_handler_count);
+    if (vm.try_handler_count > 0) {
+        memcpy(coroutine->try_handlers, vm.try_handlers,
+               sizeof(TryHandler) * (size_t)vm.try_handler_count);
+    }
+    coroutine->try_handler_count = vm.try_handler_count;
+    coroutine->has_exception = vm.has_exception;
+    coroutine->exception_value = vm.exception_value;
+    coroutine->had_error = vm.had_error;
+}
+
+/* Restores a coroutine's snapshot into the VM. For a NEW coroutine the stack
+ * already holds the callee and arguments and frame_count is zero; the caller
+ * performs the actual call. */
+static void coroutine_load_state(ObjCoroutine *coroutine)
+{
+    vm.current = coroutine;
+    vm.stack = coroutine->stack;
+    vm.stack_capacity = coroutine->stack_capacity;
+    vm.stack_top = coroutine->stack + coroutine->stack_count;
+    if (coroutine->frame_count > 0) {
+        memcpy(vm.frames, coroutine->frames,
+               sizeof(CallFrame) * (size_t)coroutine->frame_count);
+    }
+    vm.frame_count = coroutine->frame_count;
+    vm.open_upvalues = coroutine->open_upvalues;
+    coroutine->open_upvalues = NULL;
+    if (coroutine->try_handler_count > 0) {
+        memcpy(vm.try_handlers, coroutine->try_handlers,
+               sizeof(TryHandler) * (size_t)coroutine->try_handler_count);
+    }
+    vm.try_handler_count = coroutine->try_handler_count;
+    vm.has_exception = coroutine->has_exception;
+    vm.exception_value = coroutine->exception_value;
+    vm.had_error = coroutine->had_error;
+    coroutine->status = CORO_RUNNING;
+}
+
+static void coroutine_wake(ObjCoroutine *coroutine, Value result, const char *error)
+{
+    coroutine->wait_kind = CORO_WAIT_NONE;
+    coroutine->wait_channel = NULL;
+    coroutine->wait_target = NULL;
+    coroutine->wait_next = NULL;
+    coroutine->wait_value = NIL_VAL;
+    coroutine->has_resume_result = true;
+    coroutine->resume_result = result;
+    coroutine->resume_error = error;
+    coroutine_enqueue(coroutine);
+}
+
+static void coroutine_finish(ObjCoroutine *coroutine, Value result)
+{
+    coroutine->status = CORO_DONE;
+    coroutine->result = result;
+    coroutine->open_upvalues = NULL;
+    coroutine->stack_count = (int)(vm.stack_top - vm.stack);
+
+    ObjCoroutine *joiner = coroutine->joiners;
+
+    coroutine->joiners = NULL;
+    while (joiner) {
+        ObjCoroutine *next = joiner->wait_next;
+
+        coroutine_wake(joiner, result, NULL);
+        joiner = next;
+    }
+}
+
+static ObjCoroutine *wait_pop(ObjCoroutine **head, ObjCoroutine **tail)
+{
+    ObjCoroutine *coroutine = *head;
+
+    if (!coroutine) {
+        return NULL;
+    }
+    *head = coroutine->wait_next;
+    if (!*head) {
+        *tail = NULL;
+    }
+    coroutine->wait_next = NULL;
+    return coroutine;
+}
+
+static void channel_push_sender(ObjChannel *channel, ObjCoroutine *coroutine)
+{
+    coroutine->wait_next = NULL;
+    if (channel->waiting_senders_tail) {
+        channel->waiting_senders_tail->wait_next = coroutine;
+    } else {
+        channel->waiting_senders = coroutine;
+    }
+    channel->waiting_senders_tail = coroutine;
+}
+
+static void channel_push_receiver(ObjChannel *channel, ObjCoroutine *coroutine)
+{
+    coroutine->wait_next = NULL;
+    if (channel->waiting_receivers_tail) {
+        channel->waiting_receivers_tail->wait_next = coroutine;
+    } else {
+        channel->waiting_receivers = coroutine;
+    }
+    channel->waiting_receivers_tail = coroutine;
+}
+
+static void channel_buffer_push(ObjChannel *channel, Value value)
+{
+    int position = (channel->head + channel->count) % channel->capacity;
+
+    channel->buffer[position] = value;
+    channel->count++;
+}
+
+static Value channel_buffer_pop(ObjChannel *channel)
+{
+    Value value = channel->buffer[channel->head];
+
+    channel->head = (channel->head + 1) % channel->capacity;
+    channel->count--;
+    return value;
+}
+
+/* Performs send/receive/close on a channel. Returns 0 when the operation
+ * completed (the result is written to *out), 1 when the current coroutine was
+ * blocked, and -1 after reporting an error. */
+static int channel_send(ObjChannel *channel, Value value, Value *out)
+{
+    if (channel->closed) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot send on a closed channel");
+        return -1;
+    }
+    ObjCoroutine *receiver =
+        wait_pop(&channel->waiting_receivers, &channel->waiting_receivers_tail);
+
+    if (receiver) {
+        coroutine_wake(receiver, value, NULL);
+        *out = NIL_VAL;
+        return 0;
+    }
+    if (channel->count < channel->capacity) {
+        channel_buffer_push(channel, value);
+        *out = NIL_VAL;
+        return 0;
+    }
+
+    if (vm.run_depth > 1) {
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a send that would block cannot run inside a callback or a module");
+        return -1;
+    }
+
+    ObjCoroutine *self = vm.current;
+
+    self->wait_kind = CORO_WAIT_SEND;
+    self->wait_channel = channel;
+    self->wait_value = value;
+    self->status = CORO_BLOCKED;
+    channel_push_sender(channel, self);
+    return 1;
+}
+
+static int channel_receive(ObjChannel *channel, Value *out)
+{
+    if (channel->count > 0) {
+        Value value = channel_buffer_pop(channel);
+
+        /* A blocked sender was waiting for this space: move its value into the
+         * buffer and let it continue. */
+        ObjCoroutine *sender =
+            wait_pop(&channel->waiting_senders, &channel->waiting_senders_tail);
+        if (sender) {
+            channel_buffer_push(channel, sender->wait_value);
+            coroutine_wake(sender, NIL_VAL, NULL);
+        }
+        *out = value;
+        return 0;
+    }
+    if (channel->capacity == 0) {
+        ObjCoroutine *sender =
+            wait_pop(&channel->waiting_senders, &channel->waiting_senders_tail);
+
+        if (sender) {
+            *out = sender->wait_value;
+            coroutine_wake(sender, NIL_VAL, NULL);
+            return 0;
+        }
+    }
+    if (channel->closed) {
+        *out = NIL_VAL;
+        return 0;
+    }
+
+    if (vm.run_depth > 1) {
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a receive that would block cannot run inside a callback or a module");
+        return -1;
+    }
+
+    ObjCoroutine *self = vm.current;
+
+    self->wait_kind = CORO_WAIT_RECEIVE;
+    self->wait_channel = channel;
+    self->status = CORO_BLOCKED;
+    channel_push_receiver(channel, self);
+    return 1;
+}
+
+static int channel_close(ObjChannel *channel, Value *out)
+{
+    if (!channel->closed) {
+        channel->closed = true;
+        for (;;) {
+            ObjCoroutine *receiver =
+                wait_pop(&channel->waiting_receivers, &channel->waiting_receivers_tail);
+
+            if (!receiver) {
+                break;
+            }
+            coroutine_wake(receiver, NIL_VAL, NULL);
+        }
+        for (;;) {
+            ObjCoroutine *sender =
+                wait_pop(&channel->waiting_senders, &channel->waiting_senders_tail);
+
+            if (!sender) {
+                break;
+            }
+            coroutine_wake(sender, NIL_VAL, "cannot send on a closed channel");
+        }
+    }
+    *out = NIL_VAL;
+    return 0;
+}
+
+static int channel_method(ObjChannel *channel, ObjString *name, int arg_count, Value *args,
+                          Value *out)
+{
+    if (strcmp(name->chars, "send") == 0) {
+        if (arg_count != 1) {
+            vm_runtime_error(ERROR_ARITY, "'send' expects 1 argument, received %d", arg_count);
+            return -1;
+        }
+        return channel_send(channel, args[0], out);
+    }
+    if (strcmp(name->chars, "receive") == 0) {
+        if (arg_count != 0) {
+            vm_runtime_error(ERROR_ARITY, "'receive' expects no arguments, received %d",
+                             arg_count);
+            return -1;
+        }
+        return channel_receive(channel, out);
+    }
+    if (strcmp(name->chars, "close") == 0) {
+        if (arg_count != 0) {
+            vm_runtime_error(ERROR_ARITY, "'close' expects no arguments, received %d", arg_count);
+            return -1;
+        }
+        return channel_close(channel, out);
+    }
+    vm_runtime_error(ERROR_NAME, "channel has no method '%s'", name->chars);
+    return -1;
+}
+
+static int coroutine_method(ObjCoroutine *target, ObjString *name, int arg_count, Value *out)
+{
+    if (strcmp(name->chars, "join") == 0) {
+        if (arg_count != 0) {
+            vm_runtime_error(ERROR_ARITY, "'join' expects no arguments, received %d", arg_count);
+            return -1;
+        }
+        if (target == vm.current) {
+            vm_runtime_error(ERROR_RUNTIME, "a coroutine cannot join itself");
+            return -1;
+        }
+        if (target->status == CORO_DONE) {
+            *out = target->result;
+            return 0;
+        }
+
+        if (vm.run_depth > 1) {
+            vm_runtime_error(ERROR_RUNTIME,
+                             "a join that would block cannot run inside a callback or a module");
+            return -1;
+        }
+
+        ObjCoroutine *self = vm.current;
+
+        self->wait_kind = CORO_WAIT_JOIN;
+        self->wait_target = target;
+        self->status = CORO_BLOCKED;
+        self->wait_next = target->joiners;
+        target->joiners = self;
+        return 1;
+    }
+    if (strcmp(name->chars, "done") == 0) {
+        if (arg_count != 0) {
+            vm_runtime_error(ERROR_ARITY, "'done' expects no arguments, received %d", arg_count);
+            return -1;
+        }
+        *out = BOOL_VAL(target->status == CORO_DONE);
+        return 0;
+    }
+    vm_runtime_error(ERROR_NAME, "coroutine has no method '%s'", name->chars);
+    return -1;
+}
+
+static Value native_channel(int arg_count, Value *args)
+{
+    int capacity = 0;
+
+    if (arg_count > 1) {
+        vm_runtime_error(ERROR_ARITY, "'channel' expects at most 1 argument, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (arg_count == 1) {
+        if (!is_int(args[0]) || AS_INT(args[0]) < 0) {
+            vm_runtime_error(ERROR_TYPE,
+                             "'channel' capacity must be a non-negative integer, received %s",
+                             value_type_name(args[0]));
+            return NIL_VAL;
+        }
+        if (AS_INT(args[0]) > 16777216) {
+            vm_runtime_error(ERROR_RUNTIME, "'channel' capacity is too large");
+            return NIL_VAL;
+        }
+        capacity = (int)AS_INT(args[0]);
+    }
+    return OBJ_VAL(object_channel(capacity));
+}
+
+static Value native_spawn(int arg_count, Value *args)
+{
+    if (arg_count < 1) {
+        vm_runtime_error(ERROR_ARITY,
+                         "'spawn' expects a function followed by its arguments");
+        return NIL_VAL;
+    }
+
+    Value callee = args[0];
+
+    if (!is_obj_type(callee, OBJ_CLOSURE)) {
+        vm_runtime_error(ERROR_TYPE, "'spawn' expects a function, received %s",
+                         value_type_name(callee));
+        return NIL_VAL;
+    }
+
+    ObjClosure *closure = AS_CLOSURE(callee);
+
+    if (!check_closure_arity(closure->function, arg_count - 1)) {
+        return NIL_VAL;
+    }
+
+    mem_pause_gc();
+    int capacity = STACK_INITIAL_CAPACITY;
+    while (capacity < arg_count + 8) {
+        capacity *= 2;
+    }
+    Value *stack = mem_realloc(NULL, 0, sizeof(Value) * (size_t)capacity);
+    for (int i = 0; i < arg_count; i++) {
+        stack[i] = args[i];
+    }
+    ObjCoroutine *coroutine = object_coroutine();
+
+    coroutine->stack = stack;
+    coroutine->stack_capacity = capacity;
+    coroutine->stack_count = arg_count;
+    coroutine->owns_stack = true;
+    mem_resume_gc();
+
+    coroutine_enqueue(coroutine);
+    return OBJ_VAL(coroutine);
+}
+
+/* Delivers the result of a blocking operation before the coroutine resumes.
+ * The blocked call already removed its receiver and arguments from the stack,
+ * so the result is simply pushed. A wake-up error is turned into a deferred
+ * runtime error handled by run_loop at the original call site. */
+static void coroutine_apply_resume(ObjCoroutine *coroutine)
+{
+    if (!coroutine->has_resume_result) {
+        return;
+    }
+    if (coroutine->resume_error) {
+        vm.pending_error_message = coroutine->resume_error;
+        vm.pending_error_ip = coroutine->resume_ip;
+        coroutine->resume_error = NULL;
+        coroutine->has_resume_result = false;
+        coroutine->resume_result = NIL_VAL;
+        return;
+    }
+
+    Value result = coroutine->resume_result;
+
+    push(result);
+    coroutine->has_resume_result = false;
+    coroutine->resume_result = NIL_VAL;
+}
+
+/* Runs coroutines until the main one finishes. Each call to run() resumes the
+ * currently loaded coroutine and returns when it yields, blocks, finishes or
+ * fails. */
+static InterpretResult vm_scheduler(void)
+{
+    for (;;) {
+        InterpretResult result = run(0);
+        ObjCoroutine *current = vm.current;
+
+        if (result == INTERPRET_YIELD) {
+            coroutine_save_state(current);
+            coroutine_enqueue(current);
+        } else if (result == INTERPRET_BLOCKED) {
+            coroutine_save_state(current);
+            /* The channel/join helper already marked it blocked and queued it. */
+        } else if (result == INTERPRET_OK) {
+            coroutine_finish(current, vm.last_result);
+            if (current == vm.main_coroutine) {
+                return INTERPRET_OK;
+            }
+        } else {
+            return result;
+        }
+
+        ObjCoroutine *next = coroutine_dequeue();
+
+        if (!next) {
+            vm_runtime_error(ERROR_RUNTIME, "deadlock: every coroutine is blocked");
+            return INTERPRET_RUNTIME_ERROR;
+        }
+        coroutine_load_state(next);
+        coroutine_apply_resume(next);
+        if (!next->started) {
+            next->started = true;
+            Value callee = next->stack[0];
+
+            if (!call_closure(AS_CLOSURE(callee), next->stack_count - 1)) {
+                return INTERPRET_RUNTIME_ERROR;
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* Execution loop                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -4443,13 +5049,23 @@ static bool index_to_position(Value index, int *out)
         goto cold;                                                            \
     }
 
+/* Tracks nesting: callbacks and imported modules re-enter the loop, and a
+ * coroutine may only yield or block when it owns the outermost loop. */
+static InterpretResult run(int base_frame)
+{
+    vm.run_depth++;
+    InterpretResult result = run_loop(base_frame);
+    vm.run_depth--;
+    return result;
+}
+
 /* The loop has two paths. The hot path below keeps `ip` and `sp` in local
  * variables (so the compiler can keep them in registers) and only handles the
  * common, error-free, allocation-free cases. Anything else jumps to `cold`
  * with `ip` still pointing at the opcode: the cold path stores `ip` and `sp`
  * back into the VM and runs the general implementation, so errors, the GC and
  * natives always see a consistent state. */
-static InterpretResult run(int base_frame)
+static InterpretResult run_loop(int base_frame)
 {
     CallFrame *frame = &vm.frames[vm.frame_count - 1];
     uint8_t *ip;
@@ -4459,6 +5075,20 @@ static InterpretResult run(int base_frame)
     uint8_t instruction;
 
     LOAD_FRAME();
+
+    if (__builtin_expect(vm.pending_error_message != NULL, 0)) {
+        const char *message = vm.pending_error_message;
+        uint8_t *error_ip = vm.pending_error_ip;
+
+        vm.pending_error_message = NULL;
+        vm.pending_error_ip = NULL;
+        frame->ip = error_ip + 1;
+        vm_runtime_error(ERROR_RUNTIME, "%s", message);
+        if (vm.has_exception) {
+            goto do_throw;
+        }
+        return INTERPRET_RUNTIME_ERROR;
+    }
 
 #ifdef SPARK_COMPUTED_GOTO
     static const void *const dispatch_table[256] = {
@@ -6616,20 +7246,7 @@ cold_dispatch:
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
-                if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
-                    if (function->is_varargs) {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
-                                         function->name ? function->name->chars : "anonymous", function->min_arity,
-                                         arg_count);
-                    } else if (function->min_arity == function->arity) {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
-                                         function->name ? function->name->chars : "anonymous", function->arity,
-                                         arg_count);
-                    } else {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
-                                         function->name ? function->name->chars : "anonymous",
-                                         function->min_arity, function->arity, arg_count);
-                    }
+                if (!check_closure_arity(function, arg_count)) {
                     goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
@@ -6682,6 +7299,7 @@ cold_dispatch:
                 vm.frame_count--;
                 if (vm.frame_count == 0) {
                     vm.stack_top = vm.stack;
+                    vm.last_result = result;
                     return INTERPRET_OK;
                 }
                 if (vm.frame_count == base_frame) {
@@ -6808,20 +7426,7 @@ cold_dispatch:
             if (is_obj_type(callee, OBJ_CLOSURE)) {
                 ObjClosure *closure = (ObjClosure *)AS_OBJ(callee);
                 ObjFunction *function = closure->function;
-                if (arg_count < function->min_arity || (!function->is_varargs && arg_count > function->arity)) {
-                    if (function->is_varargs) {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects at least %d argument(s) but received %d",
-                                         function->name ? function->name->chars : "anonymous", function->min_arity,
-                                         arg_count);
-                    } else if (function->min_arity == function->arity) {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects %d argument(s) but received %d",
-                                         function->name ? function->name->chars : "anonymous", function->arity,
-                                         arg_count);
-                    } else {
-                        vm_runtime_error(ERROR_ARITY, "the function '%s' expects between %d and %d arguments but received %d",
-                                         function->name ? function->name->chars : "anonymous",
-                                         function->min_arity, function->arity, arg_count);
-                    }
+                if (!check_closure_arity(function, arg_count)) {
                     goto handle_runtime_error;
                 }
                 close_upvalues(frame->slots);
@@ -6874,6 +7479,7 @@ cold_dispatch:
                 vm.frame_count--;
                 if (vm.frame_count == 0) {
                     vm.stack_top = vm.stack;
+                    vm.last_result = result;
                     return INTERPRET_OK;
                 }
                 if (vm.frame_count == base_frame) {
@@ -6953,6 +7559,7 @@ cold_dispatch:
             close_upvalues(frame->slots);
             vm.frame_count--;
             if (vm.frame_count == 0) {
+                vm.last_result = result;
                 pop();
                 return INTERPRET_OK;
             }
@@ -7061,11 +7668,41 @@ cold_dispatch:
         }
 
         case OP_INVOKE: {
+            uint8_t *instruction_start = frame->ip - 1;
             uint16_t name_slot = READ_U16();
             int arg_count = READ_BYTE();
             ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
 
             Value receiver = peek(arg_count);
+
+            if (is_obj_type(receiver, OBJ_CHANNEL) ||
+                is_obj_type(receiver, OBJ_COROUTINE)) {
+                Value result;
+                int status =
+                    is_obj_type(receiver, OBJ_CHANNEL)
+                        ? channel_method(AS_CHANNEL(receiver), method_name, arg_count,
+                                         vm.stack_top - arg_count, &result)
+                        : coroutine_method(AS_COROUTINE(receiver), method_name, arg_count,
+                                           &result);
+
+                if (status < 0) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    goto handle_runtime_error;
+                }
+                if (status == 1) {
+                    vm.current->resume_ip = instruction_start;
+                    vm.stack_top -= arg_count + 1;
+                    return INTERPRET_BLOCKED;
+                }
+                vm.stack_top -= arg_count + 1;
+                push(result);
+                break;
+            }
 
             if (is_obj_type(receiver, OBJ_MAP)) {
                 ObjMap *receiver_map = AS_MAP(receiver);
@@ -7262,6 +7899,7 @@ cold_dispatch:
         }
 
         case OP_INVOKE_SPREAD: {
+            uint8_t *instruction_start = frame->ip - 1;
             uint16_t name_slot = READ_U16();
             ObjString *method_name = AS_STRING(frame->closure->function->chunk.constants[name_slot]);
 
@@ -7273,6 +7911,48 @@ cold_dispatch:
             }
 
             Value receiver = peek(0);
+
+            if (is_obj_type(receiver, OBJ_CHANNEL) ||
+                is_obj_type(receiver, OBJ_COROUTINE)) {
+                ObjArray *spread = AS_ARRAY(args_val);
+                int count = spread->count;
+
+                mem_pause_gc();
+                if (!ensure_stack(count + 8)) {
+                    mem_resume_gc();
+                    goto handle_runtime_error;
+                }
+                for (int i = 0; i < count; i++) {
+                    push(spread->items[i]);
+                }
+                mem_resume_gc();
+
+                Value result;
+                int status =
+                    is_obj_type(receiver, OBJ_CHANNEL)
+                        ? channel_method(AS_CHANNEL(receiver), method_name, count,
+                                         vm.stack_top - count, &result)
+                        : coroutine_method(AS_COROUTINE(receiver), method_name, count, &result);
+
+                if (status < 0) {
+                    if (vm.has_exception) {
+                        vm.had_error = false;
+                        push(vm.exception_value);
+                        vm.has_exception = false;
+                        goto do_throw;
+                    }
+                    goto handle_runtime_error;
+                }
+                if (status == 1) {
+                    vm.current->resume_ip = instruction_start;
+                    vm.stack_top -= count + 1;
+                    return INTERPRET_BLOCKED;
+                }
+                vm.stack_top -= count + 1;
+                push(result);
+                break;
+            }
+
             Value method_val = NIL_VAL;
             bool found = false;
             bool bind_self = true;
@@ -7364,6 +8044,14 @@ cold_dispatch:
             push(frame->self);
             break;
         }
+
+        case OP_YIELD:
+            if (vm.run_depth > 1) {
+                vm_runtime_error(ERROR_RUNTIME,
+                                 "'yield' cannot run inside a callback or an imported module");
+                goto handle_runtime_error;
+            }
+            return INTERPRET_YIELD;
 
         case OP_CALL_SELF_SUB_LOCAL_CONST: {
             uint8_t slot = READ_BYTE();
@@ -7644,6 +8332,8 @@ void vm_init(void)
     define_native("zip", native_zip, 2);
     define_native("isinstance", native_isinstance, 2);
     define_native("is_a", native_is_a, 2);
+    define_native("spawn", native_spawn, -1);
+    define_native("channel", native_channel, -1);
     define_native("copy", native_copy, 1);
     define_native("list_dir", native_list_dir, 1);
     define_native("mkdir", native_mkdir, 1);
@@ -8095,29 +8785,51 @@ InterpretResult vm_run_function(ObjFunction *function, const char *script_name)
 
     pop();
     push(OBJ_VAL(closure));
-    if (!call_closure(closure, 0)) {
-        close_upvalues(vm.stack);
-        vm.stack_top = vm.stack;
-        vm.frame_count = 0;
-        vm.open_upvalues = NULL;
-        vm.try_handler_count = 0;
-        vm.has_exception = false;
-        vm.exception_value = NIL_VAL;
-        vm.had_error = false;
-        return INTERPRET_RUNTIME_ERROR;
-    }
+
+    /* The main script runs as a coroutine too, so `yield` and channel waits
+     * use exactly the same state swapping as spawned coroutines. It does not
+     * own the VM's initial stack. */
+    ObjCoroutine *main_coroutine = object_coroutine();
+
+    main_coroutine->owns_stack = false;
+    main_coroutine->stack = vm.stack;
+    main_coroutine->stack_capacity = vm.stack_capacity;
+    main_coroutine->stack_count = 1;
+    main_coroutine->status = CORO_RUNNING;
+    main_coroutine->started = true;
+    vm.main_coroutine = main_coroutine;
+    vm.current = main_coroutine;
+    vm.run_queue_head = NULL;
+    vm.run_queue_tail = NULL;
+    vm.last_result = NIL_VAL;
 
     if (__builtin_expect(vm.debug_mode, 0)) {
         debugger_on_start(function);
     }
 
-    InterpretResult result = run(0);
+    InterpretResult result;
+
+    if (!call_closure(closure, 0)) {
+        result = INTERPRET_RUNTIME_ERROR;
+    } else {
+        result = vm_scheduler();
+    }
 
     if (main_entry) {
         main_entry->status = MODULE_LOADED;
     }
 
+    /* Close the upvalues the running coroutine left open. When another
+     * coroutine failed, main's upvalues are still parked in its snapshot. */
+    if (vm.current != main_coroutine) {
+        close_upvalues(vm.stack);
+        vm.open_upvalues = main_coroutine->open_upvalues;
+    }
+    vm.stack = main_coroutine->stack;
+    vm.stack_capacity = main_coroutine->stack_capacity;
     close_upvalues(vm.stack);
+    main_coroutine->open_upvalues = NULL;
+
     vm.stack_top = vm.stack;
     vm.frame_count = 0;
     vm.open_upvalues = NULL;
@@ -8125,6 +8837,14 @@ InterpretResult vm_run_function(ObjFunction *function, const char *script_name)
     vm.has_exception = false;
     vm.exception_value = NIL_VAL;
     vm.had_error = false;
+    vm.current = NULL;
+    vm.main_coroutine = NULL;
+    vm.run_queue_head = NULL;
+    vm.run_queue_tail = NULL;
+    vm.last_result = NIL_VAL;
+    vm.pending_error_message = NULL;
+    vm.pending_error_ip = NULL;
+    vm.run_depth = 0;
     return result;
 }
 

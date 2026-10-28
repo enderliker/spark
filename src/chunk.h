@@ -111,7 +111,8 @@ typedef enum {
     OP_JUMP_IF_NOT_GREATER_OR_EQUAL_LOCAL_LOCAL, /* u8: slot a, u8: slot b, u16: offset */
     OP_JUMP_IF_EQUAL_LOCAL_LOCAL,                /* u8: slot a, u8: slot b, u16: offset */
     OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL,            /* u8: slot a, u8: slot b, u16: offset */
-    OP_SELF
+    OP_SELF,
+    OP_YIELD
 } OpCode;
 
 typedef struct {

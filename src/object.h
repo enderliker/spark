@@ -11,6 +11,8 @@
 struct ObjClass;
 struct ObjInstance;
 struct ObjClosure;
+struct ObjCoroutine;
+struct ObjChannel;
 
 struct ObjString {
     Obj obj;
@@ -69,6 +71,9 @@ typedef struct ObjUpvalue {
     Value *location;
     Value closed;
     struct ObjUpvalue *next;
+    /* Coroutine whose stack `location` points into while the upvalue is open.
+     * Marking it keeps an escaped closure from outliving its stack. */
+    struct ObjCoroutine *owner;
 } ObjUpvalue;
 
 typedef struct ObjClosure {
@@ -102,6 +107,80 @@ typedef struct ObjInstance {
     ObjMap *fields;
 } ObjInstance;
 
+typedef enum {
+    CORO_NEW,
+    CORO_RUNNABLE,
+    CORO_RUNNING,
+    CORO_BLOCKED,
+    CORO_DONE
+} CoroutineStatus;
+
+typedef enum {
+    CORO_WAIT_NONE,
+    CORO_WAIT_SEND,
+    CORO_WAIT_RECEIVE,
+    CORO_WAIT_JOIN
+} CoroutineWaitKind;
+
+/* A cooperative green thread. While suspended it owns a private value stack
+ * and a snapshot of its call frames; the VM swaps those in when it runs. The
+ * CallFrame and TryHandler layouts are private to vm.c, so they are stored as
+ * void pointers here. */
+typedef struct ObjCoroutine {
+    Obj obj;
+    CoroutineStatus status;
+    bool started;
+    bool owns_stack;
+
+    Value *stack;
+    int stack_count;
+    int stack_capacity;
+    void *frames;
+    int frame_count;
+    int frame_capacity;
+    size_t frame_bytes;
+    ObjUpvalue *open_upvalues;
+    void *try_handlers;
+    int try_handler_count;
+    int try_handler_capacity;
+    size_t try_handler_bytes;
+    bool has_exception;
+    Value exception_value;
+    bool had_error;
+
+    /* Scheduler links. `wait_next` is used by channel wait queues and by the
+     * joiners list of the coroutine being joined. */
+    struct ObjCoroutine *queue_next;
+    struct ObjCoroutine *wait_next;
+    struct ObjCoroutine *joiners;
+    struct ObjCoroutine *wait_target;
+    struct ObjChannel *wait_channel;
+    CoroutineWaitKind wait_kind;
+    Value wait_value;
+    bool has_resume_result;
+    Value resume_result;
+    const char *resume_error;
+    /* Bytecode position of the method call that blocked, used to report
+     * errors (such as sending on a channel closed while waiting). */
+    uint8_t *resume_ip;
+
+    Value result;
+} ObjCoroutine;
+
+/* FIFO channel. Capacity zero means an unbuffered rendezvous channel. */
+typedef struct ObjChannel {
+    Obj obj;
+    Value *buffer;
+    int capacity;
+    int count;
+    int head;
+    bool closed;
+    struct ObjCoroutine *waiting_senders;
+    struct ObjCoroutine *waiting_senders_tail;
+    struct ObjCoroutine *waiting_receivers;
+    struct ObjCoroutine *waiting_receivers_tail;
+} ObjChannel;
+
 typedef struct ObjFile {
     Obj obj;
     FILE *stream;
@@ -123,6 +202,8 @@ typedef struct {
 #define AS_FILE(v) ((ObjFile *)(v).as.obj)
 #define AS_CLASS(v) ((ObjClass *)(v).as.obj)
 #define AS_INSTANCE(v) ((ObjInstance *)(v).as.obj)
+#define AS_COROUTINE(v) ((ObjCoroutine *)(v).as.obj)
+#define AS_CHANNEL(v) ((ObjChannel *)(v).as.obj)
 
 typedef Value (*NativeFn)(int arg_count, Value *args);
 
@@ -164,6 +245,8 @@ ObjFunction *object_function(void);
 ObjClosure *object_closure(ObjFunction *function);
 ObjNative *object_native(NativeFn fn, int arity, const char *name);
 ObjUpvalue *object_upvalue(Value *slot);
+ObjCoroutine *object_coroutine(void);
+ObjChannel *object_channel(int capacity);
 ObjFile *object_file(FILE *stream, ObjString *path);
 ObjStringBuilder *object_string_builder(int initial_capacity);
 bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len);

@@ -40,6 +40,15 @@ static void *allocate_obj(size_t size, ObjType type)
     return obj;
 }
 
+/* `allocate_obj` has already linked the new object into the GC list and set its
+ * header, so bulk zeroing must start after the header. Zeroing from the start
+ * would clear `next` (truncating the list, hiding live objects from the sweep)
+ * and `marked` (leaving stale marks that skip blackening later). */
+static void zero_obj_body(void *object, size_t size)
+{
+    memset((char *)object + sizeof(Obj), 0, size - sizeof(Obj));
+}
+
 static uint32_t hash_string(const char *chars, int length)
 {
     uint32_t hash = 2166136261u;
@@ -635,7 +644,39 @@ ObjUpvalue *object_upvalue(Value *slot)
     upvalue->location = slot;
     upvalue->closed = NIL_VAL;
     upvalue->next = NULL;
+    upvalue->owner = NULL;
     return upvalue;
+}
+
+ObjCoroutine *object_coroutine(void)
+{
+    ObjCoroutine *coroutine;
+
+    mem_pause_gc();
+    coroutine = allocate_obj(sizeof(ObjCoroutine), OBJ_COROUTINE);
+    zero_obj_body(coroutine, sizeof(ObjCoroutine));
+    coroutine->status = CORO_NEW;
+    coroutine->result = NIL_VAL;
+    coroutine->wait_value = NIL_VAL;
+    coroutine->resume_result = NIL_VAL;
+    coroutine->exception_value = NIL_VAL;
+    mem_resume_gc();
+    return coroutine;
+}
+
+ObjChannel *object_channel(int capacity)
+{
+    ObjChannel *channel;
+
+    mem_pause_gc();
+    channel = allocate_obj(sizeof(ObjChannel), OBJ_CHANNEL);
+    zero_obj_body(channel, sizeof(ObjChannel));
+    channel->capacity = capacity;
+    if (capacity > 0) {
+        channel->buffer = mem_realloc(NULL, 0, sizeof(Value) * (size_t)capacity);
+    }
+    mem_resume_gc();
+    return channel;
 }
 
 ObjFile *object_file(FILE *stream, ObjString *path)
@@ -748,6 +789,25 @@ void object_free(Obj *obj)
     case OBJ_UPVALUE:
         mem_realloc(obj, sizeof(ObjUpvalue), 0);
         break;
+    case OBJ_COROUTINE: {
+        ObjCoroutine *coroutine = (ObjCoroutine *)obj;
+
+        if (coroutine->owns_stack) {
+            mem_realloc(coroutine->stack,
+                        sizeof(Value) * (size_t)coroutine->stack_capacity, 0);
+        }
+        mem_realloc(coroutine->frames, coroutine->frame_bytes, 0);
+        mem_realloc(coroutine->try_handlers, coroutine->try_handler_bytes, 0);
+        mem_realloc(coroutine, sizeof(ObjCoroutine), 0);
+        break;
+    }
+    case OBJ_CHANNEL: {
+        ObjChannel *channel = (ObjChannel *)obj;
+
+        mem_realloc(channel->buffer, sizeof(Value) * (size_t)channel->capacity, 0);
+        mem_realloc(channel, sizeof(ObjChannel), 0);
+        break;
+    }
     case OBJ_FILE: {
         ObjFile *file = (ObjFile *)obj;
         if (file->stream && !file->is_closed) {
@@ -808,6 +868,8 @@ const char *obj_type_name(ObjType type)
     case OBJ_STRING_BUILDER: return "string_builder";
     case OBJ_CLASS: return "class";
     case OBJ_INSTANCE: return "instance";
+    case OBJ_COROUTINE: return "coroutine";
+    case OBJ_CHANNEL: return "channel";
     }
     return "object";
 }
@@ -968,6 +1030,26 @@ static void value_format(buf_t *b, Value v, bool repr)
                         instance->klass && instance->klass->name
                             ? instance->klass->name->chars
                             : "?");
+            break;
+        }
+        case OBJ_COROUTINE: {
+            ObjCoroutine *coroutine = (ObjCoroutine *)AS_OBJ(v);
+            const char *status = coroutine->status == CORO_DONE       ? "done"
+                                 : coroutine->status == CORO_BLOCKED  ? "blocked"
+                                 : coroutine->status == CORO_RUNNING ? "running"
+                                                                     : "suspended";
+            buf_appendf(b, "<coroutine %s>", status);
+            break;
+        }
+        case OBJ_CHANNEL: {
+            ObjChannel *channel = (ObjChannel *)AS_OBJ(v);
+            if (channel->closed) {
+                buf_append_str(b, "<channel closed>");
+            } else if (channel->capacity == 0) {
+                buf_append_str(b, "<channel unbuffered>");
+            } else {
+                buf_appendf(b, "<channel capacity=%d>", channel->capacity);
+            }
             break;
         }
         }

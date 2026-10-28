@@ -1480,6 +1480,12 @@ static Stmt *statement(Parser *parser)
         consume(parser, TOKEN_SEMICOLON, "expected ';' after 'return'");
         return stmt;
     }
+    if (match(parser, TOKEN_YIELD)) {
+        Stmt *stmt = new_stmt(parser, STMT_YIELD, line, column);
+
+        consume(parser, TOKEN_SEMICOLON, "expected ';' after 'yield'");
+        return stmt;
+    }
     if (match(parser, TOKEN_BREAK)) {
         Stmt *stmt = new_stmt(parser, STMT_BREAK, line, column);
 

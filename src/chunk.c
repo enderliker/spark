@@ -184,6 +184,7 @@ const char *opcode_name(OpCode op)
     case OP_JUMP_IF_EQUAL_LOCAL_LOCAL: return "JUMP_IF_EQ_LL";
     case OP_JUMP_IF_NOT_EQUAL_LOCAL_LOCAL: return "JUMP_IF_NE_LL";
     case OP_SELF: return "SELF";
+    case OP_YIELD: return "YIELD";
     }
     return "?";
 }

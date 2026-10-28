@@ -188,7 +188,8 @@ typedef enum {
     STMT_IMPORT,
     STMT_THROW,
     STMT_TRY,
-    STMT_CLASS
+    STMT_CLASS,
+    STMT_YIELD
 } StmtKind;
 
 typedef struct ClassField {

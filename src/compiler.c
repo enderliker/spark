@@ -1400,6 +1400,7 @@ static bool is_reserved_type_name(Text name)
     static const char *const reserved[] = {
         "number", "string", "bool", "nil", "array", "map",
         "function", "native function", "file", "string_builder", "class", "instance",
+        "coroutine", "channel",
     };
 
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
@@ -1635,6 +1636,10 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
             compile_error(compiler, line, "'return' can only be used inside a function");
         }
         compile_tail_return(compiler, stmt->as.ret.value, line, stmt->column);
+        break;
+
+    case STMT_YIELD:
+        emit_byte(compiler, OP_YIELD, line);
         break;
 
     case STMT_BREAK:
