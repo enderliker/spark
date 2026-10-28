@@ -1,0 +1,2 @@
+exit: 70
+stderr: to_string() must return a string, received number

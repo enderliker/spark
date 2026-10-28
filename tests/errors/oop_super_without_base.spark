@@ -1,0 +1,7 @@
+class NoBase {
+    init() {
+        super();
+    }
+}
+
+new NoBase();

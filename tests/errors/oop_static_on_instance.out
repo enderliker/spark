@@ -1,0 +1,2 @@
+exit: 70
+stderr: method 'build' not found on instance of 'StaticOnly'

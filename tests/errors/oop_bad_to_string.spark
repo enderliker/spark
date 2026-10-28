@@ -1,0 +1,7 @@
+class BadText {
+    to_string() {
+        return 42;
+    }
+}
+
+print(new BadText());

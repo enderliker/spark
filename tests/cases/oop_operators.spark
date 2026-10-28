@@ -1,0 +1,137 @@
+// Operator overloading through special methods.
+
+class Vec {
+    init(x, y) {
+        self.x = x;
+        self.y = y;
+    }
+
+    __add__(o) { return new Vec(self.x + o.x, self.y + o.y); }
+    __sub__(o) { return new Vec(self.x - o.x, self.y - o.y); }
+    __mul__(k) { return new Vec(self.x * k, self.y * k); }
+    __div__(k) { return new Vec(self.x / k, self.y / k); }
+    __mod__(k) { return new Vec(self.x % k, self.y % k); }
+    __pow__(k) { return new Vec(self.x ** k, self.y ** k); }
+    __neg__() { return new Vec(-self.x, -self.y); }
+
+    __eq__(o) {
+        return (o instanceof Vec) and self.x == o.x and self.y == o.y;
+    }
+
+    __lt__(o) { return self.x < o.x; }
+    __le__(o) { return self.x <= o.x; }
+    __gt__(o) { return self.x > o.x; }
+    __ge__(o) { return self.x >= o.x; }
+
+    __len__() { return 2; }
+
+    __index__(i) {
+        if (i == 0) { return self.x; }
+        if (i == 1) { return self.y; }
+        return nil;
+    }
+
+    __index_set__(i, value) {
+        if (i == 0) {
+            self.x = value;
+        } else if (i == 1) {
+            self.y = value;
+        } else {
+            self.extra = value;
+        }
+        return nil;
+    }
+
+    to_string() {
+        return "Vec(" + str(self.x) + ", " + str(self.y) + ")";
+    }
+}
+
+var a = new Vec(1, 2);
+var b = new Vec(3, 4);
+
+print(a + b);
+print(b - a);
+print(a * 3);
+print(b / 2);
+print(b % 3);
+print(a ** 2);
+print(-a);
+
+print(a == new Vec(1, 2));
+print(a == b);
+print(a != b);
+
+print(a < b);
+print(a <= b);
+print(b > a);
+print(b >= a);
+
+// The same comparisons compiled as fused jump superinstructions.
+var small = new Vec(1, 1);
+var big = new Vec(9, 9);
+
+print(small < big);
+print(small > big);
+print(small <= big);
+print(small >= big);
+
+if (small < big) { print("lt"); }
+if (small <= big) { print("le"); }
+if (not (small > big)) { print("not-gt"); }
+if (small == new Vec(1, 1)) { print("eq"); }
+if (small != big) { print("ne"); }
+
+// Nil keeps identity semantics even when __eq__ exists.
+print(small == nil);
+print(nil == small);
+print(small != nil);
+
+print(len(a));
+print(a[0]);
+print(a[1]);
+print(a[7]);
+
+a[0] = 10;
+print(a);
+a[2] = 7;
+print(a.extra);
+
+// Compound assignment dispatches through the dunder.
+var c = new Vec(1, 1);
+c += new Vec(2, 3);
+print(c);
+c *= 2;
+print(c);
+
+// Dunder results use Spark truthiness.
+class Odd {
+    __eq__(_o) { return "truthy"; }
+    __lt__(_o) { return 0; }
+}
+
+var odd = new Odd();
+print(odd == 1);
+print(odd != 1);
+print(odd < 2);
+
+// A subclass can override a dunder.
+class Vec3 extends Vec {
+    init(x, y, z) {
+        super(x, y);
+        self.z = z;
+    }
+
+    __add__(o) {
+        return new Vec3(self.x + o.x, self.y + o.y, self.z + o.z);
+    }
+
+    to_string() {
+        return "Vec3(" + str(self.x) + ", " + str(self.y) + ", " + str(self.z) + ")";
+    }
+}
+
+var v = new Vec3(1, 2, 3);
+var w = new Vec3(4, 5, 6);
+print(v + w);
+print(len(w));

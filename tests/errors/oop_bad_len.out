@@ -1,0 +1,2 @@
+exit: 70
+stderr: '__len__' must return a non-negative integer, received string

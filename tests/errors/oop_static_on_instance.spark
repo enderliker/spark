@@ -1,0 +1,8 @@
+class StaticOnly {
+    static build() {
+        return 1;
+    }
+}
+
+var s = new StaticOnly();
+print(s.build());

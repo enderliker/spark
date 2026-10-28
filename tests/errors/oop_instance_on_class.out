@@ -1,0 +1,2 @@
+exit: 70
+stderr: method 'run' is an instance method; call it on an instance of 'InstanceOnly'

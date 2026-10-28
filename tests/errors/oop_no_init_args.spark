@@ -1,0 +1,4 @@
+class NoInit {
+}
+
+var n = new NoInit(1);

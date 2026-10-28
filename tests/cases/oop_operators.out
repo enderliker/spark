@@ -1,0 +1,39 @@
+Vec(4, 6)
+Vec(2, 2)
+Vec(3, 6)
+Vec(1.5, 2)
+Vec(0, 1)
+Vec(1, 4)
+Vec(-1, -2)
+true
+false
+true
+true
+true
+true
+true
+true
+false
+true
+false
+lt
+le
+not-gt
+eq
+ne
+false
+false
+true
+2
+1
+2
+nil
+Vec(10, 2)
+7
+Vec(3, 4)
+Vec(6, 8)
+true
+false
+true
+Vec3(5, 7, 9)
+2

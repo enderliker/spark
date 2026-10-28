@@ -1,0 +1,26 @@
+Animalia
+Animalia/Canidae
+Animal.init
+Dog.init
+["Animal.name", "Dog.label"]
+Rex
+3
+generic
+Rex barks
+Rex makes a sound
+I am Rex
+Dog
+true
+true
+true
+true
+Animal(Rex)
+Animal.init
+Dog.init
+Tiny barks
+true
+1
+5
+2
+5
+brown

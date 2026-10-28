@@ -1,0 +1,5 @@
+class Plain {
+}
+
+var p = new Plain();
+print(p[0]);

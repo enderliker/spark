@@ -1,0 +1,2 @@
+exit: 70
+stderr: method 'missing' not found on instance of 'Empty'

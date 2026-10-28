@@ -1,0 +1,2 @@
+exit: 70
+stderr: cannot assign an index of type number on an instance of 'Plain'; define '__index_set__' or use a string field name

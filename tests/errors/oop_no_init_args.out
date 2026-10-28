@@ -1,0 +1,2 @@
+exit: 70
+stderr: class 'NoInit' does not define 'init' but received 1 argument(s)

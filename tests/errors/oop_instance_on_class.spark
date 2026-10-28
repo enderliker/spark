@@ -1,0 +1,7 @@
+class InstanceOnly {
+    run() {
+        return 1;
+    }
+}
+
+print(InstanceOnly.run());

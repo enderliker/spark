@@ -1,0 +1,5 @@
+class Empty {
+}
+
+var e = new Empty();
+e.missing();

@@ -1,0 +1,2 @@
+exit: 65
+stderr: 'super' can only be used inside an instance method

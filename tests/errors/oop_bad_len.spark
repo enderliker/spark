@@ -1,0 +1,7 @@
+class BadLen {
+    __len__() {
+        return "three";
+    }
+}
+
+print(len(new BadLen()));

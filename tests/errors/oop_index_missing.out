@@ -1,0 +1,2 @@
+exit: 70
+stderr: cannot index an instance of 'Plain' with number; define '__index__' or use a string field name

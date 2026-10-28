@@ -1,0 +1,113 @@
+// Classes, declared fields, inheritance, super, statics and is_a.
+
+var log = [];
+
+fn mark(label) {
+    push(log, label);
+    return label;
+}
+
+class Animal {
+    var name = mark("Animal.name");
+    var sound = "generic";
+
+    init(name) {
+        print("Animal.init");
+        self.name = name;
+    }
+
+    speak() {
+        return self.name + " makes a sound";
+    }
+
+    describe() {
+        return "I am " + self.name;
+    }
+
+    static kingdom() {
+        return "Animalia";
+    }
+
+    to_string() {
+        return "Animal(" + self.name + ")";
+    }
+}
+
+class Dog extends Animal {
+    var tricks = 0;
+    var label = mark("Dog.label");
+
+    init(name, tricks) {
+        super(name);
+        print("Dog.init");
+        self.tricks = tricks;
+    }
+
+    speak() {
+        return self.name + " barks";
+    }
+
+    parent_speak() {
+        return super.speak();
+    }
+
+    static kingdom() {
+        return super.kingdom() + "/Canidae";
+    }
+}
+
+print(Animal.kingdom());
+print(Dog.kingdom());
+
+var d = new Dog("Rex", 3);
+print(log);
+print(d.name);
+print(d.tricks);
+print(d.sound);
+print(d.speak());
+print(d.parent_speak());
+print(d.describe());
+print(type(d));
+print(d instanceof Dog);
+print(d instanceof Animal);
+print(is_a(d, Dog));
+print(is_a(d, Animal));
+print(d);
+
+// A class without init inherits the closest one.
+class Puppy extends Dog {
+}
+
+var p = new Puppy("Tiny", 0);
+print(p.speak());
+print(is_a(p, Animal));
+
+// Statics can be read and assigned through the class.
+class Config {
+    static var level = 1;
+}
+
+print(Config.level);
+Config.level = 5;
+print(Config.level);
+
+// Nested closures capture self like any other local.
+class Counter {
+    var n = 0;
+
+    bump_by(k) {
+        var add = fn() {
+            self.n += k;
+            return self.n;
+        };
+        return add();
+    }
+}
+
+var c = new Counter();
+print(c.bump_by(2));
+print(c.bump_by(3));
+
+// Fields can still be added dynamically.
+d.color = "brown";
+print(d.color);
