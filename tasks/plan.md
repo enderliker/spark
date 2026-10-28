@@ -62,8 +62,9 @@ original numbering:
 - **A7 - Objects. [decided]** Start with method-call sugar on maps
   (`recv.method(args)` reads the key and calls it with the receiver bound to `self`).
   Full classes are deferred until that sugar is in and evaluated. (Was Q5; see T44.)
-- **A8 - Concurrency.** Optional/last: coroutines as VM-managed green threads
-  (`spawn`/`yield`/channels), not OS threads. (Open question Q6.)
+- **A8 - Concurrency. [decided]** Coroutines as VM-managed green threads
+  (`spawn`/`yield`/channels), not OS threads; implemented in Phase 14. Each coroutine
+  owns a private value stack and the VM snapshots frames/try-handlers when it suspends.
 
 ## Task List (ordered index)
 
@@ -166,49 +167,50 @@ original numbering:
 - [x] T52 Formatter
 - [x] T53 Linter
 - [x] T54 CI + coverage + sanitizer job
-- [ ] T55 Concurrency (`spawn`/`yield`/channels) - moved to Phase 14
+- [x] T55 Concurrency (`spawn`/`yield`/channels) - delivered as Phase 14 (T81)
 
 ### Phase 9 - Catchable Runtime Errors & String Optimization
-- [ ] T56 Catchable runtime errors in `try`/`catch` (`ZeroDivisionError`, `TypeError`, `IndexError`, etc. caught as map)
-- [ ] T57 Amortized string concatenation / String builder (`s += "x"` in O(N))
+- [x] T56 Catchable runtime errors in `try`/`catch` (`ZeroDivisionError`, `TypeError`, `IndexError`, etc. caught as map)
+- [ ] T57 Amortized string concatenation (`s += "x"` is still O(N^2); `string_builder()` covers the amortized case)
 
 ### Phase 10 - Standard Library Additions
-- [ ] T58 Math natives (`sin`, `cos`, `log`, `exp`, `pi`, `min`/`max` array support)
-- [ ] T59 Time natives (`time`, `sleep`)
-- [ ] T60 Text natives & unicode escapes (`chr`, `ord`, `pad_start`, `pad_end`, `\uXXXX`)
-- [ ] T61 Utility natives (`sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`)
-- [ ] T62 System & File natives (`list_dir`, `mkdir`, `exec`)
+- [x] T58 Math natives (`sin`, `cos`, `log`, `exp`, `pi`, `min`/`max` array support)
+- [x] T59 Time natives (`time`, `sleep`)
+- [x] T60 Text natives & unicode escapes (`chr`, `ord`, `pad_start`, `pad_end`, `\uXXXX`)
+- [x] T61 Utility natives (`sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`)
+- [x] T62 System & File natives (`list_dir`, `mkdir`, `exec`)
 
 ### Phase 11 - Negative Indices & Slices
-- [ ] T63 Negative indexing for arrays and strings (`a[-1]`)
-- [ ] T64 Slice native supporting negative bounds (`slice(str, start, end)`)
-- [ ] T65 Slice syntax `expr[start:end]` and `expr[start:end:step]`
+- [x] T63 Negative indexing for arrays and strings (`a[-1]`)
+- [x] T64 Slice native supporting negative bounds (`slice(str, start, end)`)
+- [x] T65 Slice syntax `expr[start:end]` and `expr[start:end:step]`
 
 ### Phase 12 - Native Methods & Syntactic Sugar
-- [ ] T66 Methods on native types (`"abc".upper()`, `[1, 2].len()`, `str.split(sep)`)
-- [ ] T67 Increment / decrement operators (`i++`, `i--`, `++i`, `--i`)
-- [ ] T68 Short lambdas (`fn(x) => x * 2`)
-- [ ] T69 Binary `in` operator (`item in collection`)
-- [ ] T70 Power operator `**`, optional chaining `?.`, unary `+`
-- [ ] T71 Multiline strings (`"""..."""`)
-- [ ] T72 `for (var i, v in arr)` syntax
-- [ ] T73 Per-iteration loop binding for closures
-- [ ] T74 Destructuring (`var [a, b] = arr`, `var {x, y} = map`)
+- [x] T66 Methods on native types (`"abc".upper()`, `[1, 2].len()`, `str.split(sep)`)
+- [x] T67 Increment / decrement operators (`i++`, `i--`, `++i`, `--i`)
+- [x] T68 Short lambdas (`fn(x) => x * 2`)
+- [x] T69 Binary `in` operator (`item in collection`)
+- [x] T70 Power operator `**`, optional chaining `?.`, unary `+`
+- [x] T71 Multiline strings (`"""..."""`)
+- [x] T72 `for (var i, v in arr)` syntax
+- [x] T73 Per-iteration loop binding for closures
+- [x] T74 Destructuring (`var [a, b] = arr`, `var {x, y} = map`)
 
 ### Phase 13 - Full Classes & OOP
-- [ ] T75 First-class `ObjClass` and `ObjInstance` (`type(inst) == "ClassName"`)
-- [ ] T76 Inheritance with `class Sub extends Super` and `super(...)` / `super.method(...)`
-- [ ] T77 Class field declarations `var x = 3;` and `static` methods
-- [ ] T78 `instanceof` operator
-- [ ] T79 Custom string representation hook `to_string()`
-- [ ] T80 Operator overloading (`__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.)
+- [x] T75 First-class `ObjClass` and `ObjInstance` (`type(inst) == "ClassName"`)
+- [x] T76 Inheritance with `class Sub extends Super` and `super(...)` / `super.method(...)`
+- [x] T77 Class field declarations `var x = 3;` and `static` methods
+- [x] T78 `instanceof` operator
+- [x] T79 Custom string representation hook `to_string()`
+- [x] T80 Operator overloading (`__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.)
 
 ### Phase 14 - Concurrency (T55)
-- [ ] T81 Green-thread coroutines (`spawn`, `yield`, `channel`)
+- [x] T81 Green-thread coroutines (`spawn`, `yield`, `channel`)
 
 ### Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] Full sanitizer + benchmark run (153 tests passing, ASan/UBSan clean, benchmark ~5.1 ms)
+- [x] All acceptance criteria met except T57 (documented in `tasks/todo.md`)
+- [x] Full sanitizer + benchmark run (207 tests passing, ASan/UBSan clean, benchmark
+      minimum 4.94 ms / median 5.01 ms measured on an idle machine)
 - [x] Ready for review
 
 ## Risks and Mitigations
@@ -248,6 +250,35 @@ PRNG (`rand`, `randint`, `srand`), JSON (`to_json`, `from_json`) and linear-time
 (`regex_match`, `regex_find`, `regex_replace`) are in. Covered by
 `tests/cases/{io,random,json,regex,fase4_e2e}.spark` and `tests/errors/{file_closed,from_json_error,randint_invalido,regex_invalido}.spark`.
 
+**Phase 5 (functions & semantics, T34-T39) is implemented.** Tail-call
+optimization, default parameters, varargs/spread, the REPL `_` value and `is_nan` are
+in, with the review fixes listed in `tasks/todo.md`.
+
+**Phase 6 (modules, exceptions, objects, T40-T44) is implemented.** `import` resolves
+relative paths and caches modules by canonical path against the shared global namespace
+(A6), `try`/`catch`/`finally` uses a VM handler stack that also catches runtime errors
+as a `{type, message, line, column}` map, and the object model (classes, `new`,
+inheritance, `super`, statics, `to_string`, operator overloading) landed in Phase 13.
+
+**Phases 7-8 (performance, limits, tooling, T45-T54) are implemented.** Growable stacks,
+`FRAMES_MAX 4096`/`MAX_LOCALS 1024`, adaptive GC thresholds with `gc()`, constant folding,
+`.sparkc` bytecode, the debugger, formatter, linter and CI are all in.
+
+**Phases 9-12 (T56-T74) are implemented** except T57. Catchable runtime errors, slices,
+lambdas, update operators, destructuring, native methods, optional chaining, multiline
+strings and the extended native library are covered by the Phase 9-12 fixtures.
+
+**Phase 13 (T75-T80) is implemented.** `ObjClass`/`ObjInstance`, inheritance, statics,
+`instanceof`, `to_string` and operator overloading are covered by
+`tests/cases/{oop_basics,methods_classes,oop_operators}.spark` and the `oop_*` error
+fixtures.
+
+**Phase 14 (T81) is implemented.** Cooperative coroutines and FIFO channels are in
+(`spawn`, `yield`, `join`, `done`, `channel`, `send`, `receive`, `close`), with a private
+value stack per coroutine, per-coroutine frame/try-handler snapshots and GC tracing of
+blocked waiters. The bytecode format version is now 5 (`OP_YIELD`); see
+`docs/language.md` section 15 and `tests/cases/{coroutines,coroutine_gc}.spark`.
+
 ## Open Questions (need human input)
 
 Resolved:
@@ -258,20 +289,27 @@ Resolved:
   before implementation starts.
 - **Q9 (tracker) - CONFIRMED:** tasks live in `tasks/todo.md`.
 
-Still open (answer at the start of the relevant phase):
-- **Q3 (modules, Phase 6):** shared global namespace vs per-module namespace? Path
-  resolution, and module search paths?
-- **Q4 (exceptions, Phase 6):** syntax `try { } catch (e) { } finally { }`, uncaught
-  behavior, and the type of the caught value. Runtime errors already carry an
-  `ErrorType` category; decide whether `catch` receives the category, the message or
-  both.
-- **Q6 (concurrency, Phase 8):** coroutines (VM green threads), and is it wanted at all?
-- **Q7 (breaking changes):** acceptable to change existing test expectations/docs where
-  a new feature requires it?
-- **Q10 (JIT):** confirm T50 and T55 may be deferred as stretch goals.
+- **Q3 (modules) - DECIDED AND IMPLEMENTED:** relative paths resolve against the
+  importing file and every module runs once against the shared global namespace (A6).
+- **Q4 (exceptions) - DECIDED AND IMPLEMENTED:** `try { } catch (e) { } finally { }`;
+  `e` is a map with `type`, `message`, `line` and `column`; an uncaught value keeps the
+  previous stderr/exit behavior.
+- **Q6 (concurrency) - DECIDED AND IMPLEMENTED:** VM green threads (`spawn`/`yield`/
+  channels), single-threaded and cooperative (A8), delivered in Phase 14.
+- **Q7 (breaking changes) - DECIDED:** yes, and they are recorded in `CHANGELOG.md`
+  under "Breaking changes".
+- **Q10 (JIT) - DEFERRED:** T50 stays a stretch goal; the interpreter with fused
+  superinstructions is the supported engine.
 
 ## Baseline (for regression checks)
 
-- Tests: 103 passing (`python3 tests/run_tests.py`).
-- Benchmark: `fib(27)` minimum ~9.4 ms, median ~9.5 ms (`python3 benchmarks/run.py`).
-- No warnings, sanitizers clean.
+- Tests: 207 passing (`python3 tests/run_tests.py`), also clean under ASan/UBSan.
+- Benchmark: `fib(27)` minimum 4.94 ms, median 5.01 ms on an idle machine
+  (`python3 benchmarks/run.py`; a few percent of variance under load).
+- No warnings with `-O3 -Wall -Wextra -Wpedantic`.
+
+## Known gaps
+
+- T57: `s += "x"` in a loop is still O(N^2) (measured 6/16/78/299 ms for
+  10k/20k/40k/80k appends). `string_builder()` provides amortized appends; amortizing
+  `+=` itself needs ownership analysis or a builder-backed string.

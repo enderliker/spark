@@ -48,7 +48,8 @@ continuation byte; they continue with letters, digits and `_`. The keywords are:
 
 ```
 var const fn if else while for in return break continue do switch case default
-true false nil and or not import try catch finally throw class new
+true false nil and or not import try catch finally throw class new extends
+static super instanceof yield
 ```
 
 ## 2. Types
@@ -63,6 +64,8 @@ true false nil and or not import try catch finally throw class new
 | `array` | `[1, 2]` | always truthy |
 | `map` | `{"a": 1}` | always truthy |
 | `function` | `fn(x) { return x; }`, `print` | always truthy |
+| `coroutine` | `spawn(worker)` | always truthy |
+| `channel` | `channel()` | always truthy |
 
 There are two numeric types. An **integer** is a signed 64-bit value; a **number** is
 a double-precision float. `type()` reports `"number"` for both, and `is_int(x)` tells
@@ -477,6 +480,8 @@ print(upper("hola"), trim("  x  "));
 | `regex_find(pattern, text)` | Array of all non-overlapping matches of `pattern` in `text`. |
 | `regex_replace(pattern, repl, text)` | Replaces non-overlapping matches with `repl`. |
 | `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
+| `spawn(fn, a, b, ...)` | Starts a coroutine that calls `fn` with the given arguments; returns the coroutine object. |
+| `channel(n?)` | Creates a channel; without `n` it is unbuffered, with `n` it buffers `n` values. |
 
 The script arguments are accessible through the global array `argv`, where `argv[0]`
 is the script file path and subsequent elements are arguments passed on the command line
@@ -569,13 +574,15 @@ try {
 - `finally` blocks always execute, whether the `try` block completes normally, handles an exception, returns early via `return`, or leaves an uncaught exception propagating upward.
 - If an exception reaches the top of the call stack without finding a handler, the VM terminates execution with exit code 70 and reports `uncaught exception: <value>`.
 
-## 14. Object-oriented features: Methods, `self`, and Classes
+## 14. Object-oriented programming
 
-Spark provides prototype-friendly map methods and syntactic class declarations.
+Spark has two related object models: functions stored in maps act as methods, and
+`class` declarations create real instances with their own fields.
 
-### Method call sugar and `self`
+### Map method call sugar and `self`
 
-Calling a function stored in a map using the dot operator automatically binds `self` to the map receiver:
+Calling a function stored in a map using the dot operator automatically binds `self`
+to the map receiver:
 
 ```spark
 var counter = {
@@ -594,19 +601,21 @@ print(counter.increment(2)); // 2
 - If a function accessing `self` is called directly rather than via a method call, a runtime `NameError` is raised indicating `self` is not bound.
 - Method calls can be chained: `obj.step().step().get()`.
 
-### Classes and `new`
+### Classes and instances
 
-The `class` statement provides clean syntax for constructors and method sets:
+The `class` statement declares the fields, constructor and methods of a new type:
 
 ```spark
 class Person {
+    var greeting = "Hello"; // declared field with a default value
+
     init(name, age = 0) {
         self.name = name;
         self.age = age;
     }
 
     greet() {
-        return "Hello, I am " + self.name;
+        return self.greeting + ", I am " + self.name;
     }
 }
 
@@ -614,10 +623,210 @@ var p = new Person("Ada", 36);
 print(p.greet());
 ```
 
-- The constructor is defined using the optional `init(...)` method.
-- `new Class(...)` or `Class(...)` invokes the constructor, initializes a new map instance, binds its methods, executes `init`, and returns the instance.
+- Construction always uses `new`: `new Person("Ada")` creates the instance and runs `init`, while `Person("Ada")` is a `TypeError` telling you to use `new`.
+- `init` is optional. It may declare parameters with default values, and `new` checks the argument count against it.
+- A class may declare fields with `var name = expression;` (the `= expression` part is optional). Fields are initialized base-first, before `init` runs, and every instance receives its own copy.
+- Fields can still be created dynamically by assigning to `self.name`; they do not need to be declared.
+- `init` implicitly returns the new instance. A bare `return` ends the constructor early, but `return value` inside `init` is a compile error.
+- Methods are looked up through the superclass chain. A nested function or lambda can capture `self` like any other local.
 
-## 15. REPL
+### Inheritance and `super`
+
+```spark
+class Animal {
+    init(name) { self.name = name; }
+    speak() { return self.name + " makes a sound"; }
+    static kingdom() { return "Animalia"; }
+}
+
+class Dog extends Animal {
+    init(name) { super(name); }
+    speak() { return self.name + " barks"; }
+    parent_speak() { return super.speak(); }
+    static kingdom() { return super.kingdom() + "/Canidae"; }
+}
+
+var d = new Dog("Rex");
+print(d.speak());        // Rex barks
+print(d.parent_speak()); // Rex makes a sound
+```
+
+- `extends` names a single superclass; a class without `extends` has none.
+- `super(args)` calls the superclass `init` and is only valid inside an instance method.
+- `super.method(args)` starts the lookup at the superclass instead of the receiver's class. It works in instance methods and in static methods (where it resolves the superclass's static).
+- Using `super` outside a class or in a class without a superclass is an error.
+- A subclass that does not define `init` inherits the closest one, and `new Sub(...)` runs it normally.
+
+### Static fields and methods
+
+```spark
+class Config {
+    static var level = 1;
+
+    static describe() {
+        return "level " + str(Config.level);
+    }
+}
+
+print(Config.level);   // 1
+Config.level = 5;
+print(Config.describe());
+```
+
+- `static var` fields and `static` methods belong to the class and are read or called as `Class.member`.
+- Statics are inherited: a subclass can read a static defined by an ancestor. Assigning through a subclass (`Sub.value = 1`) creates a member on that subclass instead of modifying the ancestor.
+- `self` is not bound in a static method. Calling a static on an instance, or an instance method on the class, raises an error that points at the right receiver.
+
+### Type checks
+
+- `type(instance)` returns the class name as a string, and `type(SomeClass)` returns `"class"`.
+- `value instanceof Class` is true for instances of that class or any subclass. `nil instanceof Class` is false.
+- `is_a(value, Class)` is the function form and also respects inheritance; its second argument must be a class value.
+- `isinstance(value, Class)` accepts a class value or a type-name string. The string form is kept for compatibility with built-in types and with classes.
+- Class names cannot collide with built-in type names such as `map` or `number`.
+
+### Printing and `to_string`
+
+- If a class defines `to_string()`, `print(value)`, `str(value)` and string interpolation use its result. It must return a string.
+- Without an override, instances print as `<ClassName instance>`.
+- Collections format their elements with the default representation: an instance nested inside an array or a map prints as `<ClassName instance>` even when the class defines `to_string()`. This keeps formatting non-recursive and avoids calling user code while building another value.
+
+### Operator overloading
+
+Special methods let a class define the meaning of the operators for its instances:
+
+| Expression | Method |
+| --- | --- |
+| `a + b`, `a - b`, `a * b`, `a / b`, `a % b`, `a ** b` | `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__` |
+| `-a` | `__neg__()` |
+| `a == b`, `a != b` | `__eq__(b)` |
+| `a < b`, `a <= b`, `a > b`, `a >= b` | `__lt__`, `__le__`, `__gt__`, `__ge__` |
+| `a[i]` | `__index__(i)` |
+| `a[i] = value` | `__index_set__(i, value)` |
+| `len(a)` | `__len__()` |
+| `str(a)`, `print(a)`, `"${a}"` | `to_string()` |
+
+```spark
+class Vec {
+    init(x, y) { self.x = x; self.y = y; }
+
+    __add__(o) { return new Vec(self.x + o.x, self.y + o.y); }
+    __eq__(o) { return (o instanceof Vec) and self.x == o.x and self.y == o.y; }
+    __lt__(o) { return self.x < o.x; }
+    __len__() { return 2; }
+    __index__(i) { return i == 0 ? self.x : self.y; }
+
+    to_string() { return "Vec(" + str(self.x) + ", " + str(self.y) + ")"; }
+}
+```
+
+Rules that apply to all special methods:
+
+- Only the left operand's method is tried. Reflected variants (`__radd__` and friends) are not implemented; the right operand is consulted only for `__eq__` when the left one does not define it.
+- The result of a comparison method uses Spark truthiness, so returning `0` or `""` means false.
+- `a == nil` and `nil == b` always use identity comparison, even when the class defines `__eq__`, so nil checks remain reliable.
+- A string key always addresses a field before `__index__` runs, and `a["name"] = value` always writes a field instead of calling `__index_set__`. This keeps `self.x` usable inside the index methods. Other key types go to the index methods.
+- `__len__` must return a non-negative integer.
+- Membership (`in`), `contains`, `index_of` and the default `sort` still use primitive equality and ordering rather than `__eq__` and `__lt__`.
+
+## 15. Coroutines and channels
+
+`spawn` starts a **coroutine** that runs a function concurrently with the rest of
+the program, and channels move values between coroutines. Coroutines are
+cooperative and single-threaded: the running coroutine keeps the CPU until it
+suspends itself, so there are no data races and no locks.
+
+```spark
+fn worker(name) {
+    print("start", name);
+    yield;                    // suspend until the scheduler resumes us
+    print("end", name);
+    return name + "!";
+}
+
+var a = spawn(worker, "a");
+var b = spawn(worker, "b");
+print("main");
+print(a.join(), b.join());
+// main
+// start a
+// start b
+// end a
+// end b
+// a! b!
+```
+
+The main script is itself a coroutine, so it can `yield` and use channels too.
+`spawn` queues the new coroutine without switching to it: it starts as soon as
+the current coroutine suspends. The scheduler is FIFO, so coroutines take turns
+in the order they became runnable. When the main coroutine finishes, the program
+ends and pending coroutines are abandoned.
+
+### Coroutine methods
+
+| Call | Result |
+| --- | --- |
+| `c.join()` | Blocks until `c` finishes and returns its result. Joining the running coroutine is an error. |
+| `c.done()` | `true` once `c` has finished. |
+
+`spawn` accepts a function followed by its arguments and validates the arity
+before queueing, so a mismatch is reported at the `spawn` call instead of when
+the coroutine starts. Any other value raises a `TypeError`.
+
+### Channels
+
+A channel hands values between coroutines in FIFO order. `channel()` is an
+unbuffered **rendezvous** channel, where a sender blocks until a receiver takes
+the value; `channel(n)` is a buffered channel that holds up to `n` values before
+senders block. The capacity must be a non-negative integer.
+
+| Call | Result |
+| --- | --- |
+| `ch.send(value)` | Sends a value, blocking while the channel is full. Error when the channel is closed. |
+| `ch.receive()` | Receives the next value, blocking while the channel is empty. Returns `nil` once the channel is closed and drained. |
+| `ch.close()` | Closes the channel: waiting receivers get `nil` and waiting senders are woken with an error. |
+
+```spark
+var ch = channel();
+fn producer() {
+    for (var i in range(3)) {
+        ch.send(i);
+    }
+    ch.close();
+}
+fn consumer() {
+    var total = 0;
+    while (true) {
+        var value = ch.receive();
+        if (value == nil) { break; }
+        total += value;
+    }
+    return total;
+}
+spawn(producer);
+print(spawn(consumer).join());   // 3
+```
+
+Values still buffered when a channel closes are delivered before `receive()`
+starts returning `nil`, and closing an already closed channel is allowed. Both
+coroutine and channel methods can also be called with spread arguments
+(`ch.send(...[1])`).
+
+### Suspension rules
+
+- `yield` and the blocking forms of `send`, `receive` and `join` are only allowed
+  in the outermost loop of a coroutine. Inside a callback passed to `map`,
+  `filter`, `each`, `sort_by` or another higher-order native, or inside an
+  imported module, they raise a runtime error instead of suspending the caller.
+- Blocking when no other coroutine can make progress aborts the program with a
+  runtime error (`deadlock: every coroutine is blocked`).
+- An uncaught error in any coroutine aborts the whole program, exactly as it
+  would in the main script.
+- Blocked coroutines, their stacks and the locals they captured are kept alive by
+  the collector, so calling `gc()` never breaks a pending `send`, `receive` or
+  `join`.
+
+## 16. REPL
 
 With no arguments, `spark` opens a REPL. Every expression statement prints its value,
 global variables persist and errors do not close the session. The special variable `_`
@@ -625,7 +834,7 @@ automatically holds the result of the last evaluated expression statement. Type
 `salir`, `exit` or `quit` (or Ctrl+D) to finish. Lines accumulate while there are
 unclosed braces, so multi-line functions can be defined.
 
-## 16. Precompiled bytecode (`.sparkc`)
+## 17. Precompiled bytecode (`.sparkc`)
 
 Source programs can be precompiled into binary bytecode files using `--compile`:
 
@@ -638,7 +847,7 @@ spark script.sparkc                       # runs precompiled file directly
 - Bytecode files begin with the 4-byte magic signature `SPRK` followed by the binary format version.
 - Precompiled files execute with zero parse/compile overhead and can be imported directly or resolved automatically via `import`.
 
-## 17. Developer Tooling
+## 18. Developer Tooling
 
 Spark provides built-in tools for debugging, formatting, and static analysis:
 
@@ -693,7 +902,7 @@ Linter rules:
 - `shadowed-variable`: Warns when a variable declaration in an inner scope shadows a variable declared in an enclosing scope.
 - Returns exit code `0` when clean, `1` when warnings are found, `65` on syntax errors, and `74` if the file cannot be read.
 
-## 18. Limits
+## 19. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
 - 255 parameters, arguments and elements per array literal.
@@ -701,4 +910,6 @@ Linter rules:
 - 4096 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).
 - Dynamic operand value stack that automatically expands from 2,048 up to 4,194,304 items (64 MB).
 - 16-bit constant index per function (up to 65,536 constants per chunk).
-- No native threads or green coroutines.
+- 16,777,216 values of channel capacity.
+- Coroutines are cooperative and single-threaded; each keeps its own operand
+  stack (up to 4,194,304 items) and up to 4096 call frames.

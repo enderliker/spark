@@ -682,8 +682,8 @@ version/magic guard.
 **Status:** Deferred as stretch per roadmap alignment.
 
 ## Checkpoint: Phase 7
-- [x] Benchmark improved (min ~5.1 ms), all 148 tests + ASan/UBSan clean
-- [ ] Review with the user before Phase 8
+- [x] Benchmark improved (min ~4.9 ms), full suite + ASan/UBSan clean
+- [x] Review with the user before Phase 8
 
 ---
 
@@ -742,10 +742,10 @@ benchmark; publish coverage.
 ### T56 - Catchable runtime errors in `try`/`catch`
 **Description:** Enable `try { ... } catch (e) { ... }` to catch VM runtime errors (e.g. `1/0`, `[1][5]`, `sqrt(-1)`), constructing an error map `{type, message, line, column}` and unwinding active handlers.
 **Acceptance criteria:**
-- [ ] Active `try` handler intercepts runtime errors and populates `e` with structured map.
-- [ ] Without `try`, uncaught runtime errors keep printing to stderr and exit as before.
+- [x] Active `try` handler intercepts runtime errors and populates `e` with structured map.
+- [x] Without `try`, uncaught runtime errors keep printing to stderr and exit as before.
 **Verification:**
-- [ ] Tests in `tests/cases/exceptions_runtime.spark`; suite clean; sanitizers clean.
+- [x] Tests in `tests/cases/exceptions_runtime.spark`; suite clean; sanitizers clean.
 **Dependencies:** None.
 **Files:** `src/vm.c`, `tests/cases/exceptions_runtime.spark`, `docs/language.md`.
 **Scope:** M.
@@ -759,114 +759,174 @@ benchmark; publish coverage.
 **Dependencies:** None.
 **Files:** `src/vm.c`, `src/object.c/h`.
 **Scope:** M.
+**Status:** Partial. `string_builder()`/`sb_append`/`sb_to_string` provide amortized
+appends and are documented/tested (`tests/cases/string_builder.spark`), but the
+`s += "x"` path itself is still O(n^2): measured 6/16/78/299 ms for 10k/20k/40k/80k
+appends. Amortizing `+=` needs either ownership analysis or a builder-backed string,
+so the acceptance criterion above is still open.
 
 ## Phase 10 - Standard Library Additions
 
 ### T58 - Math natives
 **Description:** Add `sin`, `cos`, `log`, `exp`, `pi`, and multi-arg / array support for `min`/`max`.
 **Scope:** S.
+**Status:** Done - sin/cos/log/exp, `pi`, and `min`/`max` accept multiple arguments or an array (`tests/cases/nativas.spark`).
 
 ### T59 - Time natives
 **Description:** Add `time()` and `sleep(ms)`.
 **Scope:** S.
+**Status:** Done - `time()` and `sleep(ms)` exist and are covered by `tests/cases/nativas.spark`.
 
 ### T60 - Text natives & unicode escapes
 **Description:** Add `chr`, `ord`, `pad_start`, `pad_end`, and `\uXXXX` string escapes.
 **Scope:** M.
+**Status:** Done - `chr`, `ord`, `pad_start`, `pad_end` and `\uXXXX` escapes (`tests/cases/unicode_escapes.spark`).
 
 ### T61 - Utility natives
 **Description:** Add `sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`.
 **Scope:** M.
+**Status:** Done - `sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `is_a`, `copy` (`tests/cases/functional_natives.spark`).
 
 ### T62 - System & File natives
 **Description:** Add `list_dir`, `mkdir`, `exec`.
 **Scope:** M.
+**Status:** Done - `list_dir`, `mkdir`, `exec` (`tests/cases/io.spark`).
 
 ## Phase 11 - Negative Indices & Slices
 
 ### T63 - Negative indexing for arrays and strings
 **Description:** Support `a[-1]` in arrays and strings.
 **Scope:** S.
+**Status:** Done - Negative indexes for arrays and strings (`tests/cases/negative_indexing.spark`).
 
 ### T64 - Slice native supporting negative bounds
 **Description:** Update `slice()` native to support negative indices.
 **Scope:** S.
+**Status:** Done - `slice` accepts negative bounds (`tests/cases/slices.spark`).
 
 ### T65 - Slice syntax `expr[start:end]`
 **Description:** Add `[start:end]` and `[start:end:step]` slice syntax to the grammar.
 **Scope:** M.
+**Status:** Done - `expr[start:end:step]` syntax, including the zero-step and negative-step errors (`tests/cases/slices.spark`).
 
 ## Phase 12 - Native Methods & Syntactic Sugar
 
 ### T66 - Methods on native types
 **Description:** Allow `"abc".upper()`, `[1, 2].len()`, etc. via type method dispatch.
 **Scope:** M.
+**Status:** Done - Methods on native types (`tests/cases/native_methods.spark`).
 
 ### T67 - Increment / decrement (`++` / `--`)
 **Description:** Postfix and prefix `++` and `--`.
 **Scope:** M.
+**Status:** Done - Postfix and prefix `++`/`--` (`tests/cases/update_ops.spark`).
 
 ### T68 - Short lambdas (`fn(x) => expr`)
 **Description:** Expression-bodied anonymous functions.
 **Scope:** S.
+**Status:** Done - `fn(x) => expr` lambdas (`tests/cases/lambdas.spark`).
 
 ### T69 - Binary `in` operator
 **Description:** `item in collection` expression.
 **Scope:** S.
+**Status:** Done - Binary `in` (`tests/cases/membership.spark`).
 
 ### T70 - Power operator `**`, optional chaining `?.`, unary `+`
 **Description:** `a ** b`, `obj?.field`, `+x`.
 **Scope:** M.
+**Status:** Done - `**`, `?.` and unary `+` (`tests/cases/optional_chain.spark`).
 
 ### T71 - Multiline strings
 **Description:** Triple-quoted multiline strings `"""..."""`.
 **Scope:** S.
+**Status:** Done - Triple-quoted strings (`tests/cases/multiline_strings.spark`).
 
 ### T72 - `for (var i, v in arr)` syntax
 **Description:** Destructured index and value in `for..in` loops.
 **Scope:** M.
+**Status:** Done - `for (var i, v in arr)` (`tests/cases/for_in_pairs.spark`).
 
 ### T73 - Per-iteration loop binding for closures
 **Description:** Fresh scope binding for loop variables in `for` loops.
 **Scope:** M.
+**Status:** Done - Per-iteration loop binding for closures (`tests/cases/closures.spark`).
 
 ### T74 - Destructuring
 **Description:** `var [a, b] = arr` and `var {x, y} = map`.
 **Scope:** M.
+**Status:** Done - `var [a, b] = arr` and `var {x, y} = map` (`tests/cases/destructuring.spark`).
 
 ## Phase 13 - Full Classes & OOP
 
 ### T75 - First-class `ObjClass` and `ObjInstance`
 **Description:** Distinct class and instance objects with `type(inst) == "ClassName"`.
 **Scope:** M.
+**Status:** Done - `tests/cases/oop_basics.spark`, `tests/cases/methods_classes.spark`.
 
 ### T76 - Inheritance with `extends` & `super`
 **Description:** `class Sub extends Super` and `super(...)` / `super.method(...)`.
 **Scope:** L.
+**Status:** Done - `tests/cases/oop_basics.spark` and the `oop_super_*` error fixtures.
 
 ### T77 - Class field declarations and `static` methods
 **Description:** `var x = 3;` in class body, static methods.
 **Scope:** M.
+**Status:** Done - `tests/cases/oop_basics.spark`, `tests/cases/methods_classes.spark`.
 
 ### T78 - `instanceof` operator
 **Description:** Check if instance is an instance of class or subclass.
 **Scope:** S.
+**Status:** Done - `tests/cases/oop_basics.spark`; `is_a(x, Class)` respects inheritance.
 
 ### T79 - Custom string representation (`to_string()`)
 **Description:** Hook `to_string()` method into `str()` and `print()`.
 **Scope:** S.
+**Status:** Done - `tests/cases/methods_classes.spark`, `tests/errors/oop_bad_to_string.spark`.
 
 ### T80 - Operator overloading
 **Description:** `__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.
 **Scope:** M.
+**Status:** Done - `tests/cases/oop_operators.spark`.
 
 ## Phase 14 - Concurrency (T55)
 
 ### T81 - Green-thread coroutines (`spawn`, `yield`, `channel`)
 **Description:** VM green-thread coroutines with cooperative scheduling and channels.
+**Acceptance criteria:**
+- [x] `spawn(fn, args...)`, `yield`, `c.join()`, `c.done()` and FIFO channels
+      (`send`, `receive`, `close`) with `channel()` (rendezvous) and `channel(n)`.
+- [x] A blocked send wakes with an error when the channel closes; a blocked receive
+      returns `nil` once closed and drained.
+- [x] `spawn` validates its callee and arity before queueing; `channel(n)` rejects
+      negative or non-integer capacities.
+- [x] Blocked coroutines, their stacks and the locals they captured are traced by the
+      collector, so `gc()` never frees a waiter.
+- [x] `yield`/blocking `send`/`receive`/`join` are rejected inside native callbacks
+      and imported modules; a full deadlock aborts with a clear runtime error.
+**Verification:**
+- [x] `tests/cases/{coroutines,coroutine_gc}.spark` and the
+      `tests/errors/{coroutine_*,channel_*}.spark` fixtures; full suite; ASan/UBSan.
+- [x] `docs/language.md` section 15; bytecode version bumped to 5 for `OP_YIELD`.
+**Design notes:**
+- Each coroutine owns a private value stack; the VM swaps stacks and snapshots the
+  frame array and try-handler stacks on suspend (`src/vm.c`).
+- `ObjUpvalue.owner` keeps the stack of a suspended coroutine alive after a closure
+  escapes it.
+- The main script runs as a coroutine too (it does not own the initial VM stack).
+- `FRAMES_MAX` is still 4096, but the frames are per coroutine.
+**Files:** `src/{vm,object,chunk,lexer,parser,compiler,ast,bytecode}.*`, `tests/`, `docs/language.md`.
 **Scope:** XL.
 
 ## Checkpoint: Complete
-- [x] All acceptance criteria met
-- [x] Full sanitizer + benchmark run (153 tests passing, ASan/UBSan clean, benchmark ~5.1 ms)
+- [x] All acceptance criteria met, except T57 (`+=` is still O(n^2); use
+      `string_builder()` for amortized appends).
+- [x] Full sanitizer + benchmark run (207 tests passing, ASan/UBSan clean, benchmark
+      minimum 4.94 ms / median 5.01 ms measured on an idle machine; expect a few
+      percent of spread under load).
+- [x] Fixed a GC bug found while stress-testing coroutines: `object_coroutine` and
+      `object_channel` zeroed the whole object *after* `allocate_obj` had linked it,
+      which wiped `Obj.next` and truncated the GC list. Live objects could then escape
+      marking (a channel kept `marked = 1` across cycles, so its blocked waiters were
+      swept) and blocked coroutines were freed while still queued on a channel
+      (`tests/cases/coroutine_gc.spark` covers the regression).
 - [x] Ready for review

@@ -67,6 +67,7 @@ make clean && make
 
 ## Performance target
 
-`benchmarks/fib.spark` computes `fib(27)`. The goal is a minimum time in the
-**10-15 ms** range on the development machine (currently ~13 ms). The VM amortizes
-dispatch with fused superinstructions; avoid regressing that.
+`benchmarks/fib.spark` computes `fib(27)`. On the development machine the minimum
+is **~4.9 ms** and the median **~5.1 ms** (both vary a few percent with machine
+load); the gate set in `tasks/plan.md` is a minimum **below 5 ms**. The VM
+amortizes dispatch with fused superinstructions; avoid regressing that.
