@@ -1,0 +1,100 @@
+// Cooperative coroutines: spawn, yield, join and FIFO channels.
+
+fn worker(name, steps) {
+    print("start", name);
+    for (var i = 1; i <= steps; i++) {
+        yield;
+        print("step", name, i);
+    }
+    return name + "!";
+}
+
+var a = spawn(worker, "a", 2);
+var b = spawn(worker, "b", 2);
+print("main");
+print(a.join());
+print(b.join());
+print(a.done(), b.done());
+print("again", a.join());
+
+// Unbuffered channel: sender and receiver meet directly.
+var ch = channel();
+
+fn producer() {
+    for (var i = 0; i < 3; i++) {
+        ch.send(i);
+        print("sent", i);
+    }
+    ch.close();
+    return "producer";
+}
+
+fn consumer() {
+    var sum = 0;
+
+    while (true) {
+        var value = ch.receive();
+        if (value == nil) {
+            break;
+        }
+        print("got", value);
+        sum += value;
+    }
+    return sum;
+}
+
+var p = spawn(producer);
+var c = spawn(consumer);
+
+print(p.join(), c.join());
+print("after close", ch.receive());
+
+// Buffered channel: values stay queued until read.
+var buf = channel(2);
+
+buf.send("x");
+buf.send("y");
+print("buffered", buf.receive(), buf.receive());
+buf.close();
+print("drained", buf.receive());
+
+// A closure escaping a suspended coroutine shares its captured local.
+var peek = nil;
+
+fn shared() {
+    var n = 1;
+
+    peek = fn() {
+        n += 1;
+        return n;
+    };
+    yield;
+    return n;
+}
+
+var s = spawn(shared);
+
+yield;
+print("peek", peek());
+print("shared", s.join());
+
+// A sender blocked on a channel that closes is woken with an error.
+var closing = channel();
+var sender = spawn(fn() {
+    try {
+        closing.send(1);
+        print("not reached");
+    } catch (e) {
+        print("closed send:", e.type);
+    }
+});
+
+yield;
+closing.close();
+sender.join();
+
+// Spread arguments also reach channel methods.
+var spread = channel(1);
+spread.send(...[9]);
+print("spread", spread.receive());
+spread.close();

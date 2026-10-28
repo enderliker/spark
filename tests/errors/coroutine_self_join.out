@@ -1,0 +1,2 @@
+exit: 70
+stderr: a coroutine cannot join itself

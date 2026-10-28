@@ -1,0 +1,25 @@
+main
+start a
+start b
+step a 1
+step b 1
+step a 2
+step b 2
+a!
+b!
+true true
+again a!
+got 0
+sent 0
+sent 1
+got 1
+got 2
+sent 2
+producer 3
+after close nil
+buffered x y
+drained nil
+peek 2
+shared 2
+closed send: RuntimeError
+spread 9

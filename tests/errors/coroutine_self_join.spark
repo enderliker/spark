@@ -1,0 +1,6 @@
+var c = nil;
+fn worker() {
+    return c.join();
+}
+c = spawn(worker);
+c.join();

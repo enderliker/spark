@@ -1,0 +1,3 @@
+var ch = channel();
+ch.close();
+ch.send(1);

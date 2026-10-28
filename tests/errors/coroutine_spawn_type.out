@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'spawn' expects a function, received number

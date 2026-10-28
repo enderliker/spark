@@ -1,0 +1,72 @@
+// The collector must keep blocked coroutines, channel waiters and the objects
+// they reference alive while other coroutines keep allocating.
+
+var ch = channel(4);
+
+fn producer(id) {
+    for (var i = 0; i < 40; i++) {
+        if (i % 7 == 0) {
+            gc();
+        }
+        ch.send(id * 1000 + i);
+        if (i % 9 == 0) {
+            yield;
+        }
+    }
+    return id;
+}
+
+fn consumer() {
+    var count = 0;
+
+    while (true) {
+        var value = ch.receive();
+        if (value == nil) {
+            break;
+        }
+        count += 1;
+        if (count % 13 == 0) {
+            gc();
+        }
+    }
+    return count;
+}
+
+var producers = [];
+
+for (var i = 0; i < 6; i++) {
+    producers.push(spawn(producer, i));
+}
+
+var consumers = [];
+
+for (var i = 0; i < 3; i++) {
+    consumers.push(spawn(consumer));
+}
+
+for (var p in producers) {
+    p.join();
+}
+
+yield;
+ch.close();
+
+var total = 0;
+
+for (var c in consumers) {
+    total += c.join();
+}
+print("collected", total);
+print("done", len(producers), len(consumers));
+
+// A receiver parked on a channel that closes must survive collections and be
+// woken with nil.
+var waiting = channel();
+var receiver = spawn(fn() {
+    return waiting.receive();
+});
+
+yield;
+gc();
+waiting.close();
+print("closed receiver", receiver.join());

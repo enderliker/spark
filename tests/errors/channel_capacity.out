@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'channel' capacity must be a non-negative integer, received number

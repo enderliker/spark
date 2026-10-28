@@ -1,0 +1,2 @@
+exit: 70
+stderr: 'yield' cannot run inside a callback or an imported module
