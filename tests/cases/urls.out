@@ -1,0 +1,17 @@
+parts: http example.com 80 /a/b x=1&y=2 frag
+default path: /
+http port: 80
+https port: 443
+unknown scheme port: nil
+ipv6: [::1] 8080
+userinfo: host
+empty query: true true
+encode: a+b%2Bc%2Fd
+encode unreserved: ~ok-._
+decode: a b+c/d
+decode utf8: €
+query a: ["1", "3"] 2
+query b: ["2"]
+query empty: 0
+query space: [" "] 1 ["4"]
+urls ok

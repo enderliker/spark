@@ -1,0 +1,33 @@
+// Phase 17: URL parsing, percent-encoding and query strings (no network).
+var u = url_parse("http://example.com/a/b?x=1&y=2#frag");
+print("parts:", u.scheme, u.host, u.port, u.path, u.query, u.fragment);
+
+// A missing path defaults to "/", and http/https get their default ports.
+print("default path:", url_parse("http://example.com").path);
+print("http port:", url_parse("http://example.com").port);
+print("https port:", url_parse("https://example.com").port);
+print("unknown scheme port:", url_parse("ftp://example.com/x").port);
+
+// IPv6 literals keep their brackets; userinfo is ignored.
+var v6 = url_parse("http://[::1]:8080/p");
+print("ipv6:", v6.host, v6.port);
+print("userinfo:", url_parse("http://user:pass@host:99/").host);
+
+// Query and fragment are always strings; a bare "?" is an empty query.
+var empty = url_parse("http://h/p?");
+print("empty query:", empty.query == "", empty.fragment == "");
+
+// Encoding round-trips through percent-escapes and "+".
+print("encode:", url_encode("a b+c/d"));
+print("encode unreserved:", url_encode("~ok-._"));
+print("decode:", url_decode("a+b%2Bc%2Fd"));
+print("decode utf8:", url_decode("%E2%82%AC"));
+
+// parse_query returns a map from key to an array of values.
+var q = parse_query("a=1&b=2&a=3");
+print("query a:", q.a, len(q.a));
+print("query b:", q.b);
+print("query empty:", len(parse_query("")));
+var q2 = parse_query("?x=%20&y&z=4");
+print("query space:", q2.x, len(q2.y), q2.z);
+print("urls ok");

@@ -513,6 +513,11 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server` (port `0` binds an ephemeral port). |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket for datagrams; returns a `socket`. |
 | `net_hostname()` | The local host name. |
+| `url_parse(url)` | Splits an absolute URL into a `{scheme, host, port, path, query, fragment}` map. |
+| `url_encode(text)` / `url_decode(text)` | Percent-encodes / decodes form data (a space becomes `+`). |
+| `parse_query(query)` | Parses `key=value&...` into a map from key to an array of values. |
+| `http_get(url, ...)` / `http_post` / `http_put` / `http_delete` | Sends an HTTP/1.1 request; returns `{status, headers, body}`. |
+| `http_request(options)` | The map-driven form of the HTTP client. |
 | `list_dir(path)` | Array with the names of the entries in a directory. |
 | `mkdir(path)` | Creates a directory (succeeds when it already exists). |
 | `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
@@ -535,6 +540,31 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`.
+
+### URLs and query strings
+
+`url_parse` splits an absolute URL into a map:
+
+```spark
+var u = url_parse("http://user@[::1]:8080/a/b?x=1#top");
+print(u.scheme);    // "http"
+print(u.host);      // "[::1]" (IPv6 literals keep their brackets)
+print(u.port);      // 8080, or the scheme default (http 80, https 443)
+print(u.path);      // "/a/b" (defaults to "/")
+print(u.query);     // "x=1" (an empty string when absent)
+print(u.fragment);  // "top" (an empty string when absent)
+```
+
+- `port` is `nil` when the URL has no port and the scheme has no default.
+- `host` is everything after an optional `userinfo@`; the userinfo is ignored.
+- `url_encode` escapes everything except `A-Z a-z 0-9 - _ . ~`; a space becomes
+  `+`. `url_decode` is its inverse and raises `ValueError` on a truncated or
+  invalid escape.
+- `parse_query("a=1&a=2&b=")` returns `{"a": ["1", "2"], "b": [""]}`: each key
+  maps to an array of values, so repeated keys keep every occurrence. A leading
+  `?` is accepted and empty pairs are skipped.
+- A malformed URL (`url_parse`) or escape (`url_decode`, `parse_query`) raises
+  `ValueError` instead of yielding a partial result.
 
 ### Networking
 

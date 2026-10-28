@@ -13,6 +13,7 @@
 #include "net.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -48,6 +49,16 @@
 #define NET_READ_MAX (16 * 1024 * 1024)
 #define NET_LINE_DEFAULT_MAX (64 * 1024)
 #define NET_LISTEN_BACKLOG 128
+
+/* HTTP limits (phase 17). Every bound has an explicit error: the status line
+ * plus the header block may not exceed 64 KiB, a body defaults to 16 MiB and
+ * redirects stop after five hops. */
+#define NET_HTTP_HEADER_MAX (64 * 1024)
+#define NET_HTTP_BODY_DEFAULT_MAX NET_READ_MAX
+#define NET_HTTP_REDIRECT_MAX 5
+#define NET_HTTP_MAX_HEADERS 1000
+#define NET_HTTP_TIMEOUT_DEFAULT 30000
+#define NET_HTTP_USER_AGENT "spark/0.1"
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -514,6 +525,472 @@ static ObjMap *net_address_map(const struct sockaddr *address, socklen_t length)
 }
 
 /* ------------------------------------------------------------------ */
+/* URL parsing and encoding (phase 17)                                 */
+/* ------------------------------------------------------------------ */
+
+/* A parsed absolute URL. Every string field is owned by the caller and
+ * released with net_url_free(). `host` keeps the brackets of an IPv6 literal
+ * ("[::1]") so it can feed both the Host header and getaddrinfo. */
+typedef struct {
+    char *scheme; /* lowercased */
+    char *host;
+    bool port_known;
+    int64_t port;
+    char *path; /* never empty: "/" when the URL omits it */
+    char *query;
+    char *fragment;
+} NetUrl;
+
+static char *net_strndup_owned(const char *text, size_t length)
+{
+    char *copy = mem_realloc(NULL, 0, length + 1);
+
+    if (!copy) {
+        return NULL;
+    }
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    return copy;
+}
+
+static char *net_strndup_lower(const char *text, size_t length)
+{
+    char *copy = net_strndup_owned(text, length);
+
+    if (!copy) {
+        return NULL;
+    }
+    for (size_t i = 0; i < length; i++) {
+        copy[i] = (char)tolower((unsigned char)copy[i]);
+    }
+    return copy;
+}
+
+static void net_url_free(NetUrl *url)
+{
+    mem_realloc(url->scheme, url->scheme ? strlen(url->scheme) + 1 : 0, 0);
+    mem_realloc(url->host, url->host ? strlen(url->host) + 1 : 0, 0);
+    mem_realloc(url->path, url->path ? strlen(url->path) + 1 : 0, 0);
+    mem_realloc(url->query, url->query ? strlen(url->query) + 1 : 0, 0);
+    mem_realloc(url->fragment, url->fragment ? strlen(url->fragment) + 1 : 0, 0);
+    memset(url, 0, sizeof(*url));
+}
+
+static bool net_scheme_char(int c)
+{
+    return isalnum(c) || c == '+' || c == '-' || c == '.';
+}
+
+/* Parses "scheme://[userinfo@]host[:port][/path][?query][#fragment]". A missing
+ * path becomes "/"; a missing query or fragment becomes "". Malformed input
+ * fails with a value error instead of a half-built URL. */
+static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
+{
+    const char *scheme_sep = strstr(text, "://");
+
+    memset(out, 0, sizeof(*out));
+
+    if (!scheme_sep || scheme_sep == text) {
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': expected scheme://host", text);
+        return false;
+    }
+    size_t scheme_length = (size_t)(scheme_sep - text);
+
+    if (!isalpha((unsigned char)text[0])) {
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': the scheme must start with a letter", text);
+        return false;
+    }
+    for (size_t i = 0; i < scheme_length; i++) {
+        if (!net_scheme_char((unsigned char)text[i])) {
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': bad character in the scheme", text);
+            return false;
+        }
+    }
+    out->scheme = net_strndup_lower(text, scheme_length);
+
+    const char *authority = scheme_sep + 3;
+    const char *authority_end = authority + strcspn(authority, "/?#");
+
+    if (authority_end == authority) {
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        goto fail;
+    }
+
+    /* Userinfo ("user:pass@host") is accepted and ignored. */
+    const char *host_start = authority;
+
+    for (const char *p = authority; p < authority_end; p++) {
+        if (*p == '@') {
+            host_start = p + 1;
+        }
+    }
+    if (host_start == authority_end) {
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        goto fail;
+    }
+
+    const char *host_end;
+    const char *port_start = NULL;
+
+    if (*host_start == '[') {
+        const char *close = memchr(host_start, ']', (size_t)(authority_end - host_start));
+
+        if (!close) {
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': unterminated IPv6 literal", text);
+            goto fail;
+        }
+        host_end = close + 1; /* keep the brackets */
+        if (host_end < authority_end) {
+            if (*host_end != ':') {
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': unexpected text after the host", text);
+                goto fail;
+            }
+            port_start = host_end + 1;
+        }
+    } else {
+        const char *colon = memchr(host_start, ':', (size_t)(authority_end - host_start));
+
+        host_end = colon ? colon : authority_end;
+        if (colon) {
+            port_start = colon + 1;
+        }
+    }
+    if (host_end == host_start) {
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        goto fail;
+    }
+    out->host = net_strndup_owned(host_start, (size_t)(host_end - host_start));
+
+    if (port_start) {
+        int64_t port = 0;
+
+        if (port_start >= authority_end) {
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': missing port", text);
+            goto fail;
+        }
+        for (const char *p = port_start; p < authority_end; p++) {
+            if (!isdigit((unsigned char)*p)) {
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': the port must be numeric", text);
+                goto fail;
+            }
+            port = port * 10 + (*p - '0');
+            if (port > 65535) {
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': port out of range", text);
+                goto fail;
+            }
+        }
+        out->port = port;
+        out->port_known = true;
+    } else if (strcmp(out->scheme, "http") == 0) {
+        out->port = 80;
+        out->port_known = true;
+    } else if (strcmp(out->scheme, "https") == 0) {
+        out->port = 443;
+        out->port_known = true;
+    }
+
+    const char *rest = authority_end;
+    const char *path_end = rest + strcspn(rest, "?#");
+
+    out->path = path_end == rest ? net_strndup_owned("/", 1)
+                                 : net_strndup_owned(rest, (size_t)(path_end - rest));
+    rest = path_end;
+    if (*rest == '?') {
+        rest++;
+        const char *query_end = rest + strcspn(rest, "#");
+
+        out->query = net_strndup_owned(rest, (size_t)(query_end - rest));
+        rest = query_end;
+    } else {
+        out->query = net_strndup_owned("", 0);
+    }
+    out->fragment = *rest == '#' ? net_strndup_owned(rest + 1, strlen(rest + 1))
+                                 : net_strndup_owned("", 0);
+
+    if (!out->scheme || !out->host || !out->path || !out->query || !out->fragment) {
+        net_fail(err, ERROR_MEMORY, "out of memory parsing the URL");
+        goto fail;
+    }
+    return true;
+
+fail:
+    net_url_free(out);
+    return false;
+}
+
+/* A percent-encoding escape or a literal: `A-Z a-z 0-9 - _ . ~` pass through,
+ * a space becomes `+` and everything else becomes `%XX` (uppercase hex). */
+static bool net_url_unreserved(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+           c == '-' || c == '_' || c == '.' || c == '~';
+}
+
+static int net_hex_value(char c)
+{
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+/* Decodes percent-escapes and `+` into `buffer` (at least `length + 1` bytes,
+ * NUL-terminated on success). Fails on a truncated or invalid escape and on a
+ * `%00` that would embed a null byte. */
+static bool net_url_decode_into(const char *text, int length, char *buffer, int *out_length,
+                                NetError *err)
+{
+    int written = 0;
+
+    for (int i = 0; i < length; i++) {
+        char c = text[i];
+
+        if (c == '+') {
+            buffer[written++] = ' ';
+            continue;
+        }
+        if (c == '%') {
+            if (i + 2 >= length) {
+                net_fail(err, ERROR_VALUE, "invalid percent-encoding: truncated escape");
+                return false;
+            }
+            int high = net_hex_value(text[i + 1]);
+            int low = net_hex_value(text[i + 2]);
+
+            if (high < 0 || low < 0) {
+                net_fail(err, ERROR_VALUE, "invalid percent-encoding in '%.*s'",
+                         length > 32 ? 32 : length, text);
+                return false;
+            }
+            unsigned char byte = (unsigned char)((high << 4) | low);
+
+            if (byte == 0) {
+                net_fail(err, ERROR_VALUE, "percent-encoding produced a null byte");
+                return false;
+            }
+            buffer[written++] = (char)byte;
+            i += 2;
+            continue;
+        }
+        buffer[written++] = c;
+    }
+    buffer[written] = '\0';
+    *out_length = written;
+    return true;
+}
+
+static Value native_url_parse(int arg_count, Value *args)
+{
+    if (arg_count != 1) {
+        vm_runtime_error(ERROR_ARITY, "'url_parse' expects 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'url_parse' expects a string, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *text = AS_STRING(args[0]);
+
+    if (net_string_has_null(text, "url_parse")) {
+        return NIL_VAL;
+    }
+
+    NetUrl url;
+    NetError err;
+
+    if (!net_url_parse(text->chars, &url, &err)) {
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    mem_pause_gc();
+    ObjMap *map = object_map();
+
+    map_set(map, OBJ_VAL(object_string("scheme", 6)),
+            OBJ_VAL(object_string(url.scheme, (int)strlen(url.scheme))));
+    map_set(map, OBJ_VAL(object_string("host", 4)),
+            OBJ_VAL(object_string(url.host, (int)strlen(url.host))));
+    map_set(map, OBJ_VAL(object_string("port", 4)),
+            url.port_known ? INT_VAL(url.port) : NIL_VAL);
+    map_set(map, OBJ_VAL(object_string("path", 4)),
+            OBJ_VAL(object_string(url.path, (int)strlen(url.path))));
+    map_set(map, OBJ_VAL(object_string("query", 5)),
+            OBJ_VAL(object_string(url.query, (int)strlen(url.query))));
+    map_set(map, OBJ_VAL(object_string("fragment", 8)),
+            OBJ_VAL(object_string(url.fragment, (int)strlen(url.fragment))));
+    mem_resume_gc();
+
+    net_url_free(&url);
+    return OBJ_VAL(map);
+}
+
+static Value native_url_encode(int arg_count, Value *args)
+{
+    static const char hex[] = "0123456789ABCDEF";
+
+    if (arg_count != 1) {
+        vm_runtime_error(ERROR_ARITY, "'url_encode' expects 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'url_encode' expects a string, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *text = AS_STRING(args[0]);
+    size_t capacity = (size_t)text->length * 3 + 1;
+    char *buffer = mem_realloc(NULL, 0, capacity);
+
+    if (!buffer) {
+        vm_runtime_error(ERROR_MEMORY, "out of memory in 'url_encode'");
+        return NIL_VAL;
+    }
+
+    size_t written = 0;
+
+    for (int i = 0; i < text->length; i++) {
+        unsigned char c = (unsigned char)text->chars[i];
+
+        if (net_url_unreserved(c)) {
+            buffer[written++] = (char)c;
+        } else if (c == ' ') {
+            buffer[written++] = '+';
+        } else {
+            buffer[written++] = '%';
+            buffer[written++] = hex[c >> 4];
+            buffer[written++] = hex[c & 0x0F];
+        }
+    }
+    ObjString *result = object_string(buffer, (int)written);
+
+    mem_realloc(buffer, capacity, 0);
+    return OBJ_VAL(result);
+}
+
+static Value native_url_decode(int arg_count, Value *args)
+{
+    if (arg_count != 1) {
+        vm_runtime_error(ERROR_ARITY, "'url_decode' expects 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'url_decode' expects a string, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *text = AS_STRING(args[0]);
+    char *buffer = mem_realloc(NULL, 0, (size_t)text->length + 1);
+
+    if (!buffer) {
+        vm_runtime_error(ERROR_MEMORY, "out of memory in 'url_decode'");
+        return NIL_VAL;
+    }
+
+    NetError err;
+    int length = 0;
+
+    if (!net_url_decode_into(text->chars, text->length, buffer, &length, &err)) {
+        mem_realloc(buffer, (size_t)text->length + 1, 0);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+    ObjString *result = object_string(buffer, length);
+
+    mem_realloc(buffer, (size_t)text->length + 1, 0);
+    return OBJ_VAL(result);
+}
+
+/* Splits an application/x-www-form-urlencoded query into a map from key to an
+ * array of values, so repeated keys keep every occurrence. A leading `?` is
+ * accepted; empty pairs ("a=1&&b=2") are ignored. */
+static Value native_parse_query(int arg_count, Value *args)
+{
+    if (arg_count != 1) {
+        vm_runtime_error(ERROR_ARITY, "'parse_query' expects 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'parse_query' expects a string, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *text = AS_STRING(args[0]);
+    const char *cursor = text->chars;
+    int remaining = text->length;
+
+    if (remaining > 0 && cursor[0] == '?') {
+        cursor++;
+        remaining--;
+    }
+
+    NetError err;
+    bool ok = true;
+
+    mem_pause_gc();
+    ObjMap *map = object_map();
+
+    const char *end = cursor + remaining;
+
+    while (cursor <= end && ok) {
+        const char *ampersand = memchr(cursor, '&', (size_t)(end - cursor));
+        const char *pair_end = ampersand ? ampersand : end;
+
+        if (pair_end > cursor) {
+            const char *equals = memchr(cursor, '=', (size_t)(pair_end - cursor));
+            const char *key_end = equals ? equals : pair_end;
+            const char *value_start = equals ? equals + 1 : pair_end;
+            int key_raw = (int)(key_end - cursor);
+            int value_raw = (int)(pair_end - value_start);
+            char *key = mem_realloc(NULL, 0, (size_t)key_raw + 1);
+            char *value = mem_realloc(NULL, 0, (size_t)value_raw + 1);
+            int key_length = 0;
+            int value_length = 0;
+
+            if (!key || !value ||
+                !net_url_decode_into(cursor, key_raw, key, &key_length, &err) ||
+                !net_url_decode_into(value_start, value_raw, value, &value_length, &err)) {
+                mem_realloc(key, (size_t)key_raw + 1, 0);
+                mem_realloc(value, (size_t)value_raw + 1, 0);
+                ok = false;
+                break;
+            }
+
+            ObjString *key_string = object_string(key, key_length);
+            Value values;
+
+            if (!map_get(map, OBJ_VAL(key_string), &values)) {
+                ObjArray *array = object_array();
+
+                array_push(array, OBJ_VAL(object_string(value, value_length)));
+                map_set(map, OBJ_VAL(key_string), OBJ_VAL(array));
+            } else {
+                array_push(AS_ARRAY(values), OBJ_VAL(object_string(value, value_length)));
+            }
+            mem_realloc(key, (size_t)key_raw + 1, 0);
+            mem_realloc(value, (size_t)value_raw + 1, 0);
+        }
+        if (!ampersand) {
+            break;
+        }
+        cursor = ampersand + 1;
+    }
+    mem_resume_gc();
+
+    if (!ok) {
+        net_raise(&err);
+        return NIL_VAL;
+    }
+    return OBJ_VAL(map);
+}
+
+/* ------------------------------------------------------------------ */
 /* Native functions                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -659,6 +1136,10 @@ void net_init(void)
     vm_define_native("udp_bind", native_udp_bind, -1);
     vm_define_native("net_hostname", native_net_hostname, 0);
     vm_define_native("net_select", native_net_select, -1);
+    vm_define_native("url_parse", native_url_parse, 1);
+    vm_define_native("url_encode", native_url_encode, 1);
+    vm_define_native("url_decode", native_url_decode, 1);
+    vm_define_native("parse_query", native_parse_query, 1);
 }
 
 /* ------------------------------------------------------------------ */
