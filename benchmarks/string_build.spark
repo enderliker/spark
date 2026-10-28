@@ -1,0 +1,20 @@
+// Building a big string with the sanctioned API: `sb_append` keeps one growable
+// buffer, so the loop is amortized O(N). Repeated `s += x` reallocates and
+// re-interns the whole accumulator on every step (O(N^2)) and is documented as
+// such; use `string_builder` for accumulation.
+//
+// Elapsed milliseconds are printed on the last line, as `benchmarks/run_all.py`
+// expects.
+
+var rounds = 200000;
+
+var builder = string_builder();
+var started = clock();
+for (var i = 0; i < rounds; i += 1) {
+    sb_append(builder, "x");
+}
+var text = sb_to_string(builder);
+var finished = clock();
+
+print(len(text));
+print((finished - started) * 1000);

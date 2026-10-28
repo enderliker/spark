@@ -18,6 +18,7 @@ BENCHMARKS = [
     ("arrays (1M)", BENCH_DIR / "arrays.spark"),
     ("alloc (1M)", BENCH_DIR / "alloc.spark"),
     ("strings (200k)", BENCH_DIR / "strings.spark"),
+    ("string_builder (200k)", BENCH_DIR / "string_build.spark"),
     ("maps (200k)", BENCH_DIR / "maps.spark"),
     ("sort (100k)", BENCH_DIR / "sort.spark"),
     ("sort_by (100k)", BENCH_DIR / "sort_by.spark"),

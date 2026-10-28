@@ -1,0 +1,32 @@
+// Building a large string must stay linear: `sb_append` grows a single buffer
+// with doubling, so the whole loop is O(N). `s += x` instead reallocates and
+// re-interns the whole accumulator on every step (O(N^2)), and the reference
+// recommends `string_builder` for accumulation.
+//
+// The guard compares two sizes: quadrupling the work should roughly quadruple
+// the time (linear), while a quadratic regression multiplies it by ~16. The
+// additive slack absorbs timer and scheduler noise, so the check does not
+// depend on how fast the machine is.
+
+var last_len = 0;
+
+fn measure(rounds) {
+    var builder = string_builder();
+    var started = clock();
+
+    for (var i = 0; i < rounds; i++) {
+        sb_append(builder, "ab");
+    }
+
+    var text = sb_to_string(builder);
+
+    last_len = len(text);
+    return clock() - started;
+}
+
+var small = measure(50000);
+var large = measure(200000);
+
+print(last_len);
+print(last_len == 400000);
+assert(large < small * 8 + 0.02, "sb_append looks quadratic");
