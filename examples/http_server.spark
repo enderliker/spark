@@ -1,0 +1,26 @@
+// A small HTTP/1.1 server built on lib/http, with no native server code.
+//
+//   spark examples/http_server.spark [port]
+//
+// Then point a browser or `curl http://127.0.0.1:8080/` at it. Ctrl-C stops it.
+import "../lib/http";
+
+fn handle(request) {
+    if (request.path == "/") {
+        return {"status": 200, "body": "Hello from Spark!\n"};
+    }
+    if (request.path == "/echo") {
+        return {"status": 200, "body": request.body};
+    }
+    return {"status": 404, "body": "Not found\n"};
+}
+
+var port = 8080;
+if (len(argv) > 1) {
+    port = int(argv[1]);
+}
+
+var server = tcp_listen("127.0.0.1", port);
+print("Serving http://127.0.0.1:" + str(server.port()) + "/ (Ctrl-C to stop)");
+http_serve(server, handle);
+server.close();

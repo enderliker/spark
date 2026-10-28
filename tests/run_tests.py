@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import difflib
+import select
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -484,6 +488,131 @@ def test_network_limits() -> None:
     )
 
 
+class ScriptedHandler(BaseHTTPRequestHandler):
+    """A scripted local HTTP server: every path gets a fixed response, so the
+    client fixtures never touch the public internet."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def reply(self, code, body=b"", headers=()):
+        self.send_response(code)
+        for name, value in headers:
+            self.send_header(name, value)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
+
+    def do_GET(self):
+        path = self.path
+        if path == "/hello":
+            self.reply(200, b"hello world\n", [("X-Test", "yes")])
+        elif path == "/chunked":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for chunk in (b"chunk one", b"two"):
+                self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        elif path == "/redirect":
+            self.reply(302, b"", [("Location", "/hello")])
+        elif path == "/loop":
+            self.reply(302, b"", [("Location", "/loop")])
+        elif path == "/big":
+            self.reply(200, b"x" * 100000)
+        elif path == "/slow":
+            time.sleep(1)
+            self.reply(200, b"late")
+        elif path == "/huge":
+            # A header line well past the 64 KiB response cap.
+            self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Huge: " + b"a" * 70000
+                             + b"\r\nContent-Length: 0\r\n\r\n")
+        elif path == "/bad":
+            self.wfile.write(b"not an http response\r\n\r\n")
+        elif path == "/eof":
+            self.close_connection = True
+        elif path == "/hdr":
+            self.reply(200, self.headers.get("X-Probe", "").encode("utf-8"))
+        else:
+            self.reply(404, b"not found")
+
+    def do_POST(self):
+        if self.path == "/echo":
+            length = int(self.headers.get("Content-Length", "0"))
+            self.reply(200, self.rfile.read(length))
+        else:
+            self.reply(404, b"not found")
+
+
+class QuietHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def test_http_client() -> None:
+    print("\nHTTP client")
+    server = QuietHTTPServer(("127.0.0.1", 0), ScriptedHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    port = server.server_address[1]
+    try:
+        completed = run([str(ROOT / "tests" / "http_client.spark"), str(port)], timeout=60)
+        expected = (ROOT / "tests" / "http_client.out").read_text(encoding="utf-8")
+        detail = ""
+        ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+        if completed.returncode != 0:
+            detail += f"exit code {completed.returncode} (expected 0)\n"
+        if completed.stdout != expected:
+            detail += unified(expected, completed.stdout)
+        if completed.stderr:
+            detail += "unexpected stderr:\n" + completed.stderr
+        report("http/1.1 client, chunked bodies, redirects and limits", ok, detail)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_http_server() -> None:
+    print("\nHTTP server")
+    server = subprocess.Popen(
+        [str(BINARY), str(ROOT / "tests" / "http_server.spark"), "4"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        ready, _, _ = select.select([server.stdout], [], [], 20)
+        line = server.stdout.readline().strip() if ready else ""
+        if not line.startswith("listening "):
+            server.kill()
+            report("spark http server starts", False, f"the server said {line!r}")
+            return
+        port = int(line.split(" ", 1)[1])
+        completed = run([str(ROOT / "tests" / "http_server_client.spark"), str(port)], timeout=30)
+        expected = (ROOT / "tests" / "http_server_client.out").read_text(encoding="utf-8")
+        detail = ""
+        ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+        if completed.returncode != 0:
+            detail += f"client exit code {completed.returncode}\n"
+        if completed.stdout != expected:
+            detail += unified(expected, completed.stdout)
+        if completed.stderr:
+            detail += "unexpected client stderr:\n" + completed.stderr
+        rest, errors = server.communicate(timeout=20)
+        if server.returncode != 0 or "served 4" not in rest:
+            ok = False
+            detail += f"server exit code {server.returncode}, stdout {rest!r}\n{errors}"
+        report("spark http server answers spark's http client", ok, detail)
+    finally:
+        if server.poll() is None:
+            server.kill()
+
+
 def main() -> int:
     if not BINARY.exists():
         print("missing binary; run 'make' first", file=sys.stderr)
@@ -494,6 +623,8 @@ def main() -> int:
     test_repl()
     test_error_snippets()
     test_network_limits()
+    test_http_client()
+    test_http_server()
     test_cli()
 
     failed = [name for name, ok, _ in results if not ok]

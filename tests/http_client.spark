@@ -1,0 +1,59 @@
+// Phase 17: the HTTP/1.1 client against a scripted local server.
+var port = int(argv[1]);
+var base = "http://127.0.0.1:" + str(port);
+
+var hello = http_get(base + "/hello");
+print("hello:", hello.status, hello.headers["x-test"], hello.body == "hello world\n");
+
+// Chunked responses are decoded into one body.
+var chunked = http_get(base + "/chunked");
+print("chunked:", chunked.status, chunked.body);
+
+// Redirects are followed by default; disabling them returns the 302 itself.
+var followed = http_get(base + "/redirect");
+print("followed:", followed.status, followed.body == "hello world\n");
+var raw = http_get(base + "/redirect", nil, nil, 5000, false);
+print("raw:", raw.status, raw.headers["location"]);
+
+// POST sends a body and custom headers reach the server.
+var posted = http_post(base + "/echo", "payload=1");
+print("post:", posted.status, posted.body);
+var echoed = http_get(base + "/hdr", nil, {"X-Probe": "abc"});
+print("header:", echoed.body);
+
+// The map-driven form behaves the same way.
+var mapped = http_request({"url": base + "/hello", "method": "GET"});
+print("map:", mapped.status, mapped.headers["x-test"]);
+
+// Limits and protocol errors are explicit.
+try {
+    http_get(base + "/loop");
+} catch (e) {
+    print("loop:", e.type, e.message);
+}
+try {
+    http_get(base + "/big", nil, nil, 5000, true, 1024);
+} catch (e) {
+    print("big:", e.type);
+}
+try {
+    http_get(base + "/slow", nil, nil, 150);
+} catch (e) {
+    print("timeout:", e.type);
+}
+try {
+    http_get(base + "/huge");
+} catch (e) {
+    print("huge:", e.type);
+}
+try {
+    http_get(base + "/bad");
+} catch (e) {
+    print("bad:", e.type);
+}
+try {
+    http_get(base + "/eof");
+} catch (e) {
+    print("eof:", e.type);
+}
+print("http client ok");

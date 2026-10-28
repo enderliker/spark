@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered descriptors (`poll(2)`, sleeping until the nearest deadline), so one
   process serves many connections with `spawn` and no busy-wait. The
   `run_depth > 1` guard extends to these waits.
+- URL helpers: `url_parse` (scheme, host, port, path, query, fragment),
+  `url_encode`/`url_decode` (percent-encoding and `+`) and `parse_query` (a map
+  from key to an array of values).
+- An HTTP/1.1 client: `http_get`, `http_post`, `http_put`, `http_delete` and the
+  map-driven `http_request` return `{status, headers, body}` and handle chunked
+  bodies, `Content-Length`, read-to-EOF, redirects and the `Connection: close`
+  framing, within explicit header (64 KiB), header-count, redirect (5), body
+  (16 MiB) and timeout (30 s) limits. Only `http://` is supported until TLS lands.
+- `lib/http.spark`: an HTTP/1.1 server written in Spark on the socket layer, with
+  request parsing and a handler callback, used by `examples/http_server.spark`.
 
 ### Fixed
 

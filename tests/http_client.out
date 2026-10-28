@@ -1,0 +1,14 @@
+hello: 200 yes true
+chunked: 200 chunk onetwo
+followed: 200 true
+raw: 302 /hello
+post: 200 payload=1
+header: abc
+map: 200 yes
+loop: NetworkError too many redirects (maximum 5)
+big: NetworkError
+timeout: TimeoutError
+huge: NetworkError
+bad: NetworkError
+eof: NetworkError
+http client ok

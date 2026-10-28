@@ -179,10 +179,10 @@ baseline and the run does not burn CPU while idle. Add an echo benchmark.
 `query`, `fragment`), `url_encode(text)` / `url_decode(text)` handle percent-encoding
 and `+`, and `parse_query(query)` returns a map of arrays.
 **Acceptance criteria:**
-- [ ] Edge cases covered: percent-encoding, `+`, IPv6 literals (`[::1]`), default ports for `http`/`https`, missing path, empty query.
-- [ ] Malformed input raises a value error instead of producing a broken map.
+- [x] Edge cases covered: percent-encoding, `+`, IPv6 literals (`[::1]`), default ports for `http`/`https`, missing path, empty query.
+- [x] Malformed input raises a value error instead of producing a broken map.
 **Verification:**
-- [ ] Positive and error fixtures; suite.
+- [x] Positive and error fixtures; suite.
 **Dependencies:** None (pure string work).
 **Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** S.
@@ -193,11 +193,11 @@ follow_redirects?, max_body?)` (and a `http_request(map)` form) return `{status,
 headers, body}`. Handle `Content-Length` and chunked bodies, `Connection: close`,
 redirect limits, header-size and body-size caps, and timeouts.
 **Acceptance criteria:**
-- [ ] Works against a local HTTP server for a plain body, a chunked body and a redirect chain.
-- [ ] Caps enforced: too many redirects, oversized header and oversized body fail with explicit errors.
-- [ ] Malformed status line and premature EOF raise network errors, not hangs.
+- [x] Works against a local HTTP server for a plain body, a chunked body and a redirect chain.
+- [x] Caps enforced: too many redirects, oversized header and oversized body fail with explicit errors.
+- [x] Malformed status line and premature EOF raise network errors, not hangs.
 **Verification:**
-- [ ] Fixtures against a local server that scripts the responses; suite; ASan/UBSan.
+- [x] Fixtures against a local server that scripts the responses; suite; ASan/UBSan.
 **Dependencies:** T83, T85.
 **Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -207,17 +207,20 @@ redirect limits, header-size and body-size caps, and timeouts.
 example, keeping the native surface small; request parsing (method, target, headers,
 body) and a handler callback.
 **Acceptance criteria:**
-- [ ] The example answers a real request (driven by Spark's own client) with the right status, headers and body.
-- [ ] Parsing limits and errors are documented and covered.
+- [x] The example answers a real request (driven by Spark's own client) with the right status, headers and body.
+- [x] Parsing limits and errors are documented and covered.
 **Verification:**
-- [ ] Fixture: Spark server + Spark client; suite.
+- [x] Fixture: Spark server + Spark client; suite.
 **Dependencies:** T84, T92.
 **Files:** `examples/`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
 ## Checkpoint: Phase 17
-- [ ] A Spark program fetches a local endpoint and a Spark server answers a real client
-- [ ] Body, header, redirect and timeout limits enforced and covered by error fixtures
+- [x] A Spark program fetches a local endpoint and a Spark server answers a real client
+- [x] Body, header, redirect and timeout limits enforced and covered by error fixtures
+- [x] Benchmark: `fib(27)` minimum ~4.96-5.00 ms, indistinguishable from the
+      pre-change build (4.95-5.00 ms) measured back to back on the same machine;
+      the added natives are registered once at startup and never touch the hot loop.
 
 ---
 

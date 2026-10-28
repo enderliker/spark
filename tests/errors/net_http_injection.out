@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'http_get' header value cannot contain a newline

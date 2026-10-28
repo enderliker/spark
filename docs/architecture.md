@@ -394,6 +394,43 @@ idle wait spends almost no CPU time; `tests/cases/net_async.spark` covers `sock.
 `net_select`, two clients on one server coroutine and the callback guard.
 `benchmarks/echo.spark` measures 2000 local round-trips.
 
+### HTTP (phase 17)
+
+The URL helpers (`url_parse`, `url_encode`, `url_decode`, `parse_query`) and the HTTP
+client live in `src/net.c` beside the socket layer; the server is a Spark library
+(`lib/http.spark`).
+
+- **URLs.** `url_parse` splits `scheme://[userinfo@]host[:port][/path][?query]
+  [#fragment]` without allocating through the GC: the fields are plain C buffers,
+  turned into the result map at the end. IPv6 literals keep their brackets, a missing
+  path becomes `/`, and `http`/`https` fill in their default ports. Malformed input is
+  a `ValueError`.
+- **Client.** `net_http_perform` builds the request, connects through the shared
+  `net_connect` (same deadline and address-list logic as `tcp_connect`), and reads the
+  response through a small `NetHttpReader` that buffers bytes across line and body
+  reads. Bodies come from `Content-Length`, a `Transfer-Encoding: chunked` decoder or
+  read-to-EOF; redirects recurse on the same absolute deadline, so the whole chain is
+  bounded. Every buffer is a malloc'd `NetBuffer`, so `mem_realloc` accounting (and
+  therefore the GC threshold) stays accurate.
+- **Why synchronous.** The client is a native, and a native cannot suspend halfway
+  through a multi-step request: it would have to return the whole state machine to the
+  coroutine. The HTTP client therefore blocks the process inside `poll(2)`, bounded by
+  `timeout_ms`, while the socket methods yield. Making it coroutine-aware is future
+  work; the fixtures drive it from a separate process so Spark's own client can talk to
+  Spark's own server without a deadlock.
+- **Framing caps.** 64 KiB for the status line plus headers, 1000 headers, five
+  redirects, a 16 MiB default body cap and a 30 s default deadline, each with an
+  explicit error. A URL, method or header value containing a newline is rejected so a
+  request cannot be split into extra headers.
+- **Server.** `lib/http.spark` parses one request per connection and serializes the
+  handler's response; it is pure Spark, so the native surface stays unchanged.
+
+`tests/http_client.spark` exercises the client against a scripted Python server
+(plain, chunked, redirect, redirect loop, oversized header, oversized body, timeout,
+malformed status line and premature EOF); `tests/run_tests.py` starts that server. The
+same file starts `tests/http_server.spark` (the Spark server) and runs
+`tests/http_server_client.spark` (Spark's client) against it, in separate processes.
+
 ## Modules and loading
 
 The VM manages modules through a canonical module table (`vm.modules`).

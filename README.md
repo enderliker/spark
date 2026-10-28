@@ -53,6 +53,8 @@ for (var i = 0; i < 10; i += 1) {
 - Networking: TCP and UDP sockets as GC-managed resources with timeouts, name
   resolution over IPv4 and IPv6, and typed `NetworkError`/`TimeoutError` failures.
   Blocking calls yield only their coroutine, so one process serves many connections.
+  URL helpers, an HTTP/1.1 client (chunked bodies, redirects, size and timeout
+  limits) and an HTTP server library on the socket layer.
 - Tooling: REPL, bytecode disassembler (`--dump`), precompiled bytecode
   (`--compile`), interactive debugger (`--debug`), formatter (`--format`) and
   linter (`--lint`).
@@ -306,13 +308,20 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket; returns a `socket`. |
 | `net_select(readables, timeout_ms?)` | Waits for any socket to be readable; returns the ready indexes. |
 | `net_hostname()` | The local host name. |
+| `url_parse(url)` | Splits a URL into a `{scheme, host, port, path, query, fragment}` map. |
+| `url_encode(text)` / `url_decode(text)` | Percent-encodes / decodes form data. |
+| `parse_query(query)` | Parses a query string into a map from key to array of values. |
+| `http_get` / `http_post` / `http_put` / `http_delete` | Sends an HTTP/1.1 request; returns `{status, headers, body}`. |
+| `http_request(options)` | The map-driven form of the HTTP client. |
 
 Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.wait`, `sock.send_to`,
 `sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. Server methods:
 `srv.accept`, `srv.port` and `srv.close`. Hosts may be names, IPv4 literals or
 bracketed IPv6 literals; `localhost` works over either family. A blocking call suspends
 its coroutine and the scheduler polls the descriptors, so a single process serves many
-connections with `spawn`.
+connections with `spawn`. The HTTP client follows redirects and handles chunked bodies
+within explicit header, body, redirect and timeout limits; `lib/http.spark` builds an
+HTTP server on top of the socket layer with no extra native code.
 
 ## Project layout
 
@@ -325,7 +334,7 @@ src/
   compiler.c                  AST -> bytecode (slots, upvalues, folding, TCO)
   chunk.c                     bytecode blocks, constants and disassembler
   vm.c                        virtual machine, GC, natives, classes, coroutines
-  net.c                       TCP/UDP sockets, resolution and the network natives
+  net.c                       sockets, URLs and the HTTP client
   object.c                    dynamic values, interned strings, arrays, maps
   bytecode.c                  .sparkc serialization
   json.c / regex.c            JSON and regular-expression engines
@@ -336,6 +345,7 @@ src/
   error.c                     diagnostics and source caret
   buf.c                       auxiliary dynamic buffer
   value.h                     value representation
+lib/                          standard library written in Spark
 docs/                         language reference and architecture notes
 examples/                     example programs
 tests/                        automated tests and fixtures

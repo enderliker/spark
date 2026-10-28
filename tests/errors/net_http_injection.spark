@@ -1,0 +1,1 @@
+http_get("http://127.0.0.1/", nil, {"X-Bad": "a\r\nInjected: b"});

@@ -1,0 +1,18 @@
+// Phase 17: a Spark HTTP server (lib/http) answering Spark's own client.
+import "../lib/http";
+
+fn handle(request) {
+    if (request.path == "/hello") {
+        return {"status": 200, "headers": {"Content-Type": "text/plain"}, "body": "hello from spark\n"};
+    }
+    if (request.path == "/echo") {
+        return {"status": 200, "body": request.body};
+    }
+    return {"status": 404, "headers": {"Content-Type": "text/plain"}, "body": "not found\n"};
+}
+
+var server = tcp_listen("127.0.0.1", 0);
+print("listening " + str(server.port()));
+var served = http_serve(server, handle, int(argv[1]));
+server.close();
+print("served " + str(served));

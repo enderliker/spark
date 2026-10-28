@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'http_request' does not accept the option 'nope'

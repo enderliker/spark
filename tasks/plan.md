@@ -94,13 +94,13 @@ small amount of VM plumbing.
 - [x] Benchmark minimum below 5 ms (measured 4.97 ms); sanitizers clean; `poll(2)` chosen
 
 ### Phase 17 - HTTP/1.1 client and server
-- [ ] T91 `url_parse`, `url_encode`, `url_decode`, `parse_query`
-- [ ] T92 HTTP/1.1 client: status, headers, chunked, redirects, caps, timeouts
-- [ ] T93 HTTP server as a Spark library on the socket layer, with fixtures
+- [x] T91 `url_parse`, `url_encode`, `url_decode`, `parse_query`
+- [x] T92 HTTP/1.1 client: status, headers, chunked, redirects, caps, timeouts
+- [x] T93 HTTP server as a Spark library on the socket layer, with fixtures
 
 ### Checkpoint: Phase 17
-- [ ] A Spark program fetches a local HTTP endpoint and a Spark server answers a real client
-- [ ] Header/body/redirect/timeout limits enforced and covered by error fixtures
+- [x] A Spark program fetches a local HTTP endpoint and a Spark server answers a real client
+- [x] Header/body/redirect/timeout limits enforced and covered by error fixtures
 
 ### Phase 18 - TLS (decision-gated on Q11)
 - [ ] T94 `tls_connect` + `read`/`write`/`close` with certificate and hostname verification

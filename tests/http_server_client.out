@@ -1,0 +1,5 @@
+get: 200 text/plain true
+post: 200 ping pong
+query: 200
+missing: 404 true
+server client ok

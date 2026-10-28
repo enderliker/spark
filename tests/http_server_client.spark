@@ -1,0 +1,16 @@
+// Phase 17: Spark's HTTP client talking to the Spark HTTP server.
+var port = int(argv[1]);
+var base = "http://127.0.0.1:" + str(port);
+
+var hello = http_get(base + "/hello");
+print("get:", hello.status, hello.headers["content-type"], hello.body == "hello from spark\n");
+
+var post = http_post(base + "/echo", "ping pong");
+print("post:", post.status, post.body);
+
+var query = http_get(base + "/echo?x=1");
+print("query:", query.status);
+
+var missing = http_get(base + "/missing");
+print("missing:", missing.status, missing.body == "not found\n");
+print("server client ok");

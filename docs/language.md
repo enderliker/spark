@@ -646,6 +646,76 @@ var server = tcp_listen("127.0.0.1", 8080);
 var job = spawn(echo, server);
 ```
 
+### HTTP client
+
+`http_get`/`http_post`/`http_put`/`http_delete` send an HTTP/1.1 request and return
+`{status, headers, body}`:
+
+```spark
+var response = http_get("http://example.com/");
+print(response.status);            // 200
+print(response.headers["server"]); // header names are lowercased
+print(response.body);              // the whole body as a string
+
+// url, body?, headers?, timeout_ms?, follow_redirects?, max_body?
+var created = http_post("http://api.local/items", "{\"name\":\"x\"}",
+                        {"Content-Type": "application/json"}, 5000);
+```
+
+`http_request(options)` is the map-driven form; it accepts `url` (required),
+`method`, `body`, `headers`, `timeout_ms`, `follow_redirects` and `max_body`, and
+rejects unknown keys.
+
+| Call | Result |
+| --- | --- |
+| `http_get(url, body?, headers?, timeout_ms?, follow_redirects?, max_body?)` | `{status, headers, body}`. |
+| `http_post` / `http_put` / `http_delete` | The same, with `POST` / `PUT` / `DELETE`. |
+| `http_request(options)` | The same, driven by a map. |
+
+- `headers` in the result is a map from lowercased name to value; a repeated header
+  keeps the last value.
+- A `Content-Length` body, a `Transfer-Encoding: chunked` body and a `Connection:
+  close` body that ends at EOF are all handled. `301`, `302`, `303`, `307` and `308`
+  are followed by default up to five hops (`303`, and `301`/`302` after a `POST`,
+  switch to `GET` and drop the body). A relative `Location` is resolved against the
+  request URL.
+- The request is bounded: `timeout_ms` defaults to 30000 (a value of `0` also uses
+  the default) and covers the whole request, including redirects. `max_body`
+  defaults to 16 MiB and may not exceed that. The status line plus the headers may
+  not exceed 64 KiB and at most 1000 headers and five redirects are accepted. Each
+  limit fails with an explicit `NetworkError`.
+- Only `http://` is supported; `https://` raises `NetworkError` until TLS lands.
+  A malformed status line, a premature EOF, an unknown host and a refused
+  connection all raise `NetworkError`, and exceeding the deadline raises
+  `TimeoutError`.
+- A header value or URL containing a newline raises `ValueError`, so a request
+  cannot be split into extra headers.
+- Unlike the socket methods, the HTTP client is synchronous: it blocks the process
+  (bounded by `timeout_ms`) instead of yielding the coroutine.
+
+### HTTP server library
+
+`lib/http.spark` builds a server on the socket layer, with no native server code:
+
+```spark
+import "./lib/http";
+
+fn handle(request) {
+    // request: {method, target, path, query, version, headers, body}
+    return {"status": 200, "body": "hello " + request.path + "\n"};
+}
+
+var server = tcp_listen("127.0.0.1", 8080);
+http_serve(server, handle);   // serves forever; add a count to stop after N
+```
+
+`http_serve(server, handler, max_requests?)` accepts one connection at a time,
+parses the request, calls `handler` and writes the response (`{status, headers?,
+body?}`); a missing status is `200` and a missing body is empty. A parsing or handler
+failure answers `500`. The request line and each header are capped at 8192
+characters, at most 100 headers are read, and the body is read up to
+`Content-Length`. See `examples/http_server.spark`.
+
 The global constants `pi` and `nan` are predefined, and the REPL keeps the result of
 the last expression in `_`.
 
@@ -1087,3 +1157,10 @@ Linter rules:
 - Blocking network calls yield only their coroutine; the scheduler sleeps in `poll(2)`
   until a descriptor is ready or the nearest deadline fires, so an idle wait uses no
   CPU. Inside a native callback or an imported module a would-block call is an error.
+- The HTTP client is bounded: the status line plus the headers may not exceed 64 KiB,
+  at most 1000 headers and five redirects are accepted, the body defaults to a 16 MiB
+  cap (`max_body`) and the whole request defaults to a 30 s deadline (`timeout_ms`).
+  It blocks the process rather than yielding the coroutine.
+- The `lib/http.spark` server reads at most 8192 characters per line, 100 headers and
+  the body up to `Content-Length`; it is a text server, so bodies with multibyte
+  characters count differently from bytes.

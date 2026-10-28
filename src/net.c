@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
@@ -991,6 +992,1156 @@ static Value native_parse_query(int arg_count, Value *args)
 }
 
 /* ------------------------------------------------------------------ */
+/* HTTP/1.1 client (phase 17)                                          */
+/* ------------------------------------------------------------------ */
+
+/* A growable byte buffer used to build requests and bodies. */
+typedef struct {
+    char *data;
+    size_t length;
+    size_t capacity;
+} NetBuffer;
+
+static void net_buffer_init(NetBuffer *buffer)
+{
+    buffer->data = NULL;
+    buffer->length = 0;
+    buffer->capacity = 0;
+}
+
+static void net_buffer_free(NetBuffer *buffer)
+{
+    mem_realloc(buffer->data, buffer->capacity, 0);
+    net_buffer_init(buffer);
+}
+
+static void net_buffer_reserve(NetBuffer *buffer, size_t extra)
+{
+    if (buffer->length + extra <= buffer->capacity) {
+        return;
+    }
+    size_t capacity = buffer->capacity ? buffer->capacity : 256;
+
+    while (capacity < buffer->length + extra) {
+        capacity *= 2;
+    }
+    buffer->data = mem_realloc(buffer->data, buffer->capacity, capacity);
+    buffer->capacity = capacity;
+}
+
+static void net_buffer_append(NetBuffer *buffer, const char *data, size_t length)
+{
+    net_buffer_reserve(buffer, length);
+    memcpy(buffer->data + buffer->length, data, length);
+    buffer->length += length;
+}
+
+static void net_buffer_puts(NetBuffer *buffer, const char *text)
+{
+    net_buffer_append(buffer, text, strlen(text));
+}
+
+/* Appends a terminator without counting it in `length`, for buffers used as C
+ * strings. */
+static void net_buffer_terminate(NetBuffer *buffer)
+{
+    net_buffer_reserve(buffer, 1);
+    buffer->data[buffer->length] = '\0';
+}
+
+static void net_buffer_printf(NetBuffer *buffer, const char *format, ...)
+{
+    va_list ap;
+    va_list copy;
+
+    va_start(ap, format);
+    va_copy(copy, ap);
+    int needed = vsnprintf(NULL, 0, format, copy);
+
+    va_end(copy);
+    if (needed < 0) {
+        va_end(ap);
+        return;
+    }
+    net_buffer_reserve(buffer, (size_t)needed + 1);
+    vsnprintf(buffer->data + buffer->length, (size_t)needed + 1, format, ap);
+    buffer->length += (size_t)needed;
+    va_end(ap);
+}
+
+/* A buffered reader over one response. Bytes are read from the descriptor on
+ * demand and kept until consumed, so header parsing never over-reads past the
+ * body it is about to return. */
+typedef struct {
+    int fd;
+    int64_t deadline;
+    char *data;
+    size_t length;
+    size_t position;
+    size_t capacity;
+} NetHttpReader;
+
+static void net_http_reader_init(NetHttpReader *reader, int fd, int64_t deadline)
+{
+    reader->fd = fd;
+    reader->deadline = deadline;
+    reader->data = NULL;
+    reader->length = 0;
+    reader->position = 0;
+    reader->capacity = 0;
+}
+
+static void net_http_reader_free(NetHttpReader *reader)
+{
+    mem_realloc(reader->data, reader->capacity, 0);
+    net_http_reader_init(reader, -1, 0);
+}
+
+/* Refills the buffer, growing it up to `limit`. Returns 1 on data, 0 at end of
+ * stream and -1 with `err` filled (including a timeout). Fresh bytes are
+ * appended after anything already buffered, so a long line can span reads. */
+static int net_http_fill(NetHttpReader *reader, size_t limit, NetError *err)
+{
+    if (reader->position == reader->length) {
+        reader->position = reader->length = 0; /* everything consumed */
+    }
+    if (reader->length == reader->capacity) {
+        if (reader->capacity >= limit) {
+            net_fail(err, ERROR_NETWORK, "an HTTP response line exceeds the maximum of %zu bytes",
+                     limit);
+            return -1;
+        }
+        size_t capacity = reader->capacity ? reader->capacity * 2 : 8192;
+
+        if (capacity > limit) {
+            capacity = limit;
+        }
+        reader->data = mem_realloc(reader->data, reader->capacity, capacity);
+        reader->capacity = capacity;
+    }
+
+    for (;;) {
+        int ready = net_wait(reader->fd, POLLIN, reader->deadline);
+
+        if (ready == 0) {
+            net_fail(err, ERROR_TIMEOUT, "the HTTP request timed out");
+            return -1;
+        }
+        if (ready < 0) {
+            net_fail_errno(err, errno, "recv failed");
+            return -1;
+        }
+
+        ssize_t received = recv(reader->fd, reader->data + reader->length,
+                                reader->capacity - reader->length, 0);
+
+        if (received > 0) {
+            reader->length += (size_t)received;
+            return 1;
+        }
+        if (received == 0) {
+            return 0; /* end of stream */
+        }
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+            continue;
+        }
+        net_fail_errno(err, errno, "recv failed");
+        return -1;
+    }
+}
+
+/* Reads one line up to `\n`, dropping the newline and a preceding `\r`. The
+ * line is malloc'd into `*out` and NUL-terminated. Returns 0 on success, 1 at
+ * an immediate end of stream and -1 with `err` filled. */
+static int net_http_read_line(NetHttpReader *reader, size_t limit, char **out, size_t *out_length,
+                              NetError *err)
+{
+    for (;;) {
+        if (reader->position < reader->length) {
+            char *newline = memchr(reader->data + reader->position, '\n',
+                                   reader->length - reader->position);
+
+            if (newline) {
+                size_t length = (size_t)(newline - (reader->data + reader->position));
+
+                if (length > 0 && reader->data[reader->position + length - 1] == '\r') {
+                    length--;
+                }
+                char *line = mem_realloc(NULL, 0, length + 1);
+
+                memcpy(line, reader->data + reader->position, length);
+                line[length] = '\0';
+                reader->position = (size_t)(newline - reader->data) + 1;
+                *out = line;
+                *out_length = length;
+                return 0;
+            }
+            if (reader->length - reader->position >= limit) {
+                net_fail(err, ERROR_NETWORK, "an HTTP response line exceeds the maximum of %zu bytes",
+                         limit);
+                return -1;
+            }
+        }
+
+        int status = net_http_fill(reader, limit, err);
+
+        if (status <= 0) {
+            return status;
+        }
+    }
+}
+
+/* Copies exactly `count` bytes out of the reader. Returns 0 on success, 1 on a
+ * premature end of stream and -1 with `err` filled. */
+static int net_http_read_exact(NetHttpReader *reader, size_t count, char *destination, NetError *err)
+{
+    size_t copied = 0;
+
+    while (copied < count) {
+        if (reader->position < reader->length) {
+            size_t take = reader->length - reader->position;
+
+            if (take > count - copied) {
+                take = count - copied;
+            }
+            memcpy(destination + copied, reader->data + reader->position, take);
+            reader->position += take;
+            copied += take;
+            continue;
+        }
+
+        int status = net_http_fill(reader, NET_HTTP_HEADER_MAX, err);
+
+        if (status == 0) {
+            return 1;
+        }
+        if (status < 0) {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+typedef struct {
+    char *name;
+    char *value;
+} NetHttpHeader;
+
+typedef struct {
+    int status;
+    NetHttpHeader *headers;
+    int header_count;
+    int header_capacity;
+    char *body;
+    size_t body_length;
+    size_t body_capacity;
+} NetHttpResponse;
+
+static void net_http_response_free(NetHttpResponse *response)
+{
+    for (int i = 0; i < response->header_count; i++) {
+        mem_realloc(response->headers[i].name, strlen(response->headers[i].name) + 1, 0);
+        mem_realloc(response->headers[i].value, strlen(response->headers[i].value) + 1, 0);
+    }
+    mem_realloc(response->headers, (size_t)response->header_capacity * sizeof(NetHttpHeader), 0);
+    mem_realloc(response->body, response->body_capacity, 0);
+    memset(response, 0, sizeof(*response));
+}
+
+static void net_http_response_add_header(NetHttpResponse *response, char *name, char *value)
+{
+    if (response->header_count == response->header_capacity) {
+        int capacity = response->header_capacity ? response->header_capacity * 2 : 8;
+
+        response->headers = mem_realloc(response->headers,
+                                        (size_t)response->header_capacity * sizeof(NetHttpHeader),
+                                        (size_t)capacity * sizeof(NetHttpHeader));
+        response->header_capacity = capacity;
+    }
+    response->headers[response->header_count].name = name;
+    response->headers[response->header_count].value = value;
+    response->header_count++;
+}
+
+/* First header with `name` (lowercase), or NULL. */
+static const char *net_http_response_header(const NetHttpResponse *response, const char *name)
+{
+    for (int i = 0; i < response->header_count; i++) {
+        if (strcmp(response->headers[i].name, name) == 0) {
+            return response->headers[i].value;
+        }
+    }
+    return NULL;
+}
+
+static bool net_http_user_has_header(ObjMap *headers, const char *name)
+{
+    if (!headers) {
+        return false;
+    }
+    for (int i = 0; i < headers->capacity; i++) {
+        MapEntry *entry = &headers->entries[i];
+
+        if (entry->state == 1 && is_obj_type(entry->key, OBJ_STRING) &&
+            strcasecmp(AS_STRING(entry->key)->chars, name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool net_http_default_port(const NetUrl *url)
+{
+    return (strcmp(url->scheme, "http") == 0 && url->port == 80) ||
+           (strcmp(url->scheme, "https") == 0 && url->port == 443);
+}
+
+static void net_http_build_request(NetBuffer *out, const char *method, const char *target,
+                                   const NetUrl *url, ObjMap *headers, const char *body,
+                                   size_t body_length, bool has_body)
+{
+    net_buffer_printf(out, "%s %s HTTP/1.1\r\n", method, target);
+
+    if (!net_http_user_has_header(headers, "host")) {
+        if (url->port_known && !net_http_default_port(url)) {
+            net_buffer_printf(out, "Host: %s:%lld\r\n", url->host, (long long)url->port);
+        } else {
+            net_buffer_printf(out, "Host: %s\r\n", url->host);
+        }
+    }
+    if (!net_http_user_has_header(headers, "user-agent")) {
+        net_buffer_puts(out, "User-Agent: " NET_HTTP_USER_AGENT "\r\n");
+    }
+    if (!net_http_user_has_header(headers, "accept")) {
+        net_buffer_puts(out, "Accept: */*\r\n");
+    }
+    if (!net_http_user_has_header(headers, "connection")) {
+        net_buffer_puts(out, "Connection: close\r\n");
+    }
+
+    if (headers) {
+        for (int i = 0; i < headers->capacity; i++) {
+            MapEntry *entry = &headers->entries[i];
+
+            if (entry->state != 1 || !is_obj_type(entry->key, OBJ_STRING) ||
+                !is_obj_type(entry->value, OBJ_STRING)) {
+                continue;
+            }
+            /* The client controls the framing headers. */
+            if (strcasecmp(AS_STRING(entry->key)->chars, "content-length") == 0) {
+                continue;
+            }
+            net_buffer_printf(out, "%s: %s\r\n", AS_STRING(entry->key)->chars,
+                              AS_STRING(entry->value)->chars);
+        }
+    }
+
+    if (has_body) {
+        net_buffer_printf(out, "Content-Length: %zu\r\n", body_length);
+        if (body_length > 0 && !net_http_user_has_header(headers, "content-type")) {
+            net_buffer_puts(out, "Content-Type: application/octet-stream\r\n");
+        }
+    }
+    net_buffer_puts(out, "\r\n");
+
+    if (has_body && body_length > 0) {
+        net_buffer_append(out, body, body_length);
+    }
+}
+
+static bool net_http_send_all(int fd, const char *data, size_t length, int64_t deadline,
+                              NetError *err)
+{
+    size_t sent = 0;
+
+    while (sent < length) {
+        ssize_t n = send(fd, data + sent, length - sent, MSG_NOSIGNAL);
+
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            int ready = net_wait(fd, POLLOUT, deadline);
+
+            if (ready == 0) {
+                net_fail(err, ERROR_TIMEOUT, "the HTTP request timed out");
+                return false;
+            }
+            if (ready < 0) {
+                net_fail_errno(err, errno, "send failed");
+                return false;
+            }
+            continue;
+        }
+        net_fail_errno(err, errno, "send failed");
+        return false;
+    }
+    return true;
+}
+
+static bool net_http_read_status(NetHttpReader *reader, NetHttpResponse *response, NetError *err)
+{
+    char *line = NULL;
+    size_t length = 0;
+    int status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
+
+    if (status != 0) {
+        if (status == 0) {
+            net_fail(err, ERROR_NETWORK, "the HTTP response ended before the status line");
+        }
+        return false;
+    }
+    if (length < 12 || strncmp(line, "HTTP/1.", 7) != 0 || !isdigit((unsigned char)line[7]) ||
+        line[8] != ' ' || !isdigit((unsigned char)line[9]) || !isdigit((unsigned char)line[10]) ||
+        !isdigit((unsigned char)line[11])) {
+        net_fail(err, ERROR_NETWORK, "malformed HTTP status line '%s'", line);
+        mem_realloc(line, length + 1, 0);
+        return false;
+    }
+    response->status = (line[9] - '0') * 100 + (line[10] - '0') * 10 + (line[11] - '0');
+    mem_realloc(line, length + 1, 0);
+
+    if (response->status < 100 || response->status > 599) {
+        net_fail(err, ERROR_NETWORK, "invalid HTTP status code %d", response->status);
+        return false;
+    }
+    return true;
+}
+
+static bool net_http_read_headers(NetHttpReader *reader, NetHttpResponse *response, NetError *err)
+{
+    size_t total = 0;
+
+    for (;;) {
+        char *line = NULL;
+        size_t length = 0;
+        int status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
+
+        if (status != 0) {
+            if (status == 0) {
+                net_fail(err, ERROR_NETWORK, "the HTTP response ended inside the headers");
+            }
+            return false;
+        }
+        total += length + 2;
+        if (total > NET_HTTP_HEADER_MAX) {
+            mem_realloc(line, length + 1, 0);
+            net_fail(err, ERROR_NETWORK, "the HTTP response headers exceed the maximum of %d bytes",
+                     NET_HTTP_HEADER_MAX);
+            return false;
+        }
+        if (length == 0) {
+            mem_realloc(line, length + 1, 0);
+            return true;
+        }
+
+        char *colon = memchr(line, ':', length);
+
+        if (!colon || colon == line) {
+            net_fail(err, ERROR_NETWORK, "malformed HTTP header '%s'", line);
+            mem_realloc(line, length + 1, 0);
+            return false;
+        }
+        /* Trim optional whitespace around the name and the value (obs-fold is
+         * not supported). */
+        char *name_end = colon;
+
+        while (name_end > line && (name_end[-1] == ' ' || name_end[-1] == '\t')) {
+            name_end--;
+        }
+        char *value = colon + 1;
+        char *value_end = line + length;
+
+        while (value < value_end && (*value == ' ' || *value == '\t')) {
+            value++;
+        }
+        while (value_end > value && (value_end[-1] == ' ' || value_end[-1] == '\t')) {
+            value_end--;
+        }
+
+        size_t name_length = (size_t)(name_end - line);
+        size_t value_length = (size_t)(value_end - value);
+        char *name = mem_realloc(NULL, 0, name_length + 1);
+        char *value_copy = mem_realloc(NULL, 0, value_length + 1);
+
+        memcpy(name, line, name_length);
+        name[name_length] = '\0';
+        for (size_t i = 0; i < name_length; i++) {
+            name[i] = (char)tolower((unsigned char)name[i]);
+        }
+        memcpy(value_copy, value, value_length);
+        value_copy[value_length] = '\0';
+        mem_realloc(line, length + 1, 0);
+
+        if (response->header_count >= NET_HTTP_MAX_HEADERS) {
+            mem_realloc(name, name_length + 1, 0);
+            mem_realloc(value_copy, value_length + 1, 0);
+            net_fail(err, ERROR_NETWORK, "the HTTP response has too many headers (maximum %d)",
+                     NET_HTTP_MAX_HEADERS);
+            return false;
+        }
+        net_http_response_add_header(response, name, value_copy);
+    }
+}
+
+static bool net_http_read_chunked(NetHttpReader *reader, int64_t max_body, NetHttpResponse *response,
+                                  NetError *err)
+{
+    NetBuffer body;
+
+    net_buffer_init(&body);
+    for (;;) {
+        char *line = NULL;
+        size_t length = 0;
+        int line_status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
+
+        if (line_status != 0) {
+            if (line_status == 0) {
+                net_fail(err, ERROR_NETWORK, "the chunked body ended before its final chunk");
+            }
+            goto fail;
+        }
+
+        int64_t size = 0;
+        const char *cursor = line;
+        bool digits = false;
+
+        while (*cursor && *cursor != ';') {
+            int digit = net_hex_value(*cursor);
+
+            if (digit < 0) {
+                net_fail(err, ERROR_NETWORK, "malformed chunk size '%s'", line);
+                mem_realloc(line, length + 1, 0);
+                goto fail;
+            }
+            size = size * 16 + digit;
+            digits = true;
+            if (size > max_body || size > INT32_MAX) {
+                net_fail(err, ERROR_NETWORK, "the HTTP response body exceeds the maximum of %lld bytes",
+                         (long long)max_body);
+                mem_realloc(line, length + 1, 0);
+                goto fail;
+            }
+            cursor++;
+        }
+        mem_realloc(line, length + 1, 0);
+        if (!digits) {
+            net_fail(err, ERROR_NETWORK, "malformed chunk size");
+            goto fail;
+        }
+        if (size == 0) {
+            break; /* last chunk; the trailer follows */
+        }
+        if ((int64_t)body.length + size > max_body) {
+            net_fail(err, ERROR_NETWORK, "the HTTP response body exceeds the maximum of %lld bytes",
+                     (long long)max_body);
+            goto fail;
+        }
+
+        net_buffer_reserve(&body, (size_t)size);
+        int chunk_status = net_http_read_exact(reader, (size_t)size, body.data + body.length, err);
+
+        if (chunk_status == 1) {
+            net_fail(err, ERROR_NETWORK, "the chunked body ended in the middle of a chunk");
+        }
+        if (chunk_status != 0) {
+            goto fail;
+        }
+        body.length += (size_t)size;
+
+        char *trailer = NULL;
+        size_t trailer_length = 0;
+        int trailer_status = net_http_read_line(reader, 8, &trailer, &trailer_length, err);
+
+        if (trailer_status != 0 || trailer_length != 0) {
+            if (trailer_status == 0) {
+                net_fail(err, ERROR_NETWORK, "missing the end of a chunk");
+            }
+            mem_realloc(trailer, trailer_length + 1, 0);
+            goto fail;
+        }
+        mem_realloc(trailer, trailer_length + 1, 0);
+    }
+
+    /* Trailer headers, terminated by an empty line. */
+    for (;;) {
+        char *line = NULL;
+        size_t length = 0;
+        int line_status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
+
+        if (line_status != 0) {
+            if (line_status == 0) {
+                net_fail(err, ERROR_NETWORK, "the chunked trailer ended unexpectedly");
+            }
+            goto fail;
+        }
+        mem_realloc(line, length + 1, 0);
+        if (length == 0) {
+            break;
+        }
+    }
+
+    response->body = body.data;
+    response->body_length = body.length;
+    response->body_capacity = body.capacity;
+    return true;
+
+fail:
+    net_buffer_free(&body);
+    return false;
+}
+
+static bool net_http_read_to_eof(NetHttpReader *reader, int64_t max_body, NetHttpResponse *response,
+                                 NetError *err)
+{
+    NetBuffer body;
+
+    net_buffer_init(&body);
+    for (;;) {
+        if (reader->position < reader->length) {
+            size_t take = reader->length - reader->position;
+
+            if ((int64_t)body.length + (int64_t)take > max_body) {
+                net_fail(err, ERROR_NETWORK, "the HTTP response body exceeds the maximum of %lld bytes",
+                         (long long)max_body);
+                goto fail;
+            }
+            net_buffer_append(&body, reader->data + reader->position, take);
+            reader->position = reader->length;
+            continue;
+        }
+
+        int status = net_http_fill(reader, NET_HTTP_HEADER_MAX, err);
+
+        if (status == 0) {
+            break;
+        }
+        if (status < 0) {
+            goto fail;
+        }
+    }
+
+    response->body = body.data;
+    response->body_length = body.length;
+    response->body_capacity = body.capacity;
+    return true;
+
+fail:
+    net_buffer_free(&body);
+    return false;
+}
+
+/* Resolves a Location header against `base`. Absolute, scheme-relative and
+ * root-relative targets are supported, plus simple relative paths. The caller
+ * releases the result. */
+static char *net_http_resolve_location(const NetUrl *base, const char *location)
+{
+    NetBuffer out;
+
+    net_buffer_init(&out);
+    if (strncmp(location, "http://", 7) == 0 || strncmp(location, "https://", 8) == 0) {
+        net_buffer_puts(&out, location);
+        return net_strndup_owned(out.data, out.length);
+    }
+    net_buffer_puts(&out, base->scheme);
+    net_buffer_puts(&out, "://");
+    net_buffer_puts(&out, base->host);
+    if (base->port_known) {
+        net_buffer_printf(&out, ":%lld", (long long)base->port);
+    }
+    if (location[0] == '/') {
+        net_buffer_puts(&out, location);
+        char *result = net_strndup_owned(out.data, out.length);
+
+        net_buffer_free(&out);
+        return result;
+    }
+    /* Relative to the directory of the base path. */
+    const char *slash = strrchr(base->path, '/');
+
+    if (slash) {
+        net_buffer_append(&out, base->path, (size_t)(slash - base->path) + 1);
+    } else {
+        net_buffer_puts(&out, "/");
+    }
+    net_buffer_puts(&out, location);
+    char *result = net_strndup_owned(out.data, out.length);
+
+    net_buffer_free(&out);
+    return result;
+}
+
+static bool net_http_read_body(NetHttpReader *reader, NetHttpResponse *response, int64_t max_body,
+                               NetError *err)
+{
+    const char *transfer = net_http_response_header(response, "transfer-encoding");
+    const char *length_header = net_http_response_header(response, "content-length");
+
+    if (transfer && strstr(transfer, "chunked")) {
+        return net_http_read_chunked(reader, max_body, response, err);
+    }
+    if (length_header) {
+        char *end = NULL;
+        long long declared = strtoll(length_header, &end, 10);
+
+        if (end == length_header || *end != '\0' || declared < 0) {
+            net_fail(err, ERROR_NETWORK, "invalid Content-Length '%s'", length_header);
+            return false;
+        }
+        if (declared > max_body) {
+            net_fail(err, ERROR_NETWORK, "the HTTP response body exceeds the maximum of %lld bytes",
+                     (long long)max_body);
+            return false;
+        }
+        if (declared == 0) {
+            return true;
+        }
+        response->body = mem_realloc(NULL, 0, (size_t)declared);
+        response->body_capacity = (size_t)declared;
+        int status = net_http_read_exact(reader, (size_t)declared, response->body, err);
+
+        if (status == 1) {
+            net_fail(err, ERROR_NETWORK, "the HTTP response ended before the body was complete");
+        }
+        if (status != 0) {
+            return false;
+        }
+        response->body_length = (size_t)declared;
+        return true;
+    }
+    return net_http_read_to_eof(reader, max_body, response, err);
+}
+
+/* Performs one request (plus redirects), filling `response`. `deadline` is an
+ * absolute monotonic millisecond bound shared by the whole chain (0 = none). */
+static bool net_http_perform(const char *url_text, const char *method, ObjMap *headers,
+                             const char *body, size_t body_length, bool has_body, int64_t deadline,
+                             bool follow, int64_t max_body, int redirects_left,
+                             NetHttpResponse *response, NetError *err)
+{
+    NetUrl url;
+
+    if (!net_url_parse(url_text, &url, err)) {
+        return false;
+    }
+    if (strcmp(url.scheme, "http") != 0) {
+        if (strcmp(url.scheme, "https") == 0) {
+            net_fail(err, ERROR_NETWORK, "https is not supported yet (TLS lands in a later phase)");
+        } else {
+            net_fail(err, ERROR_NETWORK, "unsupported URL scheme '%s'", url.scheme);
+        }
+        net_url_free(&url);
+        return false;
+    }
+    if (!url.port_known) {
+        net_fail(err, ERROR_NETWORK, "invalid URL '%s': missing port", url_text);
+        net_url_free(&url);
+        return false;
+    }
+
+    NetBuffer target;
+    NetBuffer request;
+    NetHttpReader reader;
+    bool ok = false;
+    int fd = -1;
+
+    net_buffer_init(&target);
+    net_buffer_init(&request);
+    net_buffer_puts(&target, url.path);
+    if (url.query[0] != '\0') {
+        net_buffer_puts(&target, "?");
+        net_buffer_puts(&target, url.query);
+    }
+    net_buffer_terminate(&target);
+    net_http_build_request(&request, method, target.data, &url, headers, body, body_length,
+                           has_body);
+
+    fd = net_connect(url.host, url.port, deadline, err);
+    if (fd < 0) {
+        goto cleanup;
+    }
+    if (!net_http_send_all(fd, request.data, request.length, deadline, err)) {
+        goto cleanup;
+    }
+
+    net_http_reader_init(&reader, fd, deadline);
+    if (!net_http_read_status(&reader, response, err)) {
+        net_http_reader_free(&reader);
+        goto cleanup;
+    }
+    if (!net_http_read_headers(&reader, response, err)) {
+        net_http_reader_free(&reader);
+        goto cleanup;
+    }
+    if (!net_http_read_body(&reader, response, max_body, err)) {
+        net_http_reader_free(&reader);
+        goto cleanup;
+    }
+    net_http_reader_free(&reader);
+    ok = true;
+
+cleanup:
+    if (fd >= 0) {
+        close(fd);
+    }
+    net_buffer_free(&target);
+    net_buffer_free(&request);
+
+    if (ok && follow) {
+        const char *location = net_http_response_header(response, "location");
+        bool redirect = response->status == 301 || response->status == 302 ||
+                        response->status == 303 || response->status == 307 ||
+                        response->status == 308;
+
+        if (redirect && location && *location != '\0') {
+            if (redirects_left <= 0) {
+                net_http_response_free(response);
+                net_url_free(&url);
+                net_fail(err, ERROR_NETWORK, "too many redirects (maximum %d)", NET_HTTP_REDIRECT_MAX);
+                return false;
+            }
+            char *next = net_http_resolve_location(&url, location);
+            const char *next_method = method;
+            const char *next_body = body;
+            size_t next_length = body_length;
+            bool next_has_body = has_body;
+
+            if (response->status == 303 ||
+                ((response->status == 301 || response->status == 302) &&
+                 strcmp(method, "POST") == 0)) {
+                next_method = "GET";
+                next_body = NULL;
+                next_length = 0;
+                next_has_body = false;
+            }
+            net_http_response_free(response);
+            net_url_free(&url);
+            ok = net_http_perform(next, next_method, headers, next_body, next_length,
+                                  next_has_body, deadline, follow, max_body, redirects_left - 1,
+                                  response, err);
+            mem_realloc(next, strlen(next) + 1, 0);
+            return ok;
+        }
+    }
+    net_url_free(&url);
+    return ok;
+}
+
+/* Rejects CR/LF so a value cannot inject an extra header or request line. */
+static bool net_http_safe_text(ObjString *text, const char *function, const char *what)
+{
+    if (memchr(text->chars, '\r', (size_t)text->length) ||
+        memchr(text->chars, '\n', (size_t)text->length)) {
+        vm_runtime_error(ERROR_VALUE, "'%s' %s cannot contain a newline", function, what);
+        return false;
+    }
+    return true;
+}
+
+static bool net_http_validate_headers(ObjMap *headers, const char *function)
+{
+    for (int i = 0; i < headers->capacity; i++) {
+        MapEntry *entry = &headers->entries[i];
+
+        if (entry->state != 1) {
+            continue;
+        }
+        if (!is_obj_type(entry->key, OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' header names must be strings, received %s", function,
+                             net_value_type(entry->key));
+            return false;
+        }
+        if (!is_obj_type(entry->value, OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' header '%s' must be a string, received %s", function,
+                             AS_STRING(entry->key)->chars, net_value_type(entry->value));
+            return false;
+        }
+        if (!net_http_safe_text(AS_STRING(entry->key), function, "header name") ||
+            !net_http_safe_text(AS_STRING(entry->value), function, "header value")) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static Value net_http_execute(const char *function, const char *method, ObjString *url,
+                              Value body_value, ObjMap *headers, int64_t timeout, bool follow,
+                              int64_t max_body)
+{
+    if (net_string_has_null(url, function) || !net_http_safe_text(url, function, "URL")) {
+        return NIL_VAL;
+    }
+    const char *body = NULL;
+    size_t body_length = 0;
+    bool has_body = false;
+
+    if (!is_nil(body_value)) {
+        if (!is_obj_type(body_value, OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects a string body, received %s", function,
+                             net_value_type(body_value));
+            return NIL_VAL;
+        }
+        body = AS_STRING(body_value)->chars;
+        body_length = (size_t)AS_STRING(body_value)->length;
+        has_body = true;
+    }
+    if (headers && !net_http_validate_headers(headers, function)) {
+        return NIL_VAL;
+    }
+
+    NetHttpResponse response;
+    NetError err;
+
+    memset(&response, 0, sizeof(response));
+    int64_t deadline = net_now_ms() + timeout;
+
+    if (!net_http_perform(url->chars, method, headers, body, body_length, has_body, deadline, follow,
+                          max_body, NET_HTTP_REDIRECT_MAX, &response, &err)) {
+        net_http_response_free(&response);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    mem_pause_gc();
+    ObjMap *result = object_map();
+    ObjMap *header_map = object_map();
+
+    for (int i = 0; i < response.header_count; i++) {
+        map_set(header_map,
+                OBJ_VAL(object_string(response.headers[i].name,
+                                      (int)strlen(response.headers[i].name))),
+                OBJ_VAL(object_string(response.headers[i].value,
+                                      (int)strlen(response.headers[i].value))));
+    }
+    map_set(result, OBJ_VAL(object_string("status", 6)), INT_VAL(response.status));
+    map_set(result, OBJ_VAL(object_string("headers", 7)), OBJ_VAL(header_map));
+    map_set(result, OBJ_VAL(object_string("body", 4)),
+            OBJ_VAL(object_string(response.body ? response.body : "", (int)response.body_length)));
+    mem_resume_gc();
+
+    net_http_response_free(&response);
+    return OBJ_VAL(result);
+}
+
+/* http_get/post/put/delete(url, body?, headers?, timeout_ms?, follow_redirects?,
+ * max_body?) */
+static Value net_http_positional(const char *function, const char *method, int arg_count,
+                                 Value *args)
+{
+    if (arg_count < 1 || arg_count > 6) {
+        vm_runtime_error(ERROR_ARITY, "'%s' expects between 1 and 6 arguments, received %d", function,
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'%s' expects a string URL, received %s", function,
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    if (net_string_has_null(AS_STRING(args[0]), function)) {
+        return NIL_VAL;
+    }
+
+    Value body = arg_count > 1 ? args[1] : NIL_VAL;
+    ObjMap *headers = NULL;
+
+    if (arg_count > 2 && !is_nil(args[2])) {
+        if (!is_obj_type(args[2], OBJ_MAP)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects a map of headers, received %s", function,
+                             net_value_type(args[2]));
+            return NIL_VAL;
+        }
+        headers = AS_MAP(args[2]);
+    }
+
+    int64_t timeout = NET_HTTP_TIMEOUT_DEFAULT;
+
+    if (arg_count > 3 && !is_nil(args[3])) {
+        if (!is_int(args[3])) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects an integer timeout_ms, received %s", function,
+                             net_value_type(args[3]));
+            return NIL_VAL;
+        }
+        if (AS_INT(args[3]) < 0) {
+            vm_runtime_error(ERROR_VALUE, "'%s' timeout cannot be negative", function);
+            return NIL_VAL;
+        }
+        if (AS_INT(args[3]) > 0) {
+            timeout = AS_INT(args[3]);
+        }
+    }
+
+    bool follow = true;
+
+    if (arg_count > 4 && !is_nil(args[4])) {
+        if (!is_bool(args[4])) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects a bool follow_redirects, received %s",
+                             function, net_value_type(args[4]));
+            return NIL_VAL;
+        }
+        follow = AS_BOOL(args[4]);
+    }
+
+    int64_t max_body = NET_HTTP_BODY_DEFAULT_MAX;
+
+    if (arg_count > 5 && !is_nil(args[5])) {
+        if (!is_int(args[5])) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects an integer max_body, received %s", function,
+                             net_value_type(args[5]));
+            return NIL_VAL;
+        }
+        if (AS_INT(args[5]) <= 0 || AS_INT(args[5]) > NET_READ_MAX) {
+            vm_runtime_error(ERROR_VALUE, "'%s' max_body must be between 1 and %d", function,
+                             NET_READ_MAX);
+            return NIL_VAL;
+        }
+        max_body = AS_INT(args[5]);
+    }
+
+    return net_http_execute(function, method, AS_STRING(args[0]), body, headers, timeout, follow,
+                            max_body);
+}
+
+static Value native_http_get(int arg_count, Value *args)
+{
+    return net_http_positional("http_get", "GET", arg_count, args);
+}
+
+static Value native_http_post(int arg_count, Value *args)
+{
+    return net_http_positional("http_post", "POST", arg_count, args);
+}
+
+static Value native_http_put(int arg_count, Value *args)
+{
+    return net_http_positional("http_put", "PUT", arg_count, args);
+}
+
+static Value native_http_delete(int arg_count, Value *args)
+{
+    return net_http_positional("http_delete", "DELETE", arg_count, args);
+}
+
+/* http_request({url, method?, body?, headers?, timeout_ms?, follow_redirects?,
+ * max_body?}) */
+static Value native_http_request(int arg_count, Value *args)
+{
+    if (arg_count != 1) {
+        vm_runtime_error(ERROR_ARITY, "'http_request' expects 1 argument, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_MAP)) {
+        vm_runtime_error(ERROR_TYPE, "'http_request' expects a map of options, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+
+    ObjMap *options = AS_MAP(args[0]);
+    ObjString *url = NULL;
+    const char *method = "GET";
+    ObjString *method_string = NULL;
+    Value body = NIL_VAL;
+    ObjMap *headers = NULL;
+    int64_t timeout = NET_HTTP_TIMEOUT_DEFAULT;
+    bool follow = true;
+    int64_t max_body = NET_HTTP_BODY_DEFAULT_MAX;
+
+    for (int i = 0; i < options->capacity; i++) {
+        MapEntry *entry = &options->entries[i];
+
+        if (entry->state != 1) {
+            continue;
+        }
+        if (!is_obj_type(entry->key, OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'http_request' option names must be strings, received %s",
+                             net_value_type(entry->key));
+            return NIL_VAL;
+        }
+        const char *name = AS_STRING(entry->key)->chars;
+        Value value = entry->value;
+
+        if (strcmp(name, "url") == 0) {
+            if (!is_obj_type(value, OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'http_request' url must be a string, received %s",
+                                 net_value_type(value));
+                return NIL_VAL;
+            }
+            url = AS_STRING(value);
+        } else if (strcmp(name, "method") == 0) {
+            if (!is_obj_type(value, OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'http_request' method must be a string, received %s",
+                                 net_value_type(value));
+                return NIL_VAL;
+            }
+            method_string = AS_STRING(value);
+            method = method_string->chars;
+        } else if (strcmp(name, "body") == 0) {
+            body = value;
+        } else if (strcmp(name, "headers") == 0) {
+            if (!is_nil(value)) {
+                if (!is_obj_type(value, OBJ_MAP)) {
+                    vm_runtime_error(ERROR_TYPE,
+                                     "'http_request' headers must be a map, received %s",
+                                     net_value_type(value));
+                    return NIL_VAL;
+                }
+                headers = AS_MAP(value);
+            }
+        } else if (strcmp(name, "timeout_ms") == 0) {
+            if (!is_nil(value)) {
+                if (!is_int(value) || AS_INT(value) < 0) {
+                    vm_runtime_error(ERROR_VALUE, "'http_request' timeout_ms must be a non-negative "
+                                                  "integer");
+                    return NIL_VAL;
+                }
+                if (AS_INT(value) > 0) {
+                    timeout = AS_INT(value);
+                }
+            }
+        } else if (strcmp(name, "follow_redirects") == 0) {
+            if (!is_nil(value)) {
+                if (!is_bool(value)) {
+                    vm_runtime_error(ERROR_TYPE, "'http_request' follow_redirects must be a bool");
+                    return NIL_VAL;
+                }
+                follow = AS_BOOL(value);
+            }
+        } else if (strcmp(name, "max_body") == 0) {
+            if (!is_nil(value)) {
+                if (!is_int(value) || AS_INT(value) <= 0 || AS_INT(value) > NET_READ_MAX) {
+                    vm_runtime_error(ERROR_VALUE,
+                                     "'http_request' max_body must be between 1 and %d", NET_READ_MAX);
+                    return NIL_VAL;
+                }
+                max_body = AS_INT(value);
+            }
+        } else {
+            vm_runtime_error(ERROR_VALUE, "'http_request' does not accept the option '%s'", name);
+            return NIL_VAL;
+        }
+    }
+
+    if (!url) {
+        vm_runtime_error(ERROR_VALUE, "'http_request' requires a 'url' option");
+        return NIL_VAL;
+    }
+    if (method_string && !net_http_safe_text(method_string, "http_request", "method")) {
+        return NIL_VAL;
+    }
+    for (const char *p = method; *p; p++) {
+        if (*p == ' ' || *p == '\t') {
+            vm_runtime_error(ERROR_VALUE, "'http_request' method cannot contain whitespace");
+            return NIL_VAL;
+        }
+    }
+    return net_http_execute("http_request", method, url, body, headers, timeout, follow, max_body);
+}
+
+/* ------------------------------------------------------------------ */
 /* Native functions                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -1140,6 +2291,11 @@ void net_init(void)
     vm_define_native("url_encode", native_url_encode, 1);
     vm_define_native("url_decode", native_url_decode, 1);
     vm_define_native("parse_query", native_parse_query, 1);
+    vm_define_native("http_get", native_http_get, -1);
+    vm_define_native("http_post", native_http_post, -1);
+    vm_define_native("http_put", native_http_put, -1);
+    vm_define_native("http_delete", native_http_delete, -1);
+    vm_define_native("http_request", native_http_request, 1);
 }
 
 /* ------------------------------------------------------------------ */

@@ -1,0 +1,204 @@
+// lib/http.spark - a minimal HTTP/1.1 server on the socket layer.
+//
+// The server is pure Spark, so it adds no natives: it reads one request per
+// connection (matching the "Connection: close" the client sends), hands it to
+// a handler callback and writes the response back.
+//
+//   import "./lib/http";
+//
+//   var server = tcp_listen("127.0.0.1", 8080);
+//   http_serve(server, fn(request) {
+//       return {"status": 200, "body": "hello\n"};
+//   }, 10);
+//
+// A request map has the keys {method, target, path, query, version, headers,
+// body}; header names are lowercased. A response map has {status, headers?,
+// body?}: a missing status is 200 and a missing body is empty.
+//
+// Limits: a request line and every header may be at most 8192 characters, at
+// most 100 headers are read, and the body is read up to Content-Length. Spark
+// strings are measured in UTF-8 characters, so `Content-Length` matches the
+// body only when it is ASCII (the usual case for a text API); binary bodies
+// are not supported by this library.
+
+const http_max_line = 8192;
+const http_max_headers = 100;
+
+// Reason phrase for the common status codes.
+fn http_reason(status) {
+    switch (status) {
+        case 200: return "OK";
+        case 201: return "Created";
+        case 202: return "Accepted";
+        case 204: return "No Content";
+        case 301: return "Moved Permanently";
+        case 302: return "Found";
+        case 304: return "Not Modified";
+        case 400: return "Bad Request";
+        case 401: return "Unauthorized";
+        case 403: return "Forbidden";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 409: return "Conflict";
+        case 413: return "Payload Too Large";
+        case 500: return "Internal Server Error";
+        default: return "Status";
+    }
+}
+
+// Reads exactly `length` bytes of body. The loop stops at the end of the
+// stream, when the socket times out or once enough characters arrived.
+fn http_read_body(socket, length) {
+    var body = "";
+    var remaining = length;
+
+    while (remaining > 0) {
+        var chunk = nil;
+
+        try {
+            chunk = socket.recv(remaining);
+        } catch {
+            break;
+        }
+        if (chunk == nil or chunk == "") {
+            break;
+        }
+        body += chunk;
+        remaining -= len(chunk);
+    }
+    return body;
+}
+
+// Reads and parses one request, or nil when the peer closed before sending one.
+fn http_parse_request(socket) {
+    var line = socket.recv_line(http_max_line);
+
+    if (line == nil or line == "") {
+        return nil;
+    }
+    var parts = line.split(" ");
+    if (len(parts) < 3) {
+        return nil;
+    }
+
+    var target = parts[1];
+    var question = target.index_of("?");
+    var path = target;
+    var query = "";
+
+    if (question >= 0) {
+        path = target.slice(0, question);
+        query = target.slice(question + 1);
+    }
+
+    var headers = {};
+    var count = 0;
+
+    while (count < http_max_headers) {
+        var header = socket.recv_line(http_max_line);
+
+        if (header == nil) {
+            return nil;
+        }
+        if (header == "") {
+            break;
+        }
+        var colon = header.index_of(":");
+        if (colon > 0) {
+            headers[header.slice(0, colon).trim().lower()] = header.slice(colon + 1).trim();
+        }
+        count += 1;
+    }
+
+    var body = "";
+    if (has(headers, "content-length")) {
+        var length = int(headers["content-length"]);
+        if (length > 0) {
+            body = http_read_body(socket, length);
+        }
+    }
+
+    return {
+        "method": parts[0],
+        "target": target,
+        "path": path,
+        "query": query,
+        "version": parts[2],
+        "headers": headers,
+        "body": body,
+    };
+}
+
+// Case-insensitive header presence check (handler keys keep their case).
+fn http_has_header(headers, wanted) {
+    for (var name in keys(headers)) {
+        if (name.lower() == wanted) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Serializes a response map onto the socket (HTTP/1.1, Connection: close).
+fn http_write_response(socket, response) {
+    var status = 200;
+    var body = "";
+    var headers = {};
+
+    if (has(response, "status")) {
+        status = response["status"];
+    }
+    if (has(response, "body")) {
+        body = response["body"];
+    }
+    if (has(response, "headers")) {
+        headers = response["headers"];
+    }
+    if (!http_has_header(headers, "content-type")) {
+        headers["content-type"] = "text/plain; charset=utf-8";
+    }
+
+    var head = "HTTP/1.1 " + str(status) + " " + http_reason(status) + "\r\n";
+    head += "Content-Length: " + str(len(body)) + "\r\n";
+    for (var name in keys(headers)) {
+        if (name.lower() == "content-length") {
+            continue;
+        }
+        head += name + ": " + headers[name] + "\r\n";
+    }
+    head += "Connection: close\r\n\r\n";
+    socket.send(head + body);
+}
+
+// Serves connections. `max_requests` bounds the loop (nil serves forever).
+// Each accepted socket is read, answered by `handler` and closed; a parsing or
+// handler failure becomes a 500.
+fn http_serve(server, handler, max_requests = nil) {
+    var served = 0;
+
+    while (max_requests == nil or served < max_requests) {
+        var socket = server.accept(5000);
+
+        if (socket == nil) {
+            if (max_requests == nil) {
+                continue;
+            }
+            break;
+        }
+        try {
+            var request = http_parse_request(socket);
+
+            if (request != nil) {
+                http_write_response(socket, handler(request));
+            }
+        } catch {
+            try {
+                http_write_response(socket, {"status": 500, "body": "server error\n"});
+            } catch {
+            }
+        }
+        socket.close();
+        served += 1;
+    }
+    return served;
+}
