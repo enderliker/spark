@@ -9,936 +9,351 @@ Legend: **scope** S (1-2 files), M (3-5), L (5-8). Anything XL is split further.
 
 ---
 
-## Phase 1 - Collections & string library (area 2)
+## Phases 15-20: Networking
 
-### T1 - Array search natives (`contains`, `index_of`)
-**Description:** Add `contains(array, value)` and `index_of(array, value)` (returns -1
-when absent) using the existing `values_equal`.
+The completed phases 1-14 and tasks T1-T81 were removed to keep this file short; their
+record is in git history, `CHANGELOG.md` and `docs/intent/spark-completion.md`. The
+plan for this stream is in `tasks/plan.md` (overview, decisions A9-A15, risk table and
+open questions); nothing here is implemented yet.
+
+## Phase 15 - Sockets (blocking core, no new dependencies)
+
+### T82 - `ObjSocket`/`ObjServer`: resource objects and the `net` module skeleton
+**Description:** Add `OBJ_SOCKET` and `OBJ_SERVER` to the object model following
+`ObjFile`: they own a file descriptor and an `is_closed` flag, are closed by
+`close()`, by the collector's finalizer and on VM shutdown, and report `"socket"` /
+`"server"` from `type()`. New `src/net.c` / `src/net.h` hold the natives, registered
+from `vm_init`. No I/O yet.
 **Acceptance criteria:**
-- [x] `contains` returns a bool; `index_of` returns the first index or -1.
-- [x] Works for mixed types and object identity/string content per `values_equal`.
-- [x] Wrong first argument raises a normal runtime error.
+- [ ] `type(sock)` is `"socket"` / `"server"` and using a closed handle raises a clear runtime error.
+- [ ] Descriptors do not leak: the finalizer closes an unreferenced socket and `vm_free` closes the rest.
+- [ ] The build picks the new module up unchanged and stays warning-free.
 **Verification:**
-- [x] `make` clean; new fixture in `tests/cases`; `python3 tests/run_tests.py` passes.
-- [x] `docs/language.md` native table updated.
+- [ ] Positive fixture (`tests/cases/`) plus error fixtures for the closed handle; fd-count assertion in the fixture.
+- [ ] Suite + ASan/UBSan.
 **Dependencies:** None.
-**Files:** `src/vm.c`, `tests/cases/collections.spark`, `tests/cases/collections.out`, `docs/language.md`.
-**Scope:** S.
-
-### T2 - Array mutation natives (`insert`, `remove`, `reverse`, `fill`)
-**Description:** `insert(array, index, value)`, `remove(array, index)` (returns the
-removed value), `reverse(array)` (in place, returns the array), `fill(array, value)`.
-**Acceptance criteria:**
-- [x] Bounds/validity errors for invalid indexes.
-- [x] `reverse` and `fill` mutate in place and return the array.
-**Verification:**
-- [x] Fixtures + `python3 tests/run_tests.py`; docs updated.
-**Dependencies:** T1 (same fixture file).
-**Files:** `src/vm.c`, `tests/cases/collections.*`, `docs/language.md`.
-**Scope:** S.
-
-### T3 - Array `slice`
-**Description:** `slice(array, start, end?)` returns a new array with `[start, end)`.
-**Acceptance criteria:**
-- [x] Negative or out-of-range handling documented and tested; default `end` = length.
-- [x] Returns a new array (original untouched).
-**Verification:**
-- [x] Fixtures + suite; docs updated.
-**Dependencies:** T1.
-**Files:** `src/vm.c`, `tests/cases/collections.*`, `docs/language.md`.
-**Scope:** S.
-
-### T4 - String search natives
-**Description:** `contains`, `index_of` (by character), `starts_with`, `ends_with` for
-strings.
-**Acceptance criteria:**
-- [x] Positions are in UTF-8 characters, not bytes.
-- [x] Works with empty needles/substrings per documented rules.
-**Verification:**
-- [x] Fixtures (including `ñandú` cases); suite; docs.
-**Dependencies:** None.
-**Files:** `src/vm.c`, `tests/cases/strings.spark`, `tests/cases/strings.out`, `docs/language.md`.
-**Scope:** S.
-
-### T5 - String transform natives
-**Description:** `split`, `join`, `trim`, `upper`, `lower`, `repeat`, `replace`.
-**Acceptance criteria:**
-- [x] `split(text, sep)` -> array; `join(array, sep)` -> text (elements stringified).
-- [x] `upper`/`lower` are ASCII-only (documented) to stay dependency-free.
-- [x] `replace(text, old, new)` replaces all occurrences.
-**Verification:**
-- [x] Fixtures; suite; docs; sanitizers (allocates objects).
-**Dependencies:** T4 (same fixture file).
-**Files:** `src/vm.c`, `tests/cases/strings.*`, `docs/language.md`.
+**Files:** `src/value.h`, `src/object.h`, `src/object.c`, `src/vm.c`, `src/net.c`, `src/net.h`, `tests/`.
 **Scope:** M.
 
-### T6 - Map helpers (`clear`, `merge`, `get` with default)
-**Description:** `clear(map)`, `merge(dest, src)` (src wins, returns dest),
-`get(map, key, default)`.
+### T83 - TCP client (`tcp_connect`, `send`, `recv`, `recv_line`)
+**Description:** `tcp_connect(host, port, timeout_ms?)` returns a connected socket;
+`sock.send(data)` writes everything and returns the byte count; `sock.recv(max)`
+returns up to `max` bytes or `nil` at EOF; `sock.recv_line(max?)` reads up to a
+newline (bounded); `sock.close()`, `sock.peer()`, `sock.local()`.
 **Acceptance criteria:**
-- [x] `get` returns the default only when the key is absent (not when present with `nil`).
+- [ ] Round-trip against a local echo server: several sends, a `recv_line`, then EOF as `nil`.
+- [ ] `timeout_ms` bounds connect and read; exceeding it raises a timeout error instead of hanging.
+- [ ] Short writes are completed; sending after the peer closed raises a network error.
 **Verification:**
-- [x] Fixtures; suite; docs; sanitizers.
-**Dependencies:** None.
-**Files:** `src/vm.c`, `tests/cases/collections.*`, `docs/language.md`.
-**Scope:** S.
-
-### T7 - Native callback support (re-entrant call) - design + implementation
-**Description:** A `vm_call_value_for_native(Value callee, int argc)` helper that runs a
-Spark function to completion from inside a native without corrupting the current
-frame, plus a spike documenting the approach (nested loop vs frame push).
-**Acceptance criteria:**
-- [x] A test native (e.g. an internal one used by T8) can call a closure and get its
-      result; errors inside the callback propagate correctly.
-- [x] Stack/frames are restored exactly; sanitizers clean.
-**Verification:**
-- [x] `make`; suite; ASan/UBSan build; a focused fixture calling a closure from a native.
-- [x] Short design note in `docs/architecture.md`.
-**Dependencies:** None (blocks T8, T9).
-**Files:** `src/vm.c`, `docs/architecture.md`, `tests/cases/*`.
-**Scope:** M (risky - do the spike first).
-
-### T8 - Higher-order natives (`map`, `filter`, `reduce`, `each`)
-**Description:** `map(array, fn)`, `filter(array, fn)`, `reduce(array, fn, initial?)`,
-`each(array, fn)` using T7.
-**Acceptance criteria:**
-- [x] `reduce` semantics documented (with and without initial value).
-- [x] Callback arity validated with a clear error.
-**Verification:**
-- [x] Fixtures; suite; sanitizers.
-**Dependencies:** T7.
-**Files:** `src/vm.c`, `tests/cases/higher_order.*`, `docs/language.md`.
+- [ ] Fixtures driven by a local server; suite; ASan/UBSan.
+**Dependencies:** T82.
+**Files:** `src/net.c`, `src/net.h`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
 
-### T9 - `sort` / `sort_by`
-**Description:** `sort(array)` (default comparison for numbers/strings) and
-`sort_by(array, fn)` using a callback comparator.
+### T84 - TCP server (`tcp_listen`, `accept`)
+**Description:** `tcp_listen(host, port, backlog?)` returns a server object;
+`srv.accept(timeout_ms?)` returns a connected socket, `nil` on timeout and an error
+when the server is closed; `srv.port()` reports the bound port (0 binds an ephemeral
+one, which the fixtures rely on); `srv.close()`.
 **Acceptance criteria:**
-- [x] Stable-ish behavior documented; returns the sorted array (in place).
-- [x] Comparator contract documented (boolean "a before b" or -1/0/1; pick one).
+- [ ] A Spark server accepts a Spark client and echoes it back; binding port 0 then reading `srv.port()` works.
+- [ ] Closing the server releases the port and a second listen on the same port succeeds.
+- [ ] `accept` wakes on a pending connection and returns `nil` on timeout.
 **Verification:**
-- [x] Fixtures; suite; sanitizers; benchmark unaffected.
-**Dependencies:** T7.
-**Files:** `src/vm.c`, `tests/cases/collections.*`, `docs/language.md`.
+- [ ] Fixture with server and client in the same program; suite; ASan/UBSan.
+**Dependencies:** T82.
+**Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** M.
 
-### T10 - Docs + tests for the new natives
-**Description:** Consolidate the native reference and add missing fixtures/edge cases.
+### T85 - Resolution, IPv4/IPv6, error categories and limits
+**Description:** Resolve names with `getaddrinfo` and connect to IPv4 or IPv6;
+add `ERROR_NETWORK` and `ERROR_TIMEOUT` to `src/error.h` with distinct messages for
+unknown host, refused connection, invalid port and descriptor exhaustion; add
+`net_hostname()`.
 **Acceptance criteria:**
-- [x] Native table in README + language.md is complete and consistent with the code.
-- [x] Each new native has at least one positive and one error fixture.
+- [ ] Refused, unknown host, invalid port and timeout produce distinct categories and messages (error fixtures).
+- [ ] `localhost` works over both families and an IPv6 literal (`[::1]`) connects.
+- [ ] Running out of descriptors raises a clear error rather than crashing.
 **Verification:**
-- [x] `python3 tests/run_tests.py`; no untested native (grep cross-check).
-**Dependencies:** T1-T9.
-**Files:** `README.md`, `docs/language.md`, `tests/`.
+- [ ] `tests/errors` fixtures for each failure; suite.
+**Dependencies:** T82-T84.
+**Files:** `src/error.h`, `src/error.c`, `src/net.c`, `src/net.h`, `tests/errors`, `docs/language.md`.
+**Scope:** M.
+
+### T86 - UDP (`udp_bind`, `send_to`, `recv_from`)
+**Description:** `udp_bind(host, port, timeout_ms?)` returns a datagram socket;
+`sock.send_to(data, host, port)`; `sock.recv_from(max)` returns
+`{data, host, port}`; `sock.close()`.
+**Acceptance criteria:**
+- [ ] Two sockets exchange a datagram and `recv_from` reports the sender address and port.
+- [ ] `timeout_ms` bounds `recv_from` and the payload cap is enforced.
+**Verification:**
+- [ ] Fixture; suite; ASan/UBSan.
+**Dependencies:** T82.
+**Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
-## Checkpoint: Phase 1
-- [x] All tests pass, build clean, docs updated
-- [x] Review with the user before Phase 2
+## Checkpoint: Phase 15
+- [ ] Suite green (optimized and ASan/UBSan), `-Werror` build, benchmark minimum unchanged
+- [ ] A Spark client talks to a Spark server on localhost
+- [ ] Review with the user before Phase 16
 
 ---
 
-## Phase 2 - Language syntax (area 1)
+## Phase 16 - Asynchronous I/O on the coroutine scheduler
 
-### T11 - `const` declarations
-**Description:** `const name = value;` - compile-time error on reassignment or missing
-initializer; `const` is not required to be a compile-time constant, just immutable.
+### T87 - Spike: a socket wait that yields the coroutine
+**Description:** Tracer bullet for the highest-risk change. Add readiness wait kinds
+to the coroutine state (`CORO_WAIT_READ`/`CORO_WAIT_WRITE`), make `sock.wait(read?,
+write?, timeout_ms?)` snapshot the coroutine and return `INTERPRET_BLOCKED`, and make
+`vm_scheduler` poll the registered descriptors (starting with `poll(2)`) before
+picking the next coroutine, waking on readiness or deadline. Record the spike's
+outcome (poll vs epoll, wake path, timeout handling) in `docs/architecture.md`.
 **Acceptance criteria:**
-- [x] Reassigning a const (direct or compound) is a compile error with a clear message.
-- [x] `const` works for locals and globals.
+- [ ] One coroutine waiting on a socket lets another run and wakes as soon as the descriptor is ready.
+- [ ] A deadline wakes the waiter with a timeout error; an idle wait does not spin (CPU near zero).
+- [ ] The spike notes and the chosen data structures are recorded in `docs/architecture.md`.
 **Verification:**
-- [x] Valid fixture + error fixture; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
+- [ ] Fixture with two coroutines sharing a socket pair; benchmark gate; ASan/UBSan.
+**Dependencies:** T83.
+**Files:** `src/vm.c`, `src/object.h`, `src/net.c`, `docs/architecture.md`, `tests/`.
 **Scope:** M.
 
-### T12 - Ternary operator `?:`
-**Description:** Right-associative `cond ? a : b`, lazily evaluating only one branch.
+### T88 - `net_select` and timer-aware polling
+**Description:** Generalise the poll loop: `net_select(readables, timeout_ms)` (an
+array of sockets) plus a timeout queue so several deadlines coexist and the scheduler
+sleeps exactly until the next one.
 **Acceptance criteria:**
-- [x] Only the taken branch is evaluated (observable via side effects).
-- [x] Precedence documented between `or`/`and` and assignment.
+- [ ] One coroutine services several sockets at once and reports which are ready.
+- [ ] Several concurrent deadlines fire within a bounded slack (no fixed sleep granularity).
 **Verification:**
-- [x] Fixture with side effects; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
+- [ ] Fixture with three sockets and two distinct timeouts; suite; ASan/UBSan.
+**Dependencies:** T87.
+**Files:** `src/net.c`, `src/vm.c`, `tests/`, `docs/language.md`, `docs/architecture.md`.
 **Scope:** M.
 
-### T13 - Null-coalescing `??`
-**Description:** `a ?? b` returns `a` unless it is `nil`, in which case `b`.
+### T89 - Coroutine-aware `accept`/`recv`/`send`
+**Description:** Route the blocking socket operations through the wait machinery so a
+would-block operation suspends only its coroutine. Extend the existing `run_depth > 1`
+guard (currently used by `yield` and channel waits) to these waits with the documented
+message.
 **Acceptance criteria:**
-- [x] Right operand is only evaluated when the left is `nil`.
+- [ ] A server coroutine handles two clients concurrently in a single process.
+- [ ] Calling a would-block operation inside a native callback or an imported module raises the documented error instead of stalling.
+- [ ] Timeouts and EOF keep the behavior shipped in Phase 15.
 **Verification:**
-- [x] Fixture; suite; docs.
-**Dependencies:** T12 (shares lexer/parser edits).
-**Files:** same as T12.
+- [ ] Fixture with a server and two clients; suite; sanitizers.
+**Dependencies:** T87, T88.
+**Files:** `src/net.c`, `src/vm.c`, `tests/`, `docs/language.md`.
+**Scope:** M.
+
+### T90 - Load fixture and no-busy-wait proof
+**Description:** Fixture that runs 32 concurrent echo clients against one server
+coroutine, asserting every connection completes, the descriptor count returns to the
+baseline and the run does not burn CPU while idle. Add an echo benchmark.
+**Acceptance criteria:**
+- [ ] 32 concurrent connections complete with a single server coroutine and no descriptor leak.
+- [ ] The benchmark runs `fib(27)` and the echo throughput; the `fib` minimum stays below 5 ms.
+**Verification:**
+- [ ] Fixture; `python3 benchmarks/run.py`; ASan/UBSan.
+**Dependencies:** T89.
+**Files:** `tests/`, `benchmarks/`, `benchmarks/run_all.py`.
 **Scope:** S.
 
-### T14 - `do { } while`
-**Description:** `do { body } while (cond);` runs the body at least once.
-**Acceptance criteria:**
-- [x] `break`/`continue` work as in `while`.
-**Verification:**
-- [x] Fixture; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
-**Scope:** S.
-
-### T15 - Labelled loops + labelled `break`/`continue`
-**Description:** `outer: for (...) { ... break outer; }`.
-**Acceptance criteria:**
-- [x] Breaking/continuing a non-existent label is a compile error.
-- [x] Stack cleanup is correct when breaking out of nested scopes.
-**Verification:**
-- [x] Fixture with nested loops; suite; sanitizers; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T16 - `switch`/`case`/`default`
-**Description:** `switch (expr) { case v: ...; default: ...; }` with fall-through or
-auto-break (decide; propose auto-break for safety) .
-**Acceptance criteria:**
-- [x] Semantics documented precisely (fall-through vs auto-break).
-- [x] Works with numbers and strings (and maps on equality).
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T17 - String interpolation
-**Description:** `"hello ${name}, x=${1 + 2}"` compiles to concatenation.
-**Acceptance criteria:**
-- [x] `${...}` accepts arbitrary expressions; `$$` escapes a literal `$`.
-- [x] Existing escapes still work.
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c`, `src/parser.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T18 - Numeric literal sugar
-**Description:** Hex (`0x`), binary (`0b`) and `_` digit separators.
-**Acceptance criteria:**
-- [x] Values match the decimal equivalent; invalid forms are syntax errors.
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** None.
-**Files:** `src/lexer.c`, `tests/`, `docs/language.md`.
-**Scope:** S.
-
-### Phase 2 review (T11-T18)
-**Description:** Post-phase review using the code-review-and-quality,
-code-simplification and performance-optimization skills.
-**Fixes:**
-- [x] `DEFINE_GLOBAL_CONST` marks a global constant only when its declaration
-  executes, so a failed initializer no longer reserves the name in the REPL.
-- [x] Numeric literals reject a separator at the end of the fractional part and
-  accept separators between exponent digits; base literals report misplaced
-  separators as such.
-- [x] `const` followed by a function declaration of the same name is a compile
-  error, matching the behavior of `var`.
-- [x] Docs corrected: `break` inside `switch`, `switch` is supported, and the
-  benchmark/test counts match the current state.
-**Verification:**
-- [x] `-Werror` build; full suite; ASan/UBSan suite; benchmark.
-
-## Checkpoint: Phase 2
-- [x] All tests pass, build clean, docs updated
-- [x] Review with the user before Phase 3
+## Checkpoint: Phase 16
+- [ ] N concurrent connections served by one process with no busy-wait
+- [ ] `fib(27)` minimum still below 5 ms; sanitizers clean
+- [ ] If the spike fails, record the fallback (blocking with timeouts) in the plan and stop here
 
 ---
 
-## Phase 3 - 64-bit integers (area 2 core)
+## Phase 17 - HTTP/1.1 client and server
 
-### T19 - `VAL_INT`: value helpers, formatting, equality
-**Description:** Add `VAL_INT` + `int64_t`, `INT_VAL`, `AS_INT`, `is_int`; format with
-`%lld`; equality compares exactly and across int/number when values are equal.
+### T91 - URL parsing and encoding
+**Description:** `url_parse(url)` returns a map (`scheme`, `host`, `port`, `path`,
+`query`, `fragment`), `url_encode(text)` / `url_decode(text)` handle percent-encoding
+and `+`, and `parse_query(query)` returns a map of arrays.
 **Acceptance criteria:**
-- [x] `values_equal` treats `1` and `1.0` as equal; hashing is consistent with equality.
-- [x] `value_print`/`str` produce integers without a decimal point.
+- [ ] Edge cases covered: percent-encoding, `+`, IPv6 literals (`[::1]`), default ports for `http`/`https`, missing path, empty query.
+- [ ] Malformed input raises a value error instead of producing a broken map.
 **Verification:**
-- [x] Unit-ish fixtures; suite; sanitizers.
-**Dependencies:** None (start of Phase 3).
-**Files:** `src/value.h`, `src/object.c`, `tests/`.
-**Scope:** M.
-
-### T20 - Integer literals in lexer/parser
-**Description:** Integer literals without `.`/exponent become `VAL_INT`; keep `double`
-for `3.0`, `1e3`.
-**Acceptance criteria:**
-- [x] Lexer no longer routes plain integers through `double`.
-- [x] Existing numeric output unchanged (`str(42)` == `"42"`).
-**Verification:**
-- [x] Suite (existing tests must still pass); docs.
-**Dependencies:** T19.
-**Files:** `src/lexer.c`, `src/ast.h`, `src/parser.c`, `src/compiler.c`, `tests/`.
-**Scope:** M.
-
-### T21 - Arithmetic & comparison with int/float promotion
-**Description:** `+ - *` stay int when both are int and no overflow, else promote to
-`double`; `< <= > >=` compare across types by promoting.
-**Acceptance criteria:**
-- [x] Overflow promotes deterministically to `double` (documented).
-- [x] Mixed comparisons are correct (e.g. `1 < 1.5`).
-**Verification:**
-- [x] Fixtures incl. overflow cases; suite; sanitizers; `python3 benchmarks/run.py` <= 5 ms.
-**Dependencies:** T19, T20.
-**Files:** `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M (risky).
-
-### T22 - Integer division/modulo (`div`, `%`) per A3
-**Description:** Add `div` (truncating integer division) and define `%` for ints. `/`
-stays floating-point division (decision A3). `//` could not be the operator because it
-is the line-comment token, so the spelling is `div`.
-**Acceptance criteria:**
-- [x] Semantics for negatives documented and tested (`-7 div 2`, `-7 % 2`).
-- [x] Division by zero is still a runtime error.
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** T21.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T23 - Integer map hashing + integer array indexes
-**Description:** Hash `VAL_INT` consistently with `VAL_NUMBER` so `m[1]` and `m[1.0]`
-hit the same entry; array indexes accept int and integral floats.
-**Acceptance criteria:**
-- [x] `map[1]` and `map[1.0]` resolve to the same key.
-- [x] Index validation messages unchanged/updated and tested.
-**Verification:**
-- [x] Fixtures; suite; sanitizers.
-**Dependencies:** T19.
-**Files:** `src/object.c`, `src/vm.c`, `tests/`.
-**Scope:** M.
-
-### T24 - Integer-aware natives
-**Description:** `int(x)`, `float(x)`, `is_int(x)`; make `abs`/`min`/`max`/`floor`/`ceil`/
-`round` int-preserving where sensible.
-**Acceptance criteria:**
-- [x] Rounding/abs return ints for int inputs (documented).
-- [x] `int("12")`/`int(3.9)` behavior documented.
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** T19.
-**Files:** `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T25 - Bitwise operators
-**Description:** `& | ^ ~ << >>` (and compound `&= |= ^= <<= >>=`); integer-only with a
-runtime error otherwise.
-**Acceptance criteria:**
-- [x] Shift semantics for negative/oversized shifts documented; no UB.
-- [x] Non-integer operands produce a clear runtime error.
-**Verification:**
-- [x] Fixtures; suite; sanitizers (UB is the main risk); docs.
-**Dependencies:** T19, T21.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/chunk.h`, `src/chunk.c`, `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** L (split into lexer/parser then VM if needed).
-
-### T26 - Docs + tests for integers
-**Description:** Complete the integer documentation and edge-case fixtures.
-**Acceptance criteria:**
-- [x] language.md documents promotion, overflow, division and bitwise rules.
-- [x] architecture.md notes `VAL_INT` in the value model.
-**Verification:**
-- [x] Suite; benchmark gate; sanitizers.
-**Dependencies:** T19-T25.
-**Files:** `README.md`, `docs/language.md`, `docs/architecture.md`, `tests/`.
+- [ ] Positive and error fixtures; suite.
+**Dependencies:** None (pure string work).
+**Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
-## Checkpoint: Phase 3 (critical)
-- [x] All tests pass, sanitizers clean
-- [x] Benchmark minimum still <= 5 ms
-- [x] Review with the user before Phase 4
+### T92 - HTTP/1.1 client
+**Description:** `http_get/post/put/delete(url, body?, headers?, timeout_ms?,
+follow_redirects?, max_body?)` (and a `http_request(map)` form) return `{status,
+headers, body}`. Handle `Content-Length` and chunked bodies, `Connection: close`,
+redirect limits, header-size and body-size caps, and timeouts.
+**Acceptance criteria:**
+- [ ] Works against a local HTTP server for a plain body, a chunked body and a redirect chain.
+- [ ] Caps enforced: too many redirects, oversized header and oversized body fail with explicit errors.
+- [ ] Malformed status line and premature EOF raise network errors, not hangs.
+**Verification:**
+- [ ] Fixtures against a local server that scripts the responses; suite; ASan/UBSan.
+**Dependencies:** T83, T85.
+**Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
+**Scope:** M.
+
+### T93 - HTTP server as a Spark library
+**Description:** Build the server on the socket layer as a Spark library plus an
+example, keeping the native surface small; request parsing (method, target, headers,
+body) and a handler callback.
+**Acceptance criteria:**
+- [ ] The example answers a real request (driven by Spark's own client) with the right status, headers and body.
+- [ ] Parsing limits and errors are documented and covered.
+**Verification:**
+- [ ] Fixture: Spark server + Spark client; suite.
+**Dependencies:** T84, T92.
+**Files:** `examples/`, `tests/`, `docs/language.md`.
+**Scope:** S.
+
+## Checkpoint: Phase 17
+- [ ] A Spark program fetches a local endpoint and a Spark server answers a real client
+- [ ] Body, header, redirect and timeout limits enforced and covered by error fixtures
 
 ---
 
-## Phase 4 - Standard library / I/O (area 4)
+## Phase 18 - TLS (decision-gated on Q11)
 
-### T27 - `exit(code)`, `argv`, `env(name?)`
-**Description:** `exit(code)` stops with that status; `argv` is a global array of the
-script arguments; `env` reads environment variables.
+### T94 - TLS transport with certificate verification
+**Description:** `tls_connect(host, port, timeout_ms?, ca_file?)` plus `read`, `write`
+and `close`, doing the handshake over the socket layer with SNI and verifying the
+chain against the system store (or `ca_file`) and the hostname. Only reachable if Q11
+approves the dependency (or the tunnel alternative is chosen instead).
 **Acceptance criteria:**
-- [x] `exit` flushes the REPL/stdout and returns the requested code.
-- [x] `argv` includes the script name and its arguments; empty in the REPL.
+- [ ] Connects to a local TLS server with the fixture CA and exchanges data both ways.
+- [ ] A self-signed certificate, a wrong hostname and an untrusted chain are all rejected with a clear error.
+- [ ] There is no silent way to skip verification; the trust model is documented.
 **Verification:**
-- [x] CLI fixture; suite; docs.
-**Dependencies:** None.
-**Files:** `src/main.c`, `src/vm.c`, `tests/`, `docs/language.md`.
+- [ ] Fixtures against a local TLS server; suite; ASan/UBSan; security checklist review.
+**Dependencies:** T83, Q11, Q14.
+**Files:** `Makefile`, `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`, `AGENTS.md`.
 **Scope:** M.
 
-### T28 - stdin (`input(prompt?)`)
-**Description:** `input(prompt?)` reads one line from stdin (without the newline).
+### T95 - HTTPS through the HTTP client
+**Description:** Let the HTTP client use the TLS transport for `https://` URLs,
+including the verification failures and the CA injection used by tests.
 **Acceptance criteria:**
-- [x] Returns `nil` on EOF.
-- [x] Prints the prompt when provided and flushes.
+- [ ] `https://` against the local TLS server returns the scripted response.
+- [ ] Verification failures surface the same errors as T94 and are covered by fixtures.
 **Verification:**
-- [x] Fixture feeding stdin via the test harness; suite; docs.
-**Dependencies:** T27 (shares main/vm wiring).
-**Files:** `src/vm.c`, `tests/`, `docs/language.md`.
+- [ ] Fixtures; suite; sanitizers.
+**Dependencies:** T92, T94.
+**Files:** `src/net.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
-### T29 - One-shot file natives
-**Description:** `read_file(path)`, `write_file(path, data)`, `append_file(path, data)`,
-`file_exists(path)`; errors as runtime errors.
-**Acceptance criteria:**
-- [x] Missing/unreadable files produce a runtime error with the path.
-- [x] `write_file` truncates, `append_file` appends.
-**Verification:**
-- [x] Fixture using `/tmp` files; suite; docs.
-**Dependencies:** None.
-**Files:** `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** S.
-
-### T30 - File object
-**Description:** `open(path, mode)` returns a file handle with `read_line`, `read`,
-`write`, `close`, `eof`.
-**Acceptance criteria:**
-- [x] A new `ObjFile` type is GC-managed and closed on finalization.
-- [x] Using a closed handle is a clear runtime error.
-**Verification:**
-- [x] Fixture; suite; sanitizers (fd leak check); docs.
-**Dependencies:** T29.
-**Files:** `src/value.h`, `src/object.c/h`, `src/vm.c`, `tests/`, `docs/`.
-**Scope:** M (risky: new object type + GC).
-
-### T31 - Random (`rand`, `randint`, `srand`)
-**Description:** Dependency-free PRNG (e.g. xorshift/PCG) with explicit seeding.
-**Acceptance criteria:**
-- [x] Deterministic given a seed (documented range for `randint`).
-- [x] Reproducible fixtures (fixed seed).
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** T19 (integers).
-**Files:** `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** S.
-
-### T32 - JSON encode/decode
-**Description:** `to_json(value)` and `from_json(text)` with a documented mapping
-(nil/bool/int/number/string/array/map).
-**Acceptance criteria:**
-- [x] Round-trip of supported values; unsupported values raise an error.
-- [x] Malformed JSON raises a runtime error with position info.
-**Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** T19 (ints), T5 (strings).
-**Files:** `src/object.c`, `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T33 - Regex (stretch)
-**Description:** A small backtracking regex engine (`match`, `find`, `replace`) or
-document why it is deferred.
-**Acceptance criteria:**
-- [x] Supported syntax subset documented.
-- [x] ReDoS risk acknowledged (complexity limits).
-**Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** T5.
-**Files:** `src/vm.c` (or a new `src/regex.c/.h`), `tests/`, `docs/`.
-**Scope:** L (stretch - may be deferred).
-
-## Checkpoint: Phase 4
-- [x] All tests pass; an end-to-end script (read file, parse, write output) works
-- [x] Review with the user before Phase 5
+## Checkpoint: Phase 18
+- [ ] Self-signed and mismatched-host certificates are rejected and covered by tests
+- [ ] The dependency decision is recorded in `AGENTS.md` and `CHANGELOG.md`
 
 ---
 
-## Phase 5 - Functions & semantics (areas 3, 6)
+## Phase 19 - WebSocket (enables the Discord gateway)
 
-### T34 - Tail-call optimization
-**Description:** Reuse the frame for `return f(args);` when the call is in tail position.
+### T96 - WebSocket client
+**Description:** RFC 6455 client over `ws://` (and `wss://` once T95 lands):
+upgrade handshake, client masking, text/binary/ping/pong/close opcodes,
+fragmentation, a maximum frame size and protocol-error handling. API:
+`ws_connect(url, timeout_ms?)`, `ws.send_text/binary(data)`, `ws.receive()` →
+`{opcode, data}` (or `nil` when closed), `ws.ping(data?)`, `ws.close(code?, reason?)`.
 **Acceptance criteria:**
-- [x] Deep tail recursion (e.g. 1e6) does not exhaust frames.
-- [x] Non-tail recursion still errors at the frame limit.
+- [ ] Handshake, text and binary round-trips, ping/pong and the close handshake work against a local server.
+- [ ] Fragmented messages are reassembled and oversized frames are rejected.
+- [ ] A protocol violation closes with the right code and error.
 **Verification:**
-- [x] Fixture; suite; sanitizers; docs note.
-**Dependencies:** None.
-**Files:** `src/compiler.c`, `src/vm.c`, `tests/`, `docs/architecture.md`.
+- [ ] Fixtures against a local WebSocket server; suite; ASan/UBSan.
+**Dependencies:** T83, T85 (and T95 for `wss://`).
+**Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** M.
 
-### T35 - Default parameters
-**Description:** `fn f(a, b = 10)` - missing trailing args use the default expression
-(evaluated per call).
+### T97 - WebSocket server (optional)
+**Description:** Accept the upgrade on an HTTP server and speak the same framing, so
+the client fixtures and examples can run without third-party servers.
 **Acceptance criteria:**
-- [x] Calling with fewer args works; calling with too many still errors.
-- [x] Defaults can reference earlier parameters.
+- [ ] A Spark server echoes a Spark client, including ping/pong and close.
 **Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** None.
-**Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T36 - Varargs + spread (`...`)
-**Description:** `fn f(...rest)` collects extra args into an array; `f(...array)` spreads.
-**Acceptance criteria:**
-- [x] Varargs and spread can coexist with fixed params.
-- [x] Arity checks account for varargs.
-**Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** T35 (shares parser/compiler edits).
-**Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
-**Scope:** M.
-
-### T37 - Named arguments (optional)
-**Description:** `f(a: 1, b: 2)` with compile-time checks against parameter names.
-**Acceptance criteria:**
-- [x] Deferred per scope note in favor of map option arguments (`f({"a": 1})`), preserving runtime performance and simple stack calling convention.
-**Verification:**
-- [x] Decision documented.
-**Dependencies:** T35.
-**Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `tests/`, `docs/language.md`.
-**Scope:** M (optional - may be deferred).
-
-### T38 - REPL `_` last value
-**Description:** Expose the previous expression result as `_` in the REPL.
-**Acceptance criteria:**
-- [x] `_` is set after each expression statement; documented.
-**Verification:**
-- [x] REPL session in `tests/run_tests.py`; docs.
-**Dependencies:** None.
-**Files:** `src/main.c`, `src/vm.c`, `tests/run_tests.py`, `docs/language.md`.
+- [ ] Fixture; suite.
+**Dependencies:** T93, T96.
+**Files:** `src/net.c`, `examples/`, `tests/`.
 **Scope:** S.
 
-### T39 - Numeric/semantics polish
-**Description:** `is_nan(x)`, documented NaN equality, and any equality edge cases
-found while adding integers.
+### T98 - End-to-end against a local mock gateway
+**Description:** A local mock gateway (test fixture) that speaks the Discord-shaped
+handshake (HELLO/IDENTIFY/HEARTBEAT/READY/DISPATCH) plus `examples/discord_bot.spark`
+that connects, identifies, heartbeats and answers a message event. Never the real
+Discord API in tests.
 **Acceptance criteria:**
-- [x] NaN behavior documented and tested; `is_nan` available.
+- [ ] The fixture passes offline and fails if the heartbeat or the close handshake is wrong.
+- [ ] The example documents the token via `env` and needs no edits to run against the mock.
 **Verification:**
-- [x] Fixtures; suite; docs.
-**Dependencies:** T19.
-**Files:** `src/object.c`, `src/vm.c`, `tests/`, `docs/language.md`.
+- [ ] Fixture; suite; manual run of the example against the mock printed in the docs.
+**Dependencies:** T96.
+**Files:** `tests/`, `examples/`, `docs/language.md`.
 **Scope:** S.
 
-### Phase 5 review (T34-T39)
-**Description:** Post-phase review using code-review-and-quality, code-simplification,
-security-and-hardening and performance-optimization skills.
-**Fixes:**
-- [x] In `OP_CALL` and `OP_TAIL_CALL`, return `INTERPRET_RUNTIME_ERROR` immediately when
-  a native function raises a runtime error (`vm.had_error`) instead of falling through to
-  `cold`, which caused native errors to execute and print twice.
-- [x] Parameter default value scope hygiene: initialize parameter locals one by one as their
-  defaults are processed, preventing self-referencing defaults (`fn f(a = a)`) and
-  forward-referencing uninitialized defaults (`fn f(a = b, b = 1)`), matching local variable
-  initializer semantics.
-- [x] Stack overflow boundary hardening: use integer arithmetic (`count >= STACK_MAX - top`)
-  in `OP_CALL_SPREAD` and `OP_TAIL_CALL_SPREAD` to prevent pointer addition overflow.
-- [x] Trailing comma support in varargs: allow `fn f(...rest,)` matching standard parameter lists.
-- [x] Deduplicate argument compilation with spread via `compile_spread_arguments`.
-**Verification:**
-- [x] Full suite (128 tests); AddressSanitizer/UBSan clean; benchmarks ~5.1 ms.
-
-## Checkpoint: Phase 5
-- [x] All tests pass, build clean, docs updated
-- [x] Review with the user before Phase 6
+## Checkpoint: Phase 19
+- [ ] The mock-gateway fixture passes offline
+- [ ] The Discord example is documented step by step
 
 ---
 
-## Phase 6 - Modules, exceptions, objects
+## Phase 20 - Hardening, docs and ecosystem
 
-### T40 - `import` design + implementation
-**Description:** `import "path";` compiles and runs a module once per resolved path;
-propose a shared global namespace (A6).
+### T99 - Security hardening pass
+**Description:** Apply the security checklist to the whole surface: default timeouts
+on every operation, connection and descriptor caps, body/frame/header size limits,
+redirect limits, secret hygiene (tokens through `env`, never logged), the SSRF surface
+of outbound connections, and a plain statement that `exec` already grants network
+access so Spark is not a sandbox.
 **Acceptance criteria:**
-- [x] Relative paths resolve against the importing file.
-- [x] A module's top-level `var`/`fn` become usable by the importer (per Q3).
+- [ ] Every limit has a fixture that trips it, and every failure is a categorized error.
+- [ ] No secret can be echoed by a network error message or a traceback.
+- [ ] The trust model is documented for embedders.
 **Verification:**
-- [x] Multi-file fixture; suite; docs.
-**Dependencies:** Q3 answered.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/compiler.c`, `src/vm.c`, `src/main.c`, `tests/`, `docs/`.
-**Scope:** L (do the design note first).
-
-### T41 - Module cache + cyclic-import handling
-**Description:** Cache compiled modules by absolute path; detect/handle import cycles.
-**Acceptance criteria:**
-- [x] Importing the same module twice runs it once.
-- [x] Cycles either error clearly or are handled (documented).
-**Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** T40.
-**Files:** `src/vm.c`, `tests/`, `docs/architecture.md`.
+- [ ] Error fixtures; suite; sanitizers.
+**Dependencies:** T86-T98.
+**Files:** `src/net.c`, `docs/`, `tests/errors`.
 **Scope:** M.
 
-### T42 - `throw` + `try`/`catch`/`finally`
-**Description:** Exception handler stack in the VM; `OP_THROW` unwinds to the nearest
-handler; uncaught throw is a runtime error. Caught value per Q4. Runtime diagnostics
-already carry an `ErrorType` category (`src/error.h`) that a handler can dispatch on.
+### T100 - Documentation
+**Description:** A "Networking" section in the language reference (natives, objects,
+methods, examples, limits), an architecture section (descriptor/GC model, scheduler
+integration, poll loop), README features and native tables, and the limits section.
 **Acceptance criteria:**
-- [x] `finally` always runs; stack/upvalues are cleaned during unwinding.
-- [x] Errors inside `catch`/`finally` behave correctly.
+- [ ] Every native and method is documented with its signature and error behavior, and the examples run as written.
+- [ ] `AGENTS.md` records any dependency decision; `CHANGELOG.md` gets the new entries.
 **Verification:**
-- [x] Fixtures incl. nested try; suite; sanitizers; docs.
-**Dependencies:** Q4 answered.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/chunk.h`, `src/chunk.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/`.
-**Scope:** L (do the design note first).
-
-### T43 - Method-call sugar on maps + `self`
-**Description:** `recv.method(args)` looks up `"method"` in a map and calls it with the
-receiver bound to `self`.
-**Acceptance criteria:**
-- [x] Calling a method on a non-map/missing key errors clearly.
-- [x] `self` is available inside the method.
-**Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** None.
-**Files:** `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/language.md`.
+- [ ] Examples executed; native list cross-checked against the docs table; suite.
+**Dependencies:** T82-T99.
+**Files:** `docs/language.md`, `docs/architecture.md`, `README.md`, `CHANGELOG.md`, `AGENTS.md`.
 **Scope:** M.
 
-### T44 - Classes (optional/advanced)
-**Description:** Full `class`/`new`/fields/methods and (optionally) single inheritance.
+### T101 - Benchmarks for the network layer
+**Description:** Benchmarks for local HTTP round-trips and echo throughput, wired into
+`benchmarks/run_all.py`, plus the documented CI-safe testing strategy (local servers,
+ephemeral ports, no public network).
 **Acceptance criteria:**
-- [x] Per Q5; fields, methods, `self`, and construction documented.
+- [ ] Both benchmarks report min/median and run offline in CI within the existing budget.
 **Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** T43, Q5 answered.
-**Files:** `src/lexer.c/h`, `src/parser.c`, `src/ast.h`, `src/compiler.c`, `src/vm.c`, `src/object.c/h`, `tests/`, `docs/`.
-**Scope:** L (design note first; may be deferred).
-
-## Checkpoint: Phase 6
-- [x] All tests pass, sanitizers clean; a multi-file program works
-- [x] Review with the user before Phase 7
-
----
-
-## Phase 7 - VM performance & limits (area 5)
-
-### T45 - Raise limits (32-bit operands where needed)
-**Description:** Increase `FRAMES_MAX`, `MAX_LOCALS`, constant count and jump range;
-widen operands (e.g. 16/32-bit constants/locals/jumps) where required.
-**Acceptance criteria:**
-- [x] New caps documented and tested; disassembler updated for wider operands (`OP_GET_LOCAL_16`, `OP_SET_LOCAL_16`, `MAX_LOCALS 1024`, `FRAMES_MAX 4096`).
-- [x] No silent truncation.
-**Verification:**
-- [x] Fixtures at the new boundary (`tests/cases/limits_and_stack.*`); suite; benchmark <= 5.5 ms; docs.
-**Dependencies:** None.
-**Files:** `src/chunk.h`, `src/chunk.c`, `src/compiler.c`, `src/vm.c`, `tests/`, `docs/architecture.md`.
-**Scope:** M (risk: operand layout change).
-
-### T46 - Growable value stack
-**Description:** Replace the fixed `stack[STACK_MAX]` with a growable buffer (or raise
-it and detect overflow safely).
-**Acceptance criteria:**
-- [x] Deep but finite recursion beyond the old stack size works when frames allow (reallocates from 2048 up to 4M items with pointer rebasing).
-- [x] A controlled error instead of UB when memory is exhausted.
-**Verification:**
-- [x] Fixture; suite; sanitizers; docs.
-**Dependencies:** T45.
-**Files:** `src/vm.c`, `src/memory.c`, `tests/`, `docs/architecture.md`.
-**Scope:** M (risk: pointers into the stack must stay valid).
-
-### T47 - GC: performance, bounded pause & adaptive threshold
-**Description:** Reduce stop-the-world pauses and thrashing via adaptive threshold scaling and explicit cycle triggering.
-**Acceptance criteria:**
-- [x] Correctness preserved (no premature frees); sanitizer clean.
-- [x] Adaptive scaling: factor scales to 2.5x on high survival (>70%) to avoid thrashing and 1.5x on low survival (<30%) to bound memory; `gc()` native added.
-**Verification:**
-- [x] `tests/cases/memoria*`, `tests/cases/limits_and_stack.*`; suite; sanitizers; docs.
-**Dependencies:** None.
-**Files:** `src/vm.c`, `src/object.c`, `src/memory.c`, `tests/`, `docs/architecture.md`.
-**Scope:** L (risky).
-
-### T47b - Stable merge sort for `sort` / `sort_by`
-**Description:** Replace the O(n^2) insertion sorts added in T9 with a stable merge sort
-that reuses the same comparator contract (`sort_by`'s `fn(x, y)` returns whether `x`
-goes before `y`).
-**Acceptance criteria:**
-- [x] `sort`/`sort_by` remain stable and keep the documented comparator contract.
-- [x] Large arrays (e.g. 100k elements) sort in O(n log n); benchmark unaffected.
-- [x] Callback errors still propagate and the stack stays balanced.
-**Verification:**
-- [x] Fixtures with large arrays; suite; sanitizers; `python3 benchmarks/run.py` <= 5 ms.
-**Dependencies:** T9, T46 (growable stack, optional).
-**Files:** `src/vm.c`, `tests/cases/sorting.*`, `docs/language.md`.
+- [ ] `python3 benchmarks/run_all.py`; CI green.
+**Dependencies:** T92, T90.
+**Files:** `benchmarks/`, `docs/architecture.md`.
 **Scope:** S.
 
-### T48 - Compiler constant folding + dead-code elimination
-**Description:** Fold constant arithmetic/comparisons at compile time; drop code after
-`return`/`throw`/`break`/`continue` and omit false branches of constant conditions.
+### T102 - Example programs
+**Description:** `examples/http_client.spark`, `examples/echo_server.spark` and the
+Discord bot from T98, plus README pointers.
 **Acceptance criteria:**
-- [x] Folding preserves semantics (including errors at compile vs runtime where safe).
-- [x] `--dump` shows folded constants.
+- [ ] Each example runs against a local counterpart and is listed in the README.
 **Verification:**
-- [x] Fixtures (`tests/cases/constant_folding.*`); suite; benchmark improvement measured; docs.
-**Dependencies:** T21 (for int folding).
-**Files:** `src/compiler.c`, `tests/`, `docs/architecture.md`.
-**Scope:** M.
-
-### T49 - Precompiled bytecode (`.sparkc`) + `--compile`
-**Description:** Serialize/deserialize an `ObjFunction` to disk and load it, with a
-version/magic guard.
-**Acceptance criteria:**
-- [x] Loading a compiled file runs identically to the source.
-- [x] Corrupt/old files error clearly (exit code 65).
-**Verification:**
-- [x] Fixtures; suite; sanitizers; docs.
-**Dependencies:** T45 (stable operand layout).
-**Files:** `src/chunk.c`, `src/object.c`, `src/bytecode.c/h`, `src/main.c`, `tests/`, `docs/architecture.md`.
-**Scope:** L (design note first).
-
-### T50 - Native code generation / JIT (stretch)
-**Description:** Optional baseline JIT or an ahead-of-time C generator from bytecode.
-**Status:** Deferred as stretch per roadmap alignment.
-
-## Checkpoint: Phase 7
-- [x] Benchmark improved (min ~4.9 ms), full suite + ASan/UBSan clean
-- [x] Review with the user before Phase 8
-
----
-
-## Phase 8 - Tools & ecosystem (area 7)
-
-### T51 - Debugger (`--debug`)
-**Description:** Breakpoints, single-step, and locals inspection over the existing
-`--dump`/line info.
-**Acceptance criteria:**
-- [x] `break file:line`, `step`, `locals`, `continue` commands.
-- [x] Does not affect normal execution.
-**Verification:**
-- [x] Scripted debug session fixture; suite; docs.
-**Dependencies:** T49 (line info stability) optional.
-**Files:** `src/main.c`, `src/debugger.c/h`, `src/vm.c/h`, `tests/`, `docs/`.
-**Scope:** M.
-
-### T52 - Formatter
-**Description:** `spark --format file` canonicalizes indentation/spacing.
-**Acceptance criteria:**
-- [x] Idempotent (formatting twice is stable); does not change semantics.
-**Verification:**
-- [x] Round-trip fixtures; suite; docs.
-**Dependencies:** None.
-**Files:** `src/main.c`, `src/formatter.c/h`, `tests/`, `docs/`.
-**Scope:** M.
-
-### T53 - Linter
-**Description:** `spark --lint file` reports unused variables, unreachable code and
-shadowing.
-**Acceptance criteria:**
-- [x] Exit code signals findings; each rule documented.
-- [x] No false positives on the example programs.
-**Verification:**
-- [x] Fixtures with known findings; suite; docs.
-**Dependencies:** T48 (unreachable code) optional.
-**Files:** `src/linter.c/h`, `tests/`, `docs/`.
-**Scope:** M.
-
-### T54 - CI + coverage + sanitizer job
-**Description:** A CI workflow that builds, runs the suite, a sanitizer build and the
-benchmark; publish coverage.
-**Acceptance criteria:**
-- [x] CI runs on push; benchmark regression check included.
-- [x] Documented how to run locally (`make coverage`, sanitizers, benchmark).
-**Verification:**
-- [x] CI green on the current tree; docs.
-**Dependencies:** None.
-**Files:** `.github/workflows/ci.yml`, `Makefile`, `README.md`.
+- [ ] Manual run of each example; suite (the examples stay lint-clean).
+**Dependencies:** T93, T98.
+**Files:** `examples/`, `README.md`.
 **Scope:** S.
-
-### T55 - Concurrency (`spawn`/`yield`/channels) - moved to Phase 14
-
-## Phase 9 - Catchable Runtime Errors & String Optimization
-
-### T56 - Catchable runtime errors in `try`/`catch`
-**Description:** Enable `try { ... } catch (e) { ... }` to catch VM runtime errors (e.g. `1/0`, `[1][5]`, `sqrt(-1)`), constructing an error map `{type, message, line, column}` and unwinding active handlers.
-**Acceptance criteria:**
-- [x] Active `try` handler intercepts runtime errors and populates `e` with structured map.
-- [x] Without `try`, uncaught runtime errors keep printing to stderr and exit as before.
-**Verification:**
-- [x] Tests in `tests/cases/exceptions_runtime.spark`; suite clean; sanitizers clean.
-**Dependencies:** None.
-**Files:** `src/vm.c`, `tests/cases/exceptions_runtime.spark`, `docs/language.md`.
-**Scope:** M.
-
-### T57 - Amortized string concatenation / String builder
-**Description:** Provide amortized O(N) string building. `ObjString` is immutable and
-interned, so `s += x` must copy the accumulator every step (O(N^2)); mutating it in
-place is only sound with ownership analysis. The amortized guarantee therefore lives in
-the `string_builder` API, now documented as the sanctioned way to assemble large
-strings.
-**Acceptance criteria:**
-- [x] 20,000 appends through `string_builder` complete in well under 5 ms.
-- [x] `s += x` is documented as O(N^2), with `string_builder` and `join(parts, "")` as
-      the linear alternatives.
-- [x] A regression guard keeps the builder linear.
-**Verification:**
-- [x] `benchmarks/string_build.spark` (200k appends): ~6 ms, versus ~2.2 s for the same
-      loop written with `+=`; wired into `python3 benchmarks/run_all.py`.
-- [x] `tests/cases/string_builder_scale.spark` runs the loop at two sizes and fails when
-      quadrupling the work multiplies the time by more than ~8x (linear ~4x, quadratic
-      ~24x measured).
-- [x] Mutation-tested: the quadratic variant trips the guard.
-**Dependencies:** None.
-**Files:** `benchmarks/string_build.spark`, `benchmarks/run_all.py`,
-`tests/cases/string_builder_scale.*`, `docs/language.md`, `docs/architecture.md`,
-`README.md`.
-**Scope:** S.
-**Decision:** `+=` deliberately stays O(N^2), like Python and Lua. The rejected
-alternatives (escape-tracked in-place append, rope strings, compile-time promotion of
-the accumulator) and the measured numbers are recorded in `docs/architecture.md`.
-
-## Phase 10 - Standard Library Additions
-
-### T58 - Math natives
-**Description:** Add `sin`, `cos`, `log`, `exp`, `pi`, and multi-arg / array support for `min`/`max`.
-**Scope:** S.
-**Status:** Done - sin/cos/log/exp, `pi`, and `min`/`max` accept multiple arguments or an array (`tests/cases/nativas.spark`).
-
-### T59 - Time natives
-**Description:** Add `time()` and `sleep(ms)`.
-**Scope:** S.
-**Status:** Done - `time()` and `sleep(ms)` exist and are covered by `tests/cases/nativas.spark`.
-
-### T60 - Text natives & unicode escapes
-**Description:** Add `chr`, `ord`, `pad_start`, `pad_end`, and `\uXXXX` string escapes.
-**Scope:** M.
-**Status:** Done - `chr`, `ord`, `pad_start`, `pad_end` and `\uXXXX` escapes (`tests/cases/unicode_escapes.spark`).
-
-### T61 - Utility natives
-**Description:** Add `sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `copy`.
-**Scope:** M.
-**Status:** Done - `sum`, `any`, `all`, `enumerate`, `zip`, `isinstance`, `is_a`, `copy` (`tests/cases/functional_natives.spark`).
-
-### T62 - System & File natives
-**Description:** Add `list_dir`, `mkdir`, `exec`.
-**Scope:** M.
-**Status:** Done - `list_dir`, `mkdir`, `exec` (`tests/cases/io.spark`).
-
-## Phase 11 - Negative Indices & Slices
-
-### T63 - Negative indexing for arrays and strings
-**Description:** Support `a[-1]` in arrays and strings.
-**Scope:** S.
-**Status:** Done - Negative indexes for arrays and strings (`tests/cases/negative_indexing.spark`).
-
-### T64 - Slice native supporting negative bounds
-**Description:** Update `slice()` native to support negative indices.
-**Scope:** S.
-**Status:** Done - `slice` accepts negative bounds (`tests/cases/slices.spark`).
-
-### T65 - Slice syntax `expr[start:end]`
-**Description:** Add `[start:end]` and `[start:end:step]` slice syntax to the grammar.
-**Scope:** M.
-**Status:** Done - `expr[start:end:step]` syntax, including the zero-step and negative-step errors (`tests/cases/slices.spark`).
-
-## Phase 12 - Native Methods & Syntactic Sugar
-
-### T66 - Methods on native types
-**Description:** Allow `"abc".upper()`, `[1, 2].len()`, etc. via type method dispatch.
-**Scope:** M.
-**Status:** Done - Methods on native types (`tests/cases/native_methods.spark`).
-
-### T67 - Increment / decrement (`++` / `--`)
-**Description:** Postfix and prefix `++` and `--`.
-**Scope:** M.
-**Status:** Done - Postfix and prefix `++`/`--` (`tests/cases/update_ops.spark`).
-
-### T68 - Short lambdas (`fn(x) => expr`)
-**Description:** Expression-bodied anonymous functions.
-**Scope:** S.
-**Status:** Done - `fn(x) => expr` lambdas (`tests/cases/lambdas.spark`).
-
-### T69 - Binary `in` operator
-**Description:** `item in collection` expression.
-**Scope:** S.
-**Status:** Done - Binary `in` (`tests/cases/membership.spark`).
-
-### T70 - Power operator `**`, optional chaining `?.`, unary `+`
-**Description:** `a ** b`, `obj?.field`, `+x`.
-**Scope:** M.
-**Status:** Done - `**`, `?.` and unary `+` (`tests/cases/optional_chain.spark`).
-
-### T71 - Multiline strings
-**Description:** Triple-quoted multiline strings `"""..."""`.
-**Scope:** S.
-**Status:** Done - Triple-quoted strings (`tests/cases/multiline_strings.spark`).
-
-### T72 - `for (var i, v in arr)` syntax
-**Description:** Destructured index and value in `for..in` loops.
-**Scope:** M.
-**Status:** Done - `for (var i, v in arr)` (`tests/cases/for_in_pairs.spark`).
-
-### T73 - Per-iteration loop binding for closures
-**Description:** Fresh scope binding for loop variables in `for` loops.
-**Scope:** M.
-**Status:** Done - Per-iteration loop binding for closures (`tests/cases/closures.spark`).
-
-### T74 - Destructuring
-**Description:** `var [a, b] = arr` and `var {x, y} = map`.
-**Scope:** M.
-**Status:** Done - `var [a, b] = arr` and `var {x, y} = map` (`tests/cases/destructuring.spark`).
-
-## Phase 13 - Full Classes & OOP
-
-### T75 - First-class `ObjClass` and `ObjInstance`
-**Description:** Distinct class and instance objects with `type(inst) == "ClassName"`.
-**Scope:** M.
-**Status:** Done - `tests/cases/oop_basics.spark`, `tests/cases/methods_classes.spark`.
-
-### T76 - Inheritance with `extends` & `super`
-**Description:** `class Sub extends Super` and `super(...)` / `super.method(...)`.
-**Scope:** L.
-**Status:** Done - `tests/cases/oop_basics.spark` and the `oop_super_*` error fixtures.
-
-### T77 - Class field declarations and `static` methods
-**Description:** `var x = 3;` in class body, static methods.
-**Scope:** M.
-**Status:** Done - `tests/cases/oop_basics.spark`, `tests/cases/methods_classes.spark`.
-
-### T78 - `instanceof` operator
-**Description:** Check if instance is an instance of class or subclass.
-**Scope:** S.
-**Status:** Done - `tests/cases/oop_basics.spark`; `is_a(x, Class)` respects inheritance.
-
-### T79 - Custom string representation (`to_string()`)
-**Description:** Hook `to_string()` method into `str()` and `print()`.
-**Scope:** S.
-**Status:** Done - `tests/cases/methods_classes.spark`, `tests/errors/oop_bad_to_string.spark`.
-
-### T80 - Operator overloading
-**Description:** `__add__`, `__sub__`, `__mul__`, `__div__`, `__index__`, etc.
-**Scope:** M.
-**Status:** Done - `tests/cases/oop_operators.spark`.
-
-## Phase 14 - Concurrency (T55)
-
-### T81 - Green-thread coroutines (`spawn`, `yield`, `channel`)
-**Description:** VM green-thread coroutines with cooperative scheduling and channels.
-**Acceptance criteria:**
-- [x] `spawn(fn, args...)`, `yield`, `c.join()`, `c.done()` and FIFO channels
-      (`send`, `receive`, `close`) with `channel()` (rendezvous) and `channel(n)`.
-- [x] A blocked send wakes with an error when the channel closes; a blocked receive
-      returns `nil` once closed and drained.
-- [x] `spawn` validates its callee and arity before queueing; `channel(n)` rejects
-      negative or non-integer capacities.
-- [x] Blocked coroutines, their stacks and the locals they captured are traced by the
-      collector, so `gc()` never frees a waiter.
-- [x] `yield`/blocking `send`/`receive`/`join` are rejected inside native callbacks
-      and imported modules; a full deadlock aborts with a clear runtime error.
-**Verification:**
-- [x] `tests/cases/{coroutines,coroutine_gc}.spark` and the
-      `tests/errors/{coroutine_*,channel_*}.spark` fixtures; full suite; ASan/UBSan.
-- [x] `docs/language.md` section 15; bytecode version bumped to 5 for `OP_YIELD`.
-**Design notes:**
-- Each coroutine owns a private value stack; the VM swaps stacks and snapshots the
-  frame array and try-handler stacks on suspend (`src/vm.c`).
-- `ObjUpvalue.owner` keeps the stack of a suspended coroutine alive after a closure
-  escapes it.
-- The main script runs as a coroutine too (it does not own the initial VM stack).
-- `FRAMES_MAX` is still 4096, but the frames are per coroutine.
-**Files:** `src/{vm,object,chunk,lexer,parser,compiler,ast,bytecode}.*`, `tests/`, `docs/language.md`.
-**Scope:** XL.
 
 ## Checkpoint: Complete
-- [x] All acceptance criteria met (T57 is delivered as the `string_builder` API;
-      `+=` is deliberately O(n^2) and documented as such).
-- [x] Full sanitizer + benchmark run (208 tests passing, ASan/UBSan clean, benchmark
-      minimum 4.94 ms / median 5.01 ms measured on an idle machine; expect a few
-      percent of spread under load).
-- [x] Fixed a GC bug found while stress-testing coroutines: `object_coroutine` and
-      `object_channel` zeroed the whole object *after* `allocate_obj` had linked it,
-      which wiped `Obj.next` and truncated the GC list. Live objects could then escape
-      marking (a channel kept `marked = 1` across cycles, so its blocked waiters were
-      swept) and blocked coroutines were freed while still queued on a channel
-      (`tests/cases/coroutine_gc.spark` covers the regression).
-- [x] Ready for review
+- [ ] All acceptance criteria met; suite, sanitizers and benchmark gates green
+- [ ] Ready for review
