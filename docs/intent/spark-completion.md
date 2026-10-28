@@ -72,3 +72,17 @@ test fixtures.
 
 - Implicit coercion in `+` (to be revisited later if needed).
 - JIT/AOT native code generation (T50 stays deferred).
+
+## Status
+
+Fulfilled. The WIP was rescued and committed, every audit finding is fixed, the VM
+optimizations landed (fused comparison jumps, `OP_INVOKE` caching, constant
+deduplication, compressed line metadata), Phase 13 and Phase 14 are implemented, and
+`docs/language.md`, `docs/architecture.md`, `README.md`, `tasks/plan.md`,
+`tasks/todo.md`, `AGENTS.md` and `CHANGELOG.md` match the code.
+
+One work-order item is resolved differently on purpose: **T57** asked for amortized
+`s += x`. Strings stay immutable, so the amortized guarantee comes from the
+`string_builder` API instead (documented in `docs/language.md` and
+`docs/architecture.md`, guarded by `tests/cases/string_builder_scale.spark`), while
+`s += x` keeps its O(N^2) cost and is documented as such.

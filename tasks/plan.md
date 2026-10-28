@@ -209,7 +209,7 @@ original numbering:
 
 ### Checkpoint: Complete
 - [x] All acceptance criteria met
-- [x] Full sanitizer + benchmark run (207 tests passing, ASan/UBSan clean, benchmark
+- [x] Full sanitizer + benchmark run (208 tests passing, ASan/UBSan clean, benchmark
       minimum 4.94 ms / median 5.01 ms measured on an idle machine)
 - [x] Ready for review
 

@@ -403,9 +403,9 @@ Spark provides native tools without external dependencies:
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump`, `--compile`, `--debug`, `--format`, `--lint` and bytecode execution, and error cases.
 
-There are 153 tests. During development the project was also compiled with
-`-fsanitize=address,undefined` and the whole suite ran with no errors or leaks. Coverage
-can be measured locally with `make coverage`.
+There are 208 tests. The suite is also run under `-fsanitize=address,undefined`
+(both locally and in CI), and CI builds with `-Werror`, checks the benchmark and
+publishes coverage. Coverage can be measured locally with `make coverage`.
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the
 minimum and median.

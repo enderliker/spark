@@ -932,7 +932,7 @@ the accumulator) and the measured numbers are recorded in `docs/architecture.md`
 ## Checkpoint: Complete
 - [x] All acceptance criteria met (T57 is delivered as the `string_builder` API;
       `+=` is deliberately O(n^2) and documented as such).
-- [x] Full sanitizer + benchmark run (207 tests passing, ASan/UBSan clean, benchmark
+- [x] Full sanitizer + benchmark run (208 tests passing, ASan/UBSan clean, benchmark
       minimum 4.94 ms / median 5.01 ms measured on an idle machine; expect a few
       percent of spread under load).
 - [x] Fixed a GC bug found while stress-testing coroutines: `object_coroutine` and
