@@ -1,0 +1,64 @@
+// Phase 18: the TLS transport against local servers with fixture certificates.
+var trusted = int(argv[1]);
+var wrong = int(argv[2]);
+var self_signed = int(argv[3]);
+var untrusted = int(argv[4]);
+var ca = argv[5];
+
+// Argument validation happens before any network access.
+try { tls_connect("localhost"); } catch (e) { print("arity:", e.type); }
+try { tls_connect("localhost", "443"); } catch (e) { print("port:", e.type); }
+try { tls_connect("localhost", 443, -1); } catch (e) { print("timeout:", e.type); }
+
+// A server that never answers the handshake times out instead of hanging.
+var stalled = int(argv[6]);
+try { tls_connect("localhost", stalled, 200, ca); print("stalled: accepted"); }
+catch (e) { print("stalled:", e.type); }
+try { [1].map(fn(x) => tls_connect("localhost", stalled, 5000, ca)); }
+catch (e) { print("guard:", e.type); }
+
+// A trusted chain exchanges data in both directions.
+var socket = tls_connect("localhost", trusted, 5000, ca);
+print("type:", type(socket));
+print("write:", socket.write("hello"));
+print("read:", socket.read(1024));
+print("eof:", socket.read(1024));
+
+// TLS sockets expose read/write, not the plain TCP methods.
+try { socket.send("x"); } catch (e) { print("send:", e.type); }
+try { socket.recv(1); } catch (e) { print("recv:", e.type); }
+try { socket.recv_line(); } catch (e) { print("recv_line:", e.type); }
+try { socket.wait(); } catch (e) { print("wait:", e.type); }
+try { net_select([socket], 1); } catch (e) { print("select:", e.type); }
+
+socket.close();
+try { socket.read(1); } catch (e) { print("closed:", e.type); }
+
+// The TLS methods are rejected on a plain TCP socket.
+var server = tcp_listen("127.0.0.1", 0);
+var plain = tcp_connect("127.0.0.1", server.port(), 5000);
+try { plain.read(1); } catch (e) { print("tcp-read:", e.type); }
+try { plain.write("x"); } catch (e) { print("tcp-write:", e.type); }
+try { plain.read(); } catch (e) { print("read-arity:", e.type); }
+try { plain.write(); } catch (e) { print("write-arity:", e.type); }
+plain.close();
+server.close();
+
+// An IP literal is verified against the certificate's IP SAN.
+var by_ip = tls_connect("127.0.0.1", trusted, 5000, ca);
+print("ip:", by_ip.write("x"), by_ip.read(16));
+by_ip.close();
+
+// A missing CA file is a network failure, not a silent fallback.
+try { tls_connect("localhost", trusted, 5000, "/nonexistent/spark-ca.pem"); }
+catch (e) { print("ca:", e.type, contains(e.message, "CA file")); }
+
+// The chain and the host name are verified; there is no bypass.
+try { tls_connect("localhost", wrong, 5000, ca); print("wrong-host: accepted"); }
+catch (e) { print("wrong-host:", e.type, contains(e.message, "hostname mismatch")); }
+try { tls_connect("localhost", self_signed, 5000, ca); print("self-signed: accepted"); }
+catch (e) { print("self-signed:", e.type, contains(e.message, "self-signed certificate")); }
+try { tls_connect("localhost", untrusted, 5000, ca); print("untrusted: accepted"); }
+catch (e) { print("untrusted:", e.type, contains(e.message, "unable to get local issuer certificate")); }
+
+print("tls client ok");

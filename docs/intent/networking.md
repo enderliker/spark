@@ -46,6 +46,10 @@ library needs, so the whole gap is the native I/O boundary.
 - **Secure by default**: certificate and hostname verification cannot be silently
   disabled; the trust model and the SSRF surface are documented, including the plain
   statement that `exec` already grants network access (Spark is not a sandbox).
+- **Test certificates are committed fixtures.** A throwaway CA and leaf certificates
+  live under `tests/tls/`, with a regeneration script. Their private keys are public,
+  valid only for localhost and never trusted outside the suite, so TLS tests stay
+  deterministic without requiring `openssl` at run time.
 
 ## Work order
 

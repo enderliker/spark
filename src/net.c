@@ -18,6 +18,9 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509v3.h>
 #include <poll.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -60,6 +63,14 @@
 #define NET_HTTP_MAX_HEADERS 1000
 #define NET_HTTP_TIMEOUT_DEFAULT 30000
 #define NET_HTTP_USER_AGENT "spark/0.1"
+
+/* Result of a non-blocking socket operation. */
+#define NET_DONE 0
+#define NET_AGAIN 1
+#define NET_FAILED (-1)
+
+/* TLS verification depth and the minimum protocol version accepted. */
+#define NET_TLS_VERIFY_DEPTH 10
 
 /* ------------------------------------------------------------------ */
 /* Errors                                                              */
@@ -501,6 +512,387 @@ static int net_udp_bind(const char *host, int64_t port, NetError *err)
         return -1;
     }
     return fd;
+}
+
+/* ------------------------------------------------------------------ */
+/* TLS (phase 18)                                                      */
+/* ------------------------------------------------------------------ */
+
+/* Formats the most recent OpenSSL error into a categorized network failure.
+ * Certificate verification failures are reported separately by
+ * net_tls_verified(), because OpenSSL keeps the verification result on the SSL
+ * object even when the handshake aborts. */
+static void net_tls_error(NetError *err, const char *action, int ssl_error)
+{
+    unsigned long code = ERR_get_error();
+    char detail[256];
+    if (code != 0) {
+        ERR_error_string_n(code, detail, sizeof(detail));
+    } else if (ssl_error == SSL_ERROR_SYSCALL && errno != 0) {
+        snprintf(detail, sizeof(detail), "%s", strerror(errno));
+    } else if (ssl_error == SSL_ERROR_ZERO_RETURN) {
+        snprintf(detail, sizeof(detail), "the peer closed the connection");
+    } else if (ssl_error == SSL_ERROR_SYSCALL) {
+        snprintf(detail, sizeof(detail), "the connection ended unexpectedly");
+    } else {
+        snprintf(detail, sizeof(detail), "unknown TLS error");
+    }
+    net_fail(err, ERROR_NETWORK, "TLS %s failed: %s", action, detail);
+}
+
+/* Rejects a chain that OpenSSL accepted without a valid verification result.
+ * With SSL_VERIFY_PEER this is a defense-in-depth check: a successful handshake
+ * already implies X509_V_OK. */
+static bool net_tls_verified(SSL *ssl, NetError *err)
+{
+    long result = SSL_get_verify_result(ssl);
+
+    if (result != X509_V_OK) {
+        net_fail(err, ERROR_NETWORK, "TLS certificate verification failed: %s",
+                 X509_verify_cert_error_string(result));
+        return false;
+    }
+    return true;
+}
+
+/* Creates a client context that always verifies the peer: the chain is checked
+ * against the system trust store, or against `ca_file` when the caller supplies
+ * one, and TLS 1.2 is the minimum accepted version. There is deliberately no
+ * option to disable verification. */
+static SSL_CTX *net_tls_context(const char *ca_file, NetError *err)
+{
+    /* Drop errors left by an earlier operation so a failure here reports its
+     * own cause instead of a stale one. */
+    ERR_clear_error();
+
+    SSL_CTX *context = SSL_CTX_new(TLS_client_method());
+
+    if (!context) {
+        net_fail(err, ERROR_MEMORY, "cannot create the TLS context");
+        return NULL;
+    }
+    SSL_CTX_set_min_proto_version(context, TLS1_2_VERSION);
+    SSL_CTX_set_verify(context, SSL_VERIFY_PEER, NULL);
+    SSL_CTX_set_verify_depth(context, NET_TLS_VERIFY_DEPTH);
+    SSL_CTX_set_options(context, SSL_OP_NO_COMPRESSION);
+#ifdef SSL_OP_NO_RENEGOTIATION
+    /* A server cannot force a renegotiation in the middle of a stream. */
+    SSL_CTX_set_options(context, SSL_OP_NO_RENEGOTIATION);
+#endif
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    /* A peer that closes the TCP stream without close_notify is treated as a
+     * normal end of stream. HTTP framing still detects a truncated body. */
+    SSL_CTX_set_options(context, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
+
+    int loaded = ca_file ? SSL_CTX_load_verify_locations(context, ca_file, NULL)
+                         : SSL_CTX_set_default_verify_paths(context);
+
+    if (loaded != 1) {
+        unsigned long code = ERR_get_error();
+        char detail[256];
+
+        if (code != 0) {
+            ERR_error_string_n(code, detail, sizeof(detail));
+        } else if (ca_file) {
+            snprintf(detail, sizeof(detail), "the file is missing or is not a PEM certificate");
+        } else {
+            snprintf(detail, sizeof(detail), "no system trust store is available");
+        }
+        if (ca_file) {
+            net_fail(err, ERROR_NETWORK, "cannot load the CA file '%s': %s", ca_file, detail);
+        } else {
+            net_fail(err, ERROR_NETWORK, "cannot load the system trust store: %s", detail);
+        }
+        SSL_CTX_free(context);
+        return NULL;
+    }
+    return context;
+}
+
+/* Creates the SSL object and pins the expected peer identity: SNI plus a DNS
+ * host-name check for names, an IP-address check for IPv4/IPv6 literals. */
+static SSL *net_tls_client(SSL_CTX *context, const char *host, int fd, NetError *err)
+{
+    ERR_clear_error();
+
+    SSL *ssl = SSL_new(context);
+    char host_buffer[NI_MAXHOST];
+    const char *name;
+    unsigned char address[16];
+    bool is_ip;
+
+    if (!ssl) {
+        net_fail(err, ERROR_MEMORY, "cannot create the TLS connection");
+        return NULL;
+    }
+    if (SSL_set_fd(ssl, fd) != 1) {
+        net_tls_error(err, "setup", SSL_ERROR_SYSCALL);
+        SSL_free(ssl);
+        return NULL;
+    }
+
+    name = net_strip_brackets(host, host_buffer, sizeof(host_buffer));
+    is_ip = inet_pton(AF_INET, name, address) == 1 || inet_pton(AF_INET6, name, address) == 1;
+
+    if (is_ip) {
+        if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl), name) != 1) {
+            net_fail(err, ERROR_NETWORK, "cannot verify the TLS peer address '%s'", host);
+            SSL_free(ssl);
+            return NULL;
+        }
+    } else {
+        if (SSL_set_tlsext_host_name(ssl, name) != 1) {
+            net_fail(err, ERROR_NETWORK, "cannot set the TLS server name '%s'", host);
+            SSL_free(ssl);
+            return NULL;
+        }
+        /* Reject partial wildcards such as "w*.example.com". */
+        SSL_set_hostflags(ssl, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+        if (SSL_set1_host(ssl, name) != 1) {
+            net_fail(err, ERROR_NETWORK, "cannot verify the TLS host name '%s'", host);
+            SSL_free(ssl);
+            return NULL;
+        }
+    }
+    return ssl;
+}
+
+/* One non-blocking handshake step. Returns 1 when the handshake is complete,
+ * 0 when OpenSSL wants readiness on `*events`, and -1 with `err` filled. */
+static int net_tls_handshake_step(SSL *ssl, short *events, NetError *err)
+{
+    ERR_clear_error();
+    errno = 0;
+
+    int status = SSL_connect(ssl);
+
+    if (status == 1) {
+        return net_tls_verified(ssl, err) ? 1 : -1;
+    }
+
+    int error = SSL_get_error(ssl, status);
+
+    if (error == SSL_ERROR_WANT_READ) {
+        *events = POLLIN;
+        return 0;
+    }
+    if (error == SSL_ERROR_WANT_WRITE) {
+        *events = POLLOUT;
+        return 0;
+    }
+    if (SSL_get_verify_result(ssl) != X509_V_OK) {
+        net_tls_verified(ssl, err);
+        return -1;
+    }
+    net_tls_error(err, "handshake", error);
+    return -1;
+}
+
+/* Blocking handshake used by the HTTP client, which is documented as
+ * synchronous. The socket methods use the coroutine scheduler instead. */
+static bool net_tls_handshake_blocking(SSL *ssl, int fd, int64_t deadline, NetError *err)
+{
+    for (;;) {
+        short events = 0;
+        int status = net_tls_handshake_step(ssl, &events, err);
+
+        if (status != 0) {
+            return status > 0;
+        }
+
+        int ready = net_wait(fd, events, deadline);
+
+        if (ready == 0) {
+            net_fail(err, ERROR_TIMEOUT, "the TLS handshake timed out");
+            return false;
+        }
+        if (ready < 0) {
+            net_fail_errno(err, errno, "poll failed during the TLS handshake");
+            return false;
+        }
+    }
+}
+
+/* Blocking read used by the HTTP client. Returns the byte count, 0 at end of
+ * stream and -1 with `err` filled. */
+static ssize_t net_tls_read_blocking(SSL *ssl, int fd, char *buffer, size_t capacity,
+                                     int64_t deadline, NetError *err)
+{
+    if (capacity == 0) {
+        return 0;
+    }
+    for (;;) {
+        size_t received = 0;
+
+        ERR_clear_error();
+        errno = 0;
+        int status = SSL_read_ex(ssl, buffer, capacity, &received);
+
+        if (status == 1) {
+            return (ssize_t)received;
+        }
+
+        int error = SSL_get_error(ssl, status);
+
+        if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+            int ready = net_wait(fd, error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, deadline);
+
+            if (ready == 0) {
+                net_fail(err, ERROR_TIMEOUT, "the TLS read timed out");
+                return -1;
+            }
+            if (ready < 0) {
+                net_fail_errno(err, errno, "poll failed during a TLS read");
+                return -1;
+            }
+            continue;
+        }
+        if (error == SSL_ERROR_ZERO_RETURN || (error == SSL_ERROR_SYSCALL && errno == 0)) {
+            return 0;
+        }
+        net_tls_error(err, "read", error);
+        return -1;
+    }
+}
+
+/* Releases the SSL/SSL_CTX owned by a socket without touching its descriptor. */
+void net_socket_release_tls(ObjSocket *socket)
+{
+    if (socket->ssl) {
+        SSL_shutdown((SSL *)socket->ssl);
+        ERR_clear_error();
+        SSL_free((SSL *)socket->ssl);
+        socket->ssl = NULL;
+    }
+    if (socket->ssl_ctx) {
+        SSL_CTX_free((SSL_CTX *)socket->ssl_ctx);
+        socket->ssl_ctx = NULL;
+    }
+}
+
+/* Frees the TLS state and closes the descriptor without raising. Used by close()
+ * and by the error paths of tls_connect. */
+static void net_socket_dispose(ObjSocket *socket)
+{
+    net_socket_release_tls(socket);
+    if (socket->fd >= 0) {
+        close(socket->fd);
+        socket->fd = -1;
+    }
+    socket->is_closed = true;
+    socket->rbuf_len = 0;
+    socket->rbuf_pos = 0;
+}
+
+/* One non-blocking TLS read, for the coroutine scheduler. */
+static int net_do_tls_read(ObjSocket *socket, int max, short *events, Value *out, NetError *err)
+{
+    SSL *ssl = (SSL *)socket->ssl;
+    char *buffer;
+    size_t received = 0;
+
+    if (socket->is_closed || !ssl) {
+        net_fail(err, ERROR_RUNTIME, "cannot use a closed socket");
+        return NET_FAILED;
+    }
+    if (max == 0) {
+        *out = OBJ_VAL(object_string("", 0));
+        return NET_DONE;
+    }
+
+    buffer = malloc((size_t)max);
+    if (!buffer) {
+        net_fail(err, ERROR_MEMORY, "out of memory in 'read'");
+        return NET_FAILED;
+    }
+
+    ERR_clear_error();
+    errno = 0;
+    int status = SSL_read_ex(ssl, buffer, (size_t)max, &received);
+
+    if (status == 1) {
+        if (received == 0) {
+            free(buffer);
+            *out = NIL_VAL;
+            return NET_DONE;
+        }
+        ObjString *result = object_string(buffer, (int)received);
+
+        free(buffer);
+        *out = OBJ_VAL(result);
+        return NET_DONE;
+    }
+
+    int error = SSL_get_error(ssl, status);
+
+    free(buffer);
+    if (error == SSL_ERROR_WANT_READ) {
+        *events = POLLIN;
+        return NET_AGAIN;
+    }
+    if (error == SSL_ERROR_WANT_WRITE) {
+        *events = POLLOUT;
+        return NET_AGAIN;
+    }
+    if (error == SSL_ERROR_ZERO_RETURN || (error == SSL_ERROR_SYSCALL && errno == 0)) {
+        *out = NIL_VAL;
+        return NET_DONE;
+    }
+    net_tls_error(err, "read", error);
+    return NET_FAILED;
+}
+
+/* One non-blocking TLS write, continuing at `offset`. */
+static int net_do_tls_write(ObjSocket *socket, ObjString *payload, size_t offset, size_t *progress,
+                            short *events, Value *out, NetError *err)
+{
+    SSL *ssl = (SSL *)socket->ssl;
+    size_t written = 0;
+
+    if (socket->is_closed || !ssl) {
+        net_fail(err, ERROR_RUNTIME, "cannot use a closed socket");
+        return NET_FAILED;
+    }
+    if (offset >= (size_t)payload->length) {
+        *progress = offset;
+        *out = INT_VAL((int64_t)offset);
+        return NET_DONE;
+    }
+
+    ERR_clear_error();
+    errno = 0;
+    int status = SSL_write_ex(ssl, payload->chars + offset, (size_t)payload->length - offset,
+                              &written);
+
+    if (status == 1) {
+        if (written == 0) {
+            net_fail(err, ERROR_NETWORK, "TLS write failed: no progress");
+            return NET_FAILED;
+        }
+        *progress = offset + written;
+        if (*progress >= (size_t)payload->length) {
+            *out = INT_VAL((int64_t)*progress);
+            return NET_DONE;
+        }
+        *events = POLLOUT;
+        return NET_AGAIN;
+    }
+
+    int error = SSL_get_error(ssl, status);
+
+    if (error == SSL_ERROR_WANT_READ) {
+        *events = POLLIN;
+        *progress = offset;
+        return NET_AGAIN;
+    }
+    if (error == SSL_ERROR_WANT_WRITE) {
+        *events = POLLOUT;
+        *progress = offset;
+        return NET_AGAIN;
+    }
+    net_tls_error(err, "write", error);
+    return NET_FAILED;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1074,6 +1466,7 @@ static void net_buffer_printf(NetBuffer *buffer, const char *format, ...)
  * body it is about to return. */
 typedef struct {
     int fd;
+    void *ssl; /* SSL * when the response arrives over TLS, NULL otherwise */
     int64_t deadline;
     char *data;
     size_t length;
@@ -1081,9 +1474,10 @@ typedef struct {
     size_t capacity;
 } NetHttpReader;
 
-static void net_http_reader_init(NetHttpReader *reader, int fd, int64_t deadline)
+static void net_http_reader_init(NetHttpReader *reader, int fd, void *ssl, int64_t deadline)
 {
     reader->fd = fd;
+    reader->ssl = ssl;
     reader->deadline = deadline;
     reader->data = NULL;
     reader->length = 0;
@@ -1094,7 +1488,7 @@ static void net_http_reader_init(NetHttpReader *reader, int fd, int64_t deadline
 static void net_http_reader_free(NetHttpReader *reader)
 {
     mem_realloc(reader->data, reader->capacity, 0);
-    net_http_reader_init(reader, -1, 0);
+    net_http_reader_init(reader, -1, NULL, 0);
 }
 
 /* Refills the buffer, growing it up to `limit`. Returns 1 on data, 0 at end of
@@ -1118,6 +1512,19 @@ static int net_http_fill(NetHttpReader *reader, size_t limit, NetError *err)
         }
         reader->data = mem_realloc(reader->data, reader->capacity, capacity);
         reader->capacity = capacity;
+    }
+
+    if (reader->ssl) {
+        ssize_t received = net_tls_read_blocking((SSL *)reader->ssl, reader->fd,
+                                                 reader->data + reader->length,
+                                                 reader->capacity - reader->length,
+                                                 reader->deadline, err);
+
+        if (received > 0) {
+            reader->length += (size_t)received;
+            return 1;
+        }
+        return received == 0 ? 0 : -1;
     }
 
     for (;;) {
@@ -1349,10 +1756,48 @@ static void net_http_build_request(NetBuffer *out, const char *method, const cha
     }
 }
 
-static bool net_http_send_all(int fd, const char *data, size_t length, int64_t deadline,
-                              NetError *err)
+static bool net_http_send_all(int fd, void *ssl, const char *data, size_t length,
+                              int64_t deadline, NetError *err)
 {
     size_t sent = 0;
+
+    if (ssl) {
+        while (sent < length) {
+            size_t written = 0;
+
+            ERR_clear_error();
+            errno = 0;
+            int status = SSL_write_ex((SSL *)ssl, data + sent, length - sent, &written);
+
+            if (status == 1) {
+                if (written == 0) {
+                    net_fail(err, ERROR_NETWORK, "TLS write failed: no progress");
+                    return false;
+                }
+                sent += written;
+                continue;
+            }
+
+            int error = SSL_get_error((SSL *)ssl, status);
+
+            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+                int ready = net_wait(fd, error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT, deadline);
+
+                if (ready == 0) {
+                    net_fail(err, ERROR_TIMEOUT, "the HTTP request timed out");
+                    return false;
+                }
+                if (ready < 0) {
+                    net_fail_errno(err, errno, "send failed");
+                    return false;
+                }
+                continue;
+            }
+            net_tls_error(err, "write", error);
+            return false;
+        }
+        return true;
+    }
 
     while (sent < length) {
         ssize_t n = send(fd, data + sent, length - sent, MSG_NOSIGNAL);
@@ -1720,7 +2165,7 @@ static bool net_http_read_body(NetHttpReader *reader, NetHttpResponse *response,
  * absolute monotonic millisecond bound shared by the whole chain (0 = none). */
 static bool net_http_perform(const char *url_text, const char *method, ObjMap *headers,
                              const char *body, size_t body_length, bool has_body, int64_t deadline,
-                             bool follow, int64_t max_body, int redirects_left,
+                             bool follow, int64_t max_body, const char *ca_file, int redirects_left,
                              NetHttpResponse *response, NetError *err)
 {
     NetUrl url;
@@ -1728,12 +2173,11 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
     if (!net_url_parse(url_text, &url, err)) {
         return false;
     }
-    if (strcmp(url.scheme, "http") != 0) {
-        if (strcmp(url.scheme, "https") == 0) {
-            net_fail(err, ERROR_NETWORK, "https is not supported yet (TLS lands in a later phase)");
-        } else {
-            net_fail(err, ERROR_NETWORK, "unsupported URL scheme '%s'", url.scheme);
-        }
+
+    bool secure = strcmp(url.scheme, "https") == 0;
+
+    if (!secure && strcmp(url.scheme, "http") != 0) {
+        net_fail(err, ERROR_NETWORK, "unsupported URL scheme '%s'", url.scheme);
         net_url_free(&url);
         return false;
     }
@@ -1748,6 +2192,8 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
     NetHttpReader reader;
     bool ok = false;
     int fd = -1;
+    SSL_CTX *tls_context = NULL;
+    SSL *tls = NULL;
 
     net_buffer_init(&target);
     net_buffer_init(&request);
@@ -1764,11 +2210,24 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
     if (fd < 0) {
         goto cleanup;
     }
-    if (!net_http_send_all(fd, request.data, request.length, deadline, err)) {
+    if (secure) {
+        tls_context = net_tls_context(ca_file, err);
+        if (!tls_context) {
+            goto cleanup;
+        }
+        tls = net_tls_client(tls_context, url.host, fd, err);
+        if (!tls) {
+            goto cleanup;
+        }
+        if (!net_tls_handshake_blocking(tls, fd, deadline, err)) {
+            goto cleanup;
+        }
+    }
+    if (!net_http_send_all(fd, tls, request.data, request.length, deadline, err)) {
         goto cleanup;
     }
 
-    net_http_reader_init(&reader, fd, deadline);
+    net_http_reader_init(&reader, fd, tls, deadline);
     if (!net_http_read_status(&reader, response, err)) {
         net_http_reader_free(&reader);
         goto cleanup;
@@ -1785,6 +2244,14 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
     ok = true;
 
 cleanup:
+    if (tls) {
+        SSL_shutdown(tls);
+        ERR_clear_error();
+        SSL_free(tls);
+    }
+    if (tls_context) {
+        SSL_CTX_free(tls_context);
+    }
     if (fd >= 0) {
         close(fd);
     }
@@ -1821,8 +2288,8 @@ cleanup:
             net_http_response_free(response);
             net_url_free(&url);
             ok = net_http_perform(next, next_method, headers, next_body, next_length,
-                                  next_has_body, deadline, follow, max_body, redirects_left - 1,
-                                  response, err);
+                                  next_has_body, deadline, follow, max_body, ca_file,
+                                  redirects_left - 1, response, err);
             mem_realloc(next, strlen(next) + 1, 0);
             return ok;
         }
@@ -1870,7 +2337,7 @@ static bool net_http_validate_headers(ObjMap *headers, const char *function)
 
 static Value net_http_execute(const char *function, const char *method, ObjString *url,
                               Value body_value, ObjMap *headers, int64_t timeout, bool follow,
-                              int64_t max_body)
+                              int64_t max_body, const char *ca_file)
 {
     if (net_string_has_null(url, function) || !net_http_safe_text(url, function, "URL")) {
         return NIL_VAL;
@@ -1900,7 +2367,7 @@ static Value net_http_execute(const char *function, const char *method, ObjStrin
     int64_t deadline = net_now_ms() + timeout;
 
     if (!net_http_perform(url->chars, method, headers, body, body_length, has_body, deadline, follow,
-                          max_body, NET_HTTP_REDIRECT_MAX, &response, &err)) {
+                          max_body, ca_file, NET_HTTP_REDIRECT_MAX, &response, &err)) {
         net_http_response_free(&response);
         net_raise(&err);
         return NIL_VAL;
@@ -2003,7 +2470,7 @@ static Value net_http_positional(const char *function, const char *method, int a
     }
 
     return net_http_execute(function, method, AS_STRING(args[0]), body, headers, timeout, follow,
-                            max_body);
+                            max_body, NULL);
 }
 
 static Value native_http_get(int arg_count, Value *args)
@@ -2027,7 +2494,7 @@ static Value native_http_delete(int arg_count, Value *args)
 }
 
 /* http_request({url, method?, body?, headers?, timeout_ms?, follow_redirects?,
- * max_body?}) */
+ * max_body?, ca_file?}) */
 static Value native_http_request(int arg_count, Value *args)
 {
     if (arg_count != 1) {
@@ -2049,6 +2516,7 @@ static Value native_http_request(int arg_count, Value *args)
     int64_t timeout = NET_HTTP_TIMEOUT_DEFAULT;
     bool follow = true;
     int64_t max_body = NET_HTTP_BODY_DEFAULT_MAX;
+    const char *ca_file = NULL;
 
     for (int i = 0; i < options->capacity; i++) {
         MapEntry *entry = &options->entries[i];
@@ -2119,6 +2587,19 @@ static Value native_http_request(int arg_count, Value *args)
                 }
                 max_body = AS_INT(value);
             }
+        } else if (strcmp(name, "ca_file") == 0) {
+            if (!is_nil(value)) {
+                if (!is_obj_type(value, OBJ_STRING)) {
+                    vm_runtime_error(ERROR_TYPE,
+                                     "'http_request' ca_file must be a string, received %s",
+                                     net_value_type(value));
+                    return NIL_VAL;
+                }
+                if (net_string_has_null(AS_STRING(value), "http_request")) {
+                    return NIL_VAL;
+                }
+                ca_file = AS_STRING(value)->chars;
+            }
         } else {
             vm_runtime_error(ERROR_VALUE, "'http_request' does not accept the option '%s'", name);
             return NIL_VAL;
@@ -2138,12 +2619,126 @@ static Value native_http_request(int arg_count, Value *args)
             return NIL_VAL;
         }
     }
-    return net_http_execute("http_request", method, url, body, headers, timeout, follow, max_body);
+    return net_http_execute("http_request", method, url, body, headers, timeout, follow, max_body,
+                            ca_file);
 }
 
 /* ------------------------------------------------------------------ */
 /* Native functions                                                    */
 /* ------------------------------------------------------------------ */
+
+static void net_waiter_push(ObjCoroutine *coroutine);
+
+static Value native_tls_connect(int arg_count, Value *args)
+{
+    if (arg_count < 2 || arg_count > 4) {
+        vm_runtime_error(ERROR_ARITY, "'tls_connect' expects between 2 and 4 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'tls_connect' expects a string host, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *host = AS_STRING(args[0]);
+
+    if (net_string_has_null(host, "tls_connect")) {
+        return NIL_VAL;
+    }
+
+    int64_t port = 0;
+    int64_t timeout = 0;
+
+    if (!net_int_argument(args[1], "tls_connect", "port", &port)) {
+        return NIL_VAL;
+    }
+    if (!net_optional_timeout(arg_count > 2 ? args[2] : NIL_VAL, arg_count, 2, "tls_connect",
+                              &timeout)) {
+        return NIL_VAL;
+    }
+
+    const char *ca_file = NULL;
+
+    if (arg_count > 3 && !is_nil(args[3])) {
+        if (!is_obj_type(args[3], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'tls_connect' expects a string ca_file, received %s",
+                             net_value_type(args[3]));
+            return NIL_VAL;
+        }
+        if (net_string_has_null(AS_STRING(args[3]), "tls_connect")) {
+            return NIL_VAL;
+        }
+        ca_file = AS_STRING(args[3])->chars;
+    }
+
+    NetError err;
+    int64_t deadline = net_deadline(timeout);
+    int fd = net_connect(host->chars, port, deadline, &err);
+
+    if (fd < 0) {
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    SSL_CTX *context = net_tls_context(ca_file, &err);
+
+    if (!context) {
+        close(fd);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    SSL *ssl = net_tls_client(context, host->chars, fd, &err);
+
+    if (!ssl) {
+        SSL_CTX_free(context);
+        close(fd);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    ObjSocket *socket = object_socket(fd, NET_TLS, timeout);
+
+    socket->ssl = ssl;
+    socket->ssl_ctx = context;
+
+    short events = 0;
+    int status = net_tls_handshake_step(ssl, &events, &err);
+
+    if (status < 0) {
+        net_socket_dispose(socket);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+    if (status == 1) {
+        return OBJ_VAL(socket);
+    }
+
+    if (vm_run_depth() > 1) {
+        net_socket_dispose(socket);
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a tls_connect that would block cannot run inside a callback or a module");
+        return NIL_VAL;
+    }
+
+    ObjCoroutine *self = vm_current_coroutine();
+
+    self->wait_kind = (events & POLLOUT) ? CORO_WAIT_WRITE : CORO_WAIT_READ;
+    self->wait_op = NET_OP_TLS_HANDSHAKE;
+    self->wait_socket = socket;
+    self->wait_server = NULL;
+    self->wait_sockets = NULL;
+    self->wait_events = (events & POLLOUT) ? NET_EVENT_WRITE : NET_EVENT_READ;
+    self->wait_timeout = timeout;
+    self->wait_deadline = deadline;
+    self->wait_arg = 0;
+    self->wait_value = NIL_VAL;
+    self->status = CORO_BLOCKED;
+    net_waiter_push(self);
+    vm_block_native();
+    return NIL_VAL;
+}
 
 static Value native_tcp_connect(int arg_count, Value *args)
 {
@@ -2283,6 +2878,7 @@ static Value native_net_select(int arg_count, Value *args);
 void net_init(void)
 {
     vm_define_native("tcp_connect", native_tcp_connect, -1);
+    vm_define_native("tls_connect", native_tls_connect, -1);
     vm_define_native("tcp_listen", native_tcp_listen, -1);
     vm_define_native("udp_bind", native_udp_bind, -1);
     vm_define_native("net_hostname", native_net_hostname, 0);
@@ -2332,17 +2928,9 @@ static Value net_socket_close(ObjSocket *socket)
         vm_runtime_error(ERROR_RUNTIME, "socket is already closed");
         return NIL_VAL;
     }
-    close(socket->fd);
-    socket->fd = -1;
-    socket->is_closed = true;
-    net_socket_reset_buffer(socket);
+    net_socket_dispose(socket);
     return NIL_VAL;
 }
-
-/* Result of a non-blocking socket operation. */
-#define NET_DONE 0
-#define NET_AGAIN 1
-#define NET_FAILED (-1)
 
 /* Writes the payload from `offset`, continuing where a previous attempt stopped.
  * On NET_AGAIN, `*progress` gets the bytes written so far. */
@@ -2780,6 +3368,9 @@ static const char *net_op_name(NetWaitOp op)
     case NET_OP_SEND: return "send";
     case NET_OP_ACCEPT: return "accept";
     case NET_OP_SELECT: return "net_select";
+    case NET_OP_TLS_HANDSHAKE: return "tls_connect";
+    case NET_OP_TLS_READ: return "read";
+    case NET_OP_TLS_WRITE: return "write";
     }
     return "operation";
 }
@@ -2807,6 +3398,15 @@ void net_mark_waiters(void)
 {
     for (ObjCoroutine *waiter = net_waiters_head; waiter; waiter = waiter->wait_next) {
         vm_mark_object((Obj *)waiter);
+        if (waiter->wait_socket) {
+            vm_mark_object((Obj *)waiter->wait_socket);
+        }
+        if (waiter->wait_server) {
+            vm_mark_object((Obj *)waiter->wait_server);
+        }
+        if (waiter->wait_sockets) {
+            vm_mark_object((Obj *)waiter->wait_sockets);
+        }
     }
 }
 
@@ -2865,6 +3465,9 @@ static void net_timeout_wake(ObjCoroutine *waiter)
         mem_resume_gc();
         vm_wake_coroutine(waiter, OBJ_VAL(empty), NULL);
         return;
+    }
+    if (waiter->wait_op == NET_OP_TLS_HANDSHAKE && waiter->wait_socket) {
+        net_socket_dispose(waiter->wait_socket);
     }
     snprintf(waiter->resume_error_buffer, sizeof(waiter->resume_error_buffer),
              "'%s' timed out after %lld ms", net_op_name(waiter->wait_op),
@@ -2978,6 +3581,68 @@ static bool net_complete_waiter(ObjCoroutine *waiter, struct pollfd *fds, int ba
             mem_resume_gc();
             vm_wake_coroutine(waiter, OBJ_VAL(ready), NULL);
             return true;
+        }
+        break;
+    case NET_OP_TLS_HANDSHAKE:
+        if (candidate) {
+            short events = 0;
+
+            if (waiter->wait_socket->is_closed || !waiter->wait_socket->ssl) {
+                net_deferred_error(waiter, ERROR_RUNTIME, "cannot use a closed socket");
+                return true;
+            }
+            int status = net_tls_handshake_step((SSL *)waiter->wait_socket->ssl, &events, &err);
+
+            if (status == 1) {
+                vm_wake_coroutine(waiter, OBJ_VAL(waiter->wait_socket), NULL);
+                return true;
+            }
+            if (status < 0) {
+                net_socket_dispose(waiter->wait_socket);
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            waiter->wait_events = (events & POLLOUT) ? NET_EVENT_WRITE : NET_EVENT_READ;
+            return false;
+        }
+        break;
+    case NET_OP_TLS_READ:
+        if (candidate) {
+            short events = POLLIN;
+            int status = net_do_tls_read(waiter->wait_socket, waiter->wait_arg, &events, &result,
+                                         &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            waiter->wait_events = (events & POLLOUT) ? NET_EVENT_WRITE : NET_EVENT_READ;
+            return false;
+        }
+        break;
+    case NET_OP_TLS_WRITE:
+        if (candidate) {
+            ObjString *payload = AS_STRING(waiter->wait_value);
+            size_t progress = (size_t)waiter->wait_arg;
+            short events = POLLOUT;
+            int status = net_do_tls_write(waiter->wait_socket, payload, progress, &progress,
+                                          &events, &result, &err);
+
+            if (status == NET_DONE) {
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            waiter->wait_arg = (int)progress;
+            waiter->wait_events = (events & POLLIN) ? NET_EVENT_READ : NET_EVENT_WRITE;
+            return false;
         }
         break;
     }
@@ -3166,6 +3831,11 @@ static Value native_net_select(int arg_count, Value *args)
             vm_runtime_error(ERROR_RUNTIME, "cannot select a closed socket");
             return NIL_VAL;
         }
+        if (AS_SOCKET(sockets->items[i])->kind == NET_TLS) {
+            vm_runtime_error(ERROR_NETWORK,
+                             "'net_select' does not support TLS sockets; use 'read' with a timeout");
+            return NIL_VAL;
+        }
     }
 
     if (sockets->count == 0) {
@@ -3244,12 +3914,94 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
             *out = net_socket_close(socket);
             return 0;
         }
+        if (strcmp(name, "read") == 0) {
+            int64_t max = 0;
+
+            if (arg_count != 1) {
+                vm_runtime_error(ERROR_ARITY, "'read' expects 1 argument, received %d", arg_count);
+                return -1;
+            }
+            if (socket->kind != NET_TLS) {
+                vm_runtime_error(ERROR_NETWORK,
+                                 "'read' requires a TLS socket; use 'recv' or 'recv_from' instead");
+                return -1;
+            }
+            if (!net_int_argument(args[0], "read", "size", &max)) {
+                return -1;
+            }
+            if (max < 0 || max > NET_READ_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'read' size out of valid range (0..%d)", NET_READ_MAX);
+                return -1;
+            }
+            if (!net_socket_open(socket)) {
+                return -1;
+            }
+
+            short events = POLLIN;
+            int status = net_do_tls_read(socket, (int)max, &events, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "read", NET_OP_TLS_READ, socket, NULL,
+                             (events & POLLOUT) ? NET_EVENT_WRITE : NET_EVENT_READ,
+                             socket->timeout_ms, (int)max, NIL_VAL, out);
+        }
+        if (strcmp(name, "write") == 0) {
+            if (arg_count != 1) {
+                vm_runtime_error(ERROR_ARITY, "'write' expects 1 argument, received %d", arg_count);
+                return -1;
+            }
+            if (socket->kind != NET_TLS) {
+                vm_runtime_error(ERROR_NETWORK,
+                                 "'write' requires a TLS socket; use 'send' or 'send_to' instead");
+                return -1;
+            }
+            if (!is_obj_type(args[0], OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'write' expects a string, received %s",
+                                 net_value_type(args[0]));
+                return -1;
+            }
+            if (!net_socket_open(socket)) {
+                return -1;
+            }
+            ObjString *payload = AS_STRING(args[0]);
+
+            if (payload->length > INT32_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'write' payload is too large");
+                return -1;
+            }
+
+            size_t progress = 0;
+            short events = POLLOUT;
+            int status = net_do_tls_write(socket, payload, 0, &progress, &events, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "write", NET_OP_TLS_WRITE, socket, NULL,
+                             (events & POLLIN) ? NET_EVENT_READ : NET_EVENT_WRITE,
+                             socket->timeout_ms, (int)progress, args[0], out);
+        }
         if (strcmp(name, "wait") == 0 && arg_count <= 3) {
             bool read = false;
             bool write = false;
             int64_t timeout = 0;
 
             if (!net_socket_open(socket)) {
+                return -1;
+            }
+            if (socket->kind == NET_TLS) {
+                vm_runtime_error(ERROR_NETWORK,
+                                 "'wait' is not supported on TLS sockets; use 'read' with a timeout");
                 return -1;
             }
             if (arg_count >= 1 && !is_nil(args[0])) {
@@ -3299,7 +4051,12 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
                 return -1;
             }
             if (socket->kind != NET_TCP) {
-                vm_runtime_error(ERROR_NETWORK, "'send' requires a TCP socket; use 'send_to' for UDP");
+                if (socket->kind == NET_TLS) {
+                    vm_runtime_error(ERROR_NETWORK, "'send' requires a TCP socket; use 'write' for TLS");
+                } else {
+                    vm_runtime_error(ERROR_NETWORK,
+                                     "'send' requires a TCP socket; use 'send_to' for UDP");
+                }
                 return -1;
             }
             ObjString *payload = AS_STRING(args[0]);
@@ -3325,6 +4082,14 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
         if (strcmp(name, "recv") == 0 && arg_count == 1) {
             int64_t max = 0;
 
+            if (socket->kind != NET_TCP) {
+                if (socket->kind == NET_TLS) {
+                    vm_runtime_error(ERROR_NETWORK, "'recv' requires a TCP socket; use 'read' for TLS");
+                } else {
+                    vm_runtime_error(ERROR_NETWORK, "'recv' requires a TCP socket");
+                }
+                return -1;
+            }
             if (!net_int_argument(args[0], "recv", "size", &max)) {
                 return -1;
             }
@@ -3351,6 +4116,15 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
         if (strcmp(name, "recv_line") == 0 && (arg_count == 0 || arg_count == 1)) {
             int64_t max = NET_LINE_DEFAULT_MAX;
 
+            if (socket->kind != NET_TCP) {
+                if (socket->kind == NET_TLS) {
+                    vm_runtime_error(ERROR_NETWORK,
+                                     "'recv_line' requires a TCP socket; use 'read' for TLS");
+                } else {
+                    vm_runtime_error(ERROR_NETWORK, "'recv_line' requires a TCP socket");
+                }
+                return -1;
+            }
             if (arg_count == 1 && !is_nil(args[0]) &&
                 !net_int_argument(args[0], "recv_line", "size", &max)) {
                 return -1;

@@ -17,8 +17,8 @@ Guidance for AI agents working on the **Spark** project.
 
 ## What this project is
 
-Spark is an interpreted programming language written from scratch in C11 with **no
-external dependencies**. The pipeline is:
+Spark is an interpreted programming language written from scratch in C11. The
+pipeline is:
 
 ```
 source -> lexer.c -> parser.c (AST) -> compiler.c (bytecode) -> vm.c (stack VM + GC)
@@ -26,11 +26,20 @@ source -> lexer.c -> parser.c (AST) -> compiler.c (bytecode) -> vm.c (stack VM +
 
 Everything lives in `src/`.
 
+Spark has **no external dependencies except OpenSSL**, which is linked only for the
+TLS transport (`tls_connect` and `https://`). The socket, HTTP and WebSocket layers
+stay dependency-free. This is the single approved exception (decision Q11); see
+`docs/architecture.md` and `CHANGELOG.md`.
+
 read `tasks/todo.md` and `tasks/plan.md` for more context of the status
 
 ## Build and test
 
 On Windows there is no C compiler: build and test from WSL (Ubuntu).
+
+The build needs the OpenSSL development files (`libssl-dev` on Debian/Ubuntu), a C11
+compiler, `make`, `python3` and the math library. OpenSSL is the only third-party
+dependency.
 
 ```bash
 make                       # builds ./spark
@@ -51,7 +60,11 @@ make clean && make
 ## Conventions
 
 - C11 with `-O3 -Wall -Wextra -Wpedantic`. The build must be warning-free.
-- No external dependencies and no parser/VM generators: everything is handwritten.
+- No external dependencies except OpenSSL for TLS; no parser/VM generators:
+  everything else is handwritten.
+- The certificates under `tests/tls/` are throwaway fixtures. Their private keys are
+  public and must never be trusted outside the test suite; regenerate them with
+  `tests/tls/generate.sh`.
 - Match the existing structure, naming, and style of the surrounding code.
 - Reuse the shared binary-operation helpers in `src/vm.c` (`compare_values`,
   `arithmetic_values`, `add_values`) instead of duplicating logic.

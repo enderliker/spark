@@ -1,0 +1,40 @@
+// Phase 18: HTTPS through the HTTP client, with CA injection for local tests.
+var trusted = int(argv[1]);
+var wrong = int(argv[2]);
+var self_signed = int(argv[3]);
+var untrusted = int(argv[4]);
+var ca = argv[5];
+
+var url = "https://localhost:" + str(trusted) + "/hello";
+var response = http_request({"url": url, "ca_file": ca});
+print("https:", response.status, response.headers["x-test"], response.body == "hello world\n");
+
+// The positional helpers use the system store, which rejects the fixture CA.
+try { http_get(url, nil, nil, 5000); }
+catch (e) { print("system:", e.type, contains(e.message, "certificate")); }
+
+// Verification failures are the same as in tls_connect.
+try {
+    http_request({"url": "https://localhost:" + str(wrong) + "/hello", "ca_file": ca});
+    print("wrong-host: accepted");
+} catch (e) {
+    print("wrong-host:", e.type, contains(e.message, "hostname mismatch"));
+}
+try {
+    http_request({"url": "https://localhost:" + str(self_signed) + "/hello", "ca_file": ca});
+    print("self-signed: accepted");
+} catch (e) {
+    print("self-signed:", e.type, contains(e.message, "self-signed certificate"));
+}
+try {
+    http_request({"url": "https://localhost:" + str(untrusted) + "/hello", "ca_file": ca});
+    print("untrusted: accepted");
+} catch (e) {
+    print("untrusted:", e.type, contains(e.message, "unable to get local issuer certificate"));
+}
+
+// ca_file must be a string.
+try { http_request({"url": url, "ca_file": 42}); }
+catch (e) { print("ca-type:", e.type); }
+
+print("https client ok");

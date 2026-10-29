@@ -139,7 +139,10 @@ typedef enum {
     NET_OP_RECV_LINE,
     NET_OP_SEND,
     NET_OP_ACCEPT,
-    NET_OP_SELECT
+    NET_OP_SELECT,
+    NET_OP_TLS_HANDSHAKE,
+    NET_OP_TLS_READ,
+    NET_OP_TLS_WRITE
 } NetWaitOp;
 
 /* A cooperative green thread. While suspended it owns a private value stack
@@ -226,7 +229,8 @@ typedef struct ObjFile {
  * datagram endpoints that must use send_to/recv_from. */
 typedef enum {
     NET_TCP,
-    NET_UDP
+    NET_UDP,
+    NET_TLS
 } NetKind;
 
 /* A GC-managed socket, modeled on ObjFile: it owns a file descriptor that is
@@ -239,6 +243,8 @@ typedef struct ObjSocket {
     bool is_closed;
     NetKind kind;
     int64_t timeout_ms; /* default deadline for this socket; 0 = wait forever */
+    void *ssl; /* SSL * for NET_TLS sockets, NULL otherwise */
+    void *ssl_ctx; /* SSL_CTX * owned by this socket, NULL otherwise */
     char *rbuf; /* buffered but unconsumed bytes for recv_line (may be NULL) */
     int rbuf_cap;
     int rbuf_len;

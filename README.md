@@ -2,8 +2,9 @@
 
 **Spark** is a programming language created from scratch in C11. Source code is
 parsed, compiled to its own **bytecode**, and executed on a **stack-based virtual
-machine** with a *mark & sweep* garbage collector. It uses no parser generators and
-no third-party libraries: the whole pipeline lives in `src/`.
+machine** with a *mark & sweep* garbage collector. It uses no parser generators and,
+apart from OpenSSL for TLS, no third-party libraries: the whole pipeline lives in
+`src/`.
 
 ```spark
 fn fib(n) {
@@ -54,7 +55,8 @@ for (var i = 0; i < 10; i += 1) {
   resolution over IPv4 and IPv6, and typed `NetworkError`/`TimeoutError` failures.
   Blocking calls yield only their coroutine, so one process serves many connections.
   URL helpers, an HTTP/1.1 client (chunked bodies, redirects, size and timeout
-  limits) and an HTTP server library on the socket layer.
+  limits), TLS with certificate and host-name verification, HTTPS, and an HTTP server
+  library on the socket layer.
 - Tooling: REPL, bytecode disassembler (`--dump`), precompiled bytecode
   (`--compile`), interactive debugger (`--debug`), formatter (`--format`) and
   linter (`--lint`).
@@ -63,8 +65,9 @@ for (var i = 0; i < 10; i += 1) {
 
 ## Requirements and build
 
-All you need is a C11 compiler, `make` and the C math library. There are no
-third-party dependencies.
+All you need is a C11 compiler, `make`, `python3` for the tests, the C math library
+and the OpenSSL development files (`libssl-dev` on Debian/Ubuntu). OpenSSL is the
+only third-party dependency and is used only by `tls_connect` and `https://`.
 
 ```bash
 make            # builds the ./spark binary
@@ -304,6 +307,7 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | Function | Description |
 | --- | --- |
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
+| `tls_connect(host, port, timeout_ms?, ca_file?)` | Connects a TLS client; returns a `socket` with `read`/`write`. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server`. |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket; returns a `socket`. |
 | `net_select(readables, timeout_ms?)` | Waits for any socket to be readable; returns the ready indexes. |
@@ -315,13 +319,17 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | `http_request(options)` | The map-driven form of the HTTP client. |
 
 Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.wait`, `sock.send_to`,
-`sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. Server methods:
+`sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. TLS sockets use
+`sock.read` and `sock.write` instead of the TCP methods. Server methods:
 `srv.accept`, `srv.port` and `srv.close`. Hosts may be names, IPv4 literals or
 bracketed IPv6 literals; `localhost` works over either family. A blocking call suspends
 its coroutine and the scheduler polls the descriptors, so a single process serves many
-connections with `spawn`. The HTTP client follows redirects and handles chunked bodies
-within explicit header, body, redirect and timeout limits; `lib/http.spark` builds an
-HTTP server on top of the socket layer with no extra native code.
+connections with `spawn`. TLS verifies the certificate chain and the host name by
+default (system store or an explicit `ca_file`) and has no way to disable verification.
+The HTTP client follows redirects and handles chunked bodies within explicit header,
+body, redirect and timeout limits; `http_request` accepts a `ca_file` option for a
+private CA, and `lib/http.spark` builds an HTTP server on top of the socket layer with
+no extra native code.
 
 ## Project layout
 
@@ -334,7 +342,7 @@ src/
   compiler.c                  AST -> bytecode (slots, upvalues, folding, TCO)
   chunk.c                     bytecode blocks, constants and disassembler
   vm.c                        virtual machine, GC, natives, classes, coroutines
-  net.c                       sockets, URLs and the HTTP client
+  net.c                       sockets, TLS, URLs and the HTTP client
   object.c                    dynamic values, interned strings, arrays, maps
   bytecode.c                  .sparkc serialization
   json.c / regex.c            JSON and regular-expression engines

@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'http_request' ca_file must be a string, received number

@@ -22,6 +22,10 @@ void net_init(void);
 #define SPARK_NET_UNHANDLED 3
 int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value *args, Value *out);
 
+/* Releases the TLS state owned by a socket (SSL and SSL_CTX), if any. Called by
+ * the collector's finalizer and by close(); it never closes the descriptor. */
+void net_socket_release_tls(ObjSocket *socket);
+
 /* Scheduler integration. `may_block` lets the poll sleep until the nearest
  * deadline instead of doing a non-blocking check. */
 bool net_has_waiters(void);

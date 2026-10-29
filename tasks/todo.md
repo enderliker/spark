@@ -232,11 +232,11 @@ and `close`, doing the handshake over the socket layer with SNI and verifying th
 chain against the system store (or `ca_file`) and the hostname. Only reachable if Q11
 approves the dependency (or the tunnel alternative is chosen instead).
 **Acceptance criteria:**
-- [ ] Connects to a local TLS server with the fixture CA and exchanges data both ways.
-- [ ] A self-signed certificate, a wrong hostname and an untrusted chain are all rejected with a clear error.
-- [ ] There is no silent way to skip verification; the trust model is documented.
+- [x] Connects to a local TLS server with the fixture CA and exchanges data both ways.
+- [x] A self-signed certificate, a wrong hostname and an untrusted chain are all rejected with a clear error.
+- [x] There is no silent way to skip verification; the trust model is documented.
 **Verification:**
-- [ ] Fixtures against a local TLS server; suite; ASan/UBSan; security checklist review.
+- [x] Fixtures against a local TLS server; suite; ASan/UBSan; security checklist review.
 **Dependencies:** T83, Q11, Q14.
 **Files:** `Makefile`, `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`, `AGENTS.md`.
 **Scope:** M.
@@ -245,17 +245,17 @@ approves the dependency (or the tunnel alternative is chosen instead).
 **Description:** Let the HTTP client use the TLS transport for `https://` URLs,
 including the verification failures and the CA injection used by tests.
 **Acceptance criteria:**
-- [ ] `https://` against the local TLS server returns the scripted response.
-- [ ] Verification failures surface the same errors as T94 and are covered by fixtures.
+- [x] `https://` against the local TLS server returns the scripted response.
+- [x] Verification failures surface the same errors as T94 and are covered by fixtures.
 **Verification:**
-- [ ] Fixtures; suite; sanitizers.
+- [x] Fixtures; suite; sanitizers.
 **Dependencies:** T92, T94.
 **Files:** `src/net.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
 
 ## Checkpoint: Phase 18
-- [ ] Self-signed and mismatched-host certificates are rejected and covered by tests
-- [ ] The dependency decision is recorded in `AGENTS.md` and `CHANGELOG.md`
+- [x] Self-signed and mismatched-host certificates are rejected and covered by tests
+- [x] The dependency decision is recorded in `AGENTS.md` and `CHANGELOG.md`
 
 ---
 

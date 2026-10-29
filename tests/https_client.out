@@ -1,0 +1,7 @@
+https: 200 yes true
+system: NetworkError true
+wrong-host: NetworkError true
+self-signed: NetworkError true
+untrusted: NetworkError true
+ca-type: TypeError
+https client ok

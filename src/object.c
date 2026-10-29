@@ -9,6 +9,7 @@
 
 #include "buf.h"
 #include "memory.h"
+#include "net.h"
 
 #define INTERN_INITIAL_BUCKETS 4096
 
@@ -702,6 +703,8 @@ ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms)
     socket->is_closed = false;
     socket->kind = kind;
     socket->timeout_ms = timeout_ms;
+    socket->ssl = NULL;
+    socket->ssl_ctx = NULL;
     socket->rbuf_cap = 8192;
     socket->rbuf = mem_realloc(NULL, 0, (size_t)socket->rbuf_cap);
     socket->rbuf_len = 0;
@@ -850,6 +853,7 @@ void object_free(Obj *obj)
     }
     case OBJ_SOCKET: {
         ObjSocket *socket = (ObjSocket *)obj;
+        net_socket_release_tls(socket);
         if (!socket->is_closed && socket->fd >= 0) {
             close(socket->fd);
         }
@@ -1106,8 +1110,11 @@ static void value_format(buf_t *b, Value v, bool repr)
             if (socket->is_closed) {
                 buf_append_str(b, "<socket closed>");
             } else {
-                buf_appendf(b, "<socket %s fd=%d>",
-                            socket->kind == NET_UDP ? "udp" : "tcp", socket->fd);
+                const char *kind = socket->kind == NET_UDP ? "udp"
+                                   : socket->kind == NET_TLS ? "tls"
+                                                             : "tcp";
+
+                buf_appendf(b, "<socket %s fd=%d>", kind, socket->fd);
             }
             break;
         }

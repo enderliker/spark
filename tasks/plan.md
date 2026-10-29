@@ -103,12 +103,12 @@ small amount of VM plumbing.
 - [x] Header/body/redirect/timeout limits enforced and covered by error fixtures
 
 ### Phase 18 - TLS (decision-gated on Q11)
-- [ ] T94 `tls_connect` + `read`/`write`/`close` with certificate and hostname verification
-- [ ] T95 HTTPS through the HTTP client; verification failure fixtures
+- [x] T94 `tls_connect` + `read`/`write`/`close` with certificate and hostname verification
+- [x] T95 HTTPS through the HTTP client; verification failure fixtures
 
 ### Checkpoint: Phase 18
-- [ ] Self-signed and mismatched-host certificates are rejected and covered by tests
-- [ ] Dependency decision recorded in `AGENTS.md` and `CHANGELOG.md`
+- [x] Self-signed and mismatched-host certificates are rejected and covered by tests
+- [x] Dependency decision recorded in `AGENTS.md` and `CHANGELOG.md`
 
 ### Phase 19 - WebSocket (enables the Discord gateway)
 - [ ] T96 WebSocket client: upgrade handshake, masking, text/binary/ping/close, fragmentation
@@ -164,13 +164,15 @@ Decided on 2026-10-28 (recorded in `docs/intent/networking.md`):
 - **Q13 (HTTP server scope) - DECIDED (phase 17):** an HTTP server is in scope, built
   as a Spark library on the socket layer (`lib/http.spark`) so the native surface
   stays small, rather than as a large set of server natives.
-
-Still open (answer at the start of the relevant phase):
-- **Q14 (test certificates).** Acceptable to embed a throwaway self-signed
-  certificate and key under `tests/` for local TLS tests?
-- **Q15 (UDP).** In scope now (T86) or deferred until something needs it?
-- **Q16 (sandboxing).** Spark already reaches the network today through `exec`. Should
-  this stream document that plainly, or also propose a restricted mode?
+- **Q14 (test certificates) - DECIDED (phase 18):** commit a throwaway CA and leaf
+  certificates under `tests/tls/`, with a regeneration script. The private keys are
+  public fixtures, valid only for localhost and never trusted outside the suite, so
+  the tests stay deterministic without requiring `openssl` at run time.
+- **Q15 (UDP) - DECIDED (phase 15):** UDP is in scope and implemented as T86
+  (`udp_bind`, `send_to`, `recv_from`).
+- **Q16 (sandboxing) - DECIDED (phase 18):** document plainly that Spark is not a
+  sandbox and that `exec` already grants network access; this stream adds no
+  restricted mode. The network-security note in `docs/language.md` records it.
 
 ## Out of Scope
 

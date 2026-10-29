@@ -1,0 +1,25 @@
+arity: ArityError
+port: TypeError
+timeout: ValueError
+stalled: TimeoutError
+guard: RuntimeError
+type: socket
+write: 5
+read: echo:hello
+eof: nil
+send: NetworkError
+recv: NetworkError
+recv_line: NetworkError
+wait: NetworkError
+select: NetworkError
+closed: RuntimeError
+tcp-read: NetworkError
+tcp-write: NetworkError
+read-arity: ArityError
+write-arity: ArityError
+ip: 1 echo:x
+ca: NetworkError true
+wrong-host: NetworkError true
+self-signed: NetworkError true
+untrusted: NetworkError true
+tls client ok

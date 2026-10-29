@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import difflib
 import select
+import socketserver
+import ssl
 import subprocess
 import sys
 import threading
@@ -16,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "spark"
 CASES = ROOT / "tests" / "cases"
 ERRORS = ROOT / "tests" / "errors"
+TLS = ROOT / "tests" / "tls"
 
 results: list[tuple[str, bool, str]] = []
 
@@ -554,6 +557,137 @@ class QuietHTTPServer(ThreadingHTTPServer):
         pass
 
 
+class TlsEchoHandler(socketserver.BaseRequestHandler):
+    """Echoes one TLS payload and closes, so the fixtures can check read/EOF."""
+
+    def handle(self):
+        try:
+            data = self.request.recv(4096)
+            if data:
+                self.request.sendall(b"echo:" + data)
+        except OSError:
+            pass
+
+
+class StallHandler(socketserver.BaseRequestHandler):
+    """Accepts a connection but never answers the TLS handshake."""
+
+    def handle(self):
+        time.sleep(2.0)
+
+
+class QuietTCPServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def tls_context(cert_name: str) -> ssl.SSLContext:
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(TLS / f"{cert_name}.pem", TLS / f"{cert_name}.key")
+    return context
+
+
+def start_tls_echo(cert_name: str) -> QuietTCPServer:
+    server = QuietTCPServer(("127.0.0.1", 0), TlsEchoHandler)
+    server.socket = tls_context(cert_name).wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def start_stall() -> QuietTCPServer:
+    server = QuietTCPServer(("127.0.0.1", 0), StallHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def start_tls_http(cert_name: str) -> QuietHTTPServer:
+    server = QuietHTTPServer(("127.0.0.1", 0), ScriptedHandler)
+    server.socket = tls_context(cert_name).wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def run_fixture(script: str, expected_name: str, args: list[str], label: str,
+                timeout: int = 60) -> None:
+    completed = run([str(ROOT / "tests" / script), *args], timeout=timeout)
+    expected = (ROOT / "tests" / expected_name).read_text(encoding="utf-8")
+    detail = ""
+    ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+    if completed.returncode != 0:
+        detail += f"exit code {completed.returncode} (expected 0)\n"
+    if completed.stdout != expected:
+        detail += unified(expected, completed.stdout)
+    if completed.stderr:
+        detail += "unexpected stderr:\n" + completed.stderr
+    report(label, ok, detail)
+
+
+def test_tls_client() -> None:
+    print("\nTLS client")
+    servers: list[QuietTCPServer] = []
+    try:
+        trusted = start_tls_echo("server")
+        servers.append(trusted)
+        wrong = start_tls_echo("wrong-host")
+        servers.append(wrong)
+        self_signed = start_tls_echo("self-signed")
+        servers.append(self_signed)
+        untrusted = start_tls_echo("untrusted")
+        servers.append(untrusted)
+        stalled = start_stall()
+        servers.append(stalled)
+        run_fixture(
+            "tls_client.spark",
+            "tls_client.out",
+            [
+                str(trusted.server_address[1]),
+                str(wrong.server_address[1]),
+                str(self_signed.server_address[1]),
+                str(untrusted.server_address[1]),
+                str(TLS / "ca.pem"),
+                str(stalled.server_address[1]),
+            ],
+            "tls transport verifies chains and host names",
+        )
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def test_https_client() -> None:
+    print("\nHTTPS client")
+    servers: list[QuietHTTPServer] = []
+    try:
+        trusted = start_tls_http("server")
+        servers.append(trusted)
+        wrong = start_tls_http("wrong-host")
+        servers.append(wrong)
+        self_signed = start_tls_http("self-signed")
+        servers.append(self_signed)
+        untrusted = start_tls_http("untrusted")
+        servers.append(untrusted)
+        run_fixture(
+            "https_client.spark",
+            "https_client.out",
+            [
+                str(trusted.server_address[1]),
+                str(wrong.server_address[1]),
+                str(self_signed.server_address[1]),
+                str(untrusted.server_address[1]),
+                str(TLS / "ca.pem"),
+            ],
+            "https client injects a CA and rejects bad certificates",
+        )
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
 def test_http_client() -> None:
     print("\nHTTP client")
     server = QuietHTTPServer(("127.0.0.1", 0), ScriptedHandler)
@@ -625,6 +759,8 @@ def main() -> int:
     test_network_limits()
     test_http_client()
     test_http_server()
+    test_tls_client()
+    test_https_client()
     test_cli()
 
     failed = [name for name, ok, _ in results if not ok]

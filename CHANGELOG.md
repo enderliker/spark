@@ -32,9 +32,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   map-driven `http_request` return `{status, headers, body}` and handle chunked
   bodies, `Content-Length`, read-to-EOF, redirects and the `Connection: close`
   framing, within explicit header (64 KiB), header-count, redirect (5), body
-  (16 MiB) and timeout (30 s) limits. Only `http://` is supported until TLS lands.
+  (16 MiB) and timeout (30 s) limits.
 - `lib/http.spark`: an HTTP/1.1 server written in Spark on the socket layer, with
   request parsing and a handler callback, used by `examples/http_server.spark`.
+- TLS: `tls_connect(host, port, timeout_ms?, ca_file?)` returns a `socket` with
+  `read`, `write` and `close` methods. The handshake and the reads/writes suspend
+  their coroutine like the other socket operations. The chain is verified against
+  the system trust store (or an explicit CA file) and the host name or IP address is
+  checked, with SNI for DNS names and TLS 1.2 as the minimum version. There is no
+  option to disable verification.
+- HTTPS: `http_get`/`http_post`/`http_put`/`http_delete` accept `https://` URLs, and
+  `http_request` gains a `ca_file` option for tests and private CAs. Certificate and
+  host-name failures raise the same `NetworkError` as `tls_connect`.
+- Test fixtures: throwaway CA, leaf, wrong-host, untrusted-chain and self-signed
+  certificates under `tests/tls/`, with a regeneration script. The suite runs local
+  TLS servers only and never touches the public internet.
+
+### Dependencies
+
+- Spark now links **OpenSSL** (`libssl`/`libcrypto`) for the TLS transport only.
+  This is the single approved exception to the no-dependencies rule (decision Q11);
+  the socket, HTTP and WebSocket layers stay dependency-free. Building TLS requires
+  the OpenSSL development headers (`libssl-dev` on Debian/Ubuntu).
 
 ### Fixed
 

@@ -1,7 +1,7 @@
 # Spark architecture
 
-Spark is a bytecode interpreter written in C11 with no external dependencies. The
-path of an execution is:
+Spark is a bytecode interpreter written in C11. Its only external dependency is
+OpenSSL, linked solely for TLS (decision Q11). The path of an execution is:
 
 ```
 .spark source
@@ -339,10 +339,11 @@ for strings. The same rule applies to a callback result that is stored after
 
 ## Networking
 
-The socket layer lives in `src/net.c` and adds no dependencies. `net_init()` registers
-the global natives (`tcp_connect`, `tcp_listen`, `udp_bind`, `net_hostname`) from
-`vm_init`, and the VM routes method calls on socket and server receivers to
-`net_dispatch_method`.
+The socket layer lives in `src/net.c`. The socket, URL and HTTP layers add no
+dependencies; TLS is the one exception and links OpenSSL (decision Q11).
+`net_init()` registers the global natives (`tcp_connect`, `tls_connect`,
+`tcp_listen`, `udp_bind`, `net_hostname`) from `vm_init`, and the VM routes method
+calls on socket and server receivers to `net_dispatch_method`.
 
 - **Resource model.** `ObjSocket` and `ObjServer` follow `ObjFile`: they own a file
   descriptor, are closed by `close()`, by `object_free` when the collector finalizes
@@ -430,6 +431,61 @@ client live in `src/net.c` beside the socket layer; the server is a Spark librar
 malformed status line and premature EOF); `tests/run_tests.py` starts that server. The
 same file starts `tests/http_server.spark` (the Spark server) and runs
 `tests/http_server_client.spark` (Spark's client) against it, in separate processes.
+
+### TLS (phase 18)
+
+`tls_connect(host, port, timeout_ms?, ca_file?)` is the only new native. It reuses
+`net_connect` for resolution and the TCP connect, then hands the descriptor to
+OpenSSL. The result is still an `ObjSocket`, now with kind `NET_TLS` and two opaque
+fields (`SSL *` and `SSL_CTX *`); `type()` keeps reporting `"socket"` and the methods
+are `read`, `write` and `close`.
+
+- **Verification is not optional.** `net_tls_context` always calls
+  `SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL)`, sets a depth of 10 and requires
+  TLS 1.2 or newer. The trust store is `SSL_CTX_set_default_verify_paths` by default
+  or `SSL_CTX_load_verify_locations` for an explicit `ca_file`. No public API can set
+  `SSL_VERIFY_NONE`, so a program cannot silently accept an untrusted chain.
+- **Peer identity.** `net_tls_client` sends SNI (`SSL_set_tlsext_host_name`) and pins
+  the expected DNS name with `SSL_set1_host`, rejecting partial wildcards
+  (`X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS`); for IPv4/IPv6 literals it pins the
+  address with `X509_VERIFY_PARAM_set1_ip_asc` instead. A mismatch aborts the
+  handshake and is reported as `TLS certificate verification failed: hostname
+  mismatch` (or the matching OpenSSL reason for a self-signed or unknown-issuer
+  chain). Compression and server-initiated renegotiation are disabled.
+- **Handshake.** `net_tls_handshake_step` calls `SSL_connect` once. A `WANT_READ` or
+  `WANT_WRITE` registers `NET_OP_TLS_HANDSHAKE` and suspends the coroutine through the
+  same waiter list as the sockets; `net_complete_waiter` retries the step and flips
+  the poll direction when OpenSSL asks for the other one. A timeout disposes the
+  socket and raises `TimeoutError`. The HTTP client is synchronous, so it uses
+  `net_tls_handshake_blocking`, which loops over the same step with `poll(2)` and the
+  request deadline.
+- **Reads and writes.** `NET_OP_TLS_READ`/`NET_OP_TLS_WRITE` retry `SSL_read_ex` and
+  `SSL_write_ex` in the scheduler. The wait state records the direction OpenSSL wants
+  (`POLLIN`/`POLLOUT`), and a short write keeps its offset. `read(max)` returns `nil`
+  at end of stream; `SSL_OP_IGNORE_UNEXPECTED_EOF` normalizes a peer that closes the
+  TCP stream without `close_notify`, while HTTP framing still detects a truncated
+  body. Plain `send`, `recv`, `recv_line`, `wait` and `net_select` are rejected on TLS
+  sockets so ciphertext can never be read as plaintext.
+- **Ownership.** The socket owns the `SSL` and `SSL_CTX`. `close()`, the collector
+  finalizer (`net_socket_release_tls`) and `vm_free` all release them; `close()` also
+  sends a best-effort `SSL_shutdown`. The descriptors stay non-blocking, so no TLS
+  call can stall the scheduler.
+- **HTTPS.** `net_http_perform` parses the scheme, connects as usual and, for
+  `https://`, runs the blocking handshake before building the `NetHttpReader`. The
+  reader and `net_http_send_all` take an optional `SSL *` and retry on
+  `WANT_READ`/`WANT_WRITE` under the request deadline. `http_request` exposes
+  `ca_file` for private CAs and the test fixtures; the positional helpers use the
+  system store. Redirects carry the same `ca_file` and re-verify each host.
+- **Test fixtures.** `tests/tls/` holds a throwaway CA, a trusted leaf for
+  `localhost`/`127.0.0.1`/`::1`, a wrong-host leaf, an untrusted-chain leaf and a
+  self-signed leaf, plus `generate.sh` to regenerate them. `tests/run_tests.py` starts
+  local Python TLS echo and HTTPS servers; the suite never contacts the public
+  internet.
+
+`tests/tls_client.spark` covers the trusted round-trip, IP-SAN verification, EOF,
+argument errors, a missing CA file and the three rejection cases.
+`tests/https_client.spark` repeats the trusted and rejection cases through the HTTP
+client, including the system-store failure and `ca_file` validation.
 
 ## Modules and loading
 

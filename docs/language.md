@@ -510,6 +510,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `close(file)` | Closes file handle; using a closed handle is an error. |
 | `eof(file)` | Whether file handle has reached end of file. |
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
+| `tls_connect(host, port, timeout_ms?, ca_file?)` | Connects a TLS client; returns a `socket` with `read`/`write`. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server` (port `0` binds an ephemeral port). |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket for datagrams; returns a `socket`. |
 | `net_hostname()` | The local host name. |
@@ -646,6 +647,39 @@ var server = tcp_listen("127.0.0.1", 8080);
 var job = spawn(echo, server);
 ```
 
+### TLS
+
+`tls_connect(host, port, timeout_ms?, ca_file?)` opens a TCP connection and performs
+a TLS handshake. It returns a `socket` whose `read(max)`, `write(data)` and `close()`
+methods mirror `recv`/`send`:
+
+```spark
+var socket = tls_connect("example.com", 443, 5000);
+socket.write("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n");
+var reply = socket.read(65536);
+while (reply != nil) {
+    print(reply);
+    reply = socket.read(65536);
+}
+socket.close();
+```
+
+- Verification is always on. The chain is checked against the system trust store, or
+  against `ca_file` when supplied, and the host name (or IP address) must match the
+  certificate. `ca_file` is a PEM file with one or more trusted certificates.
+- SNI is sent for DNS names. IPv4 and IPv6 literals are verified against the
+  certificate's IP subject alternative names instead.
+- TLS 1.2 is the minimum accepted version. There is no option to skip verification.
+- A certificate failure (self-signed, unknown issuer, wrong host name, expired)
+  raises `NetworkError` with `TLS certificate verification failed: ...`. A timeout
+  during connect or the handshake raises `TimeoutError`.
+- `timeout_ms` is stored as the socket's default deadline and bounds the handshake,
+  every `read` and every `write`; omitted or `nil` waits forever. The handshake and
+  the reads/writes yield the coroutine, like the TCP methods.
+- `read(max)` returns up to `max` bytes (at most 16 MiB), or `nil` at end of stream.
+  `write(data)` writes all of `data` and returns the byte count. TLS sockets reject
+  `send`, `recv`, `recv_line`, `wait` and `net_select`; use `read`/`write` instead.
+
 ### HTTP client
 
 `http_get`/`http_post`/`http_put`/`http_delete` send an HTTP/1.1 request and return
@@ -663,8 +697,10 @@ var created = http_post("http://api.local/items", "{\"name\":\"x\"}",
 ```
 
 `http_request(options)` is the map-driven form; it accepts `url` (required),
-`method`, `body`, `headers`, `timeout_ms`, `follow_redirects` and `max_body`, and
-rejects unknown keys.
+`method`, `body`, `headers`, `timeout_ms`, `follow_redirects`, `max_body` and
+`ca_file`, and rejects unknown keys. `ca_file` injects a PEM trust store for
+`https://` (useful for private CAs and tests); the positional helpers always use the
+system trust store.
 
 | Call | Result |
 | --- | --- |
@@ -684,14 +720,24 @@ rejects unknown keys.
   defaults to 16 MiB and may not exceed that. The status line plus the headers may
   not exceed 64 KiB and at most 1000 headers and five redirects are accepted. Each
   limit fails with an explicit `NetworkError`.
-- Only `http://` is supported; `https://` raises `NetworkError` until TLS lands.
-  A malformed status line, a premature EOF, an unknown host and a refused
-  connection all raise `NetworkError`, and exceeding the deadline raises
-  `TimeoutError`.
+- `http://` and `https://` are both supported. HTTPS verifies the certificate chain
+  and the host name with the same rules as `tls_connect`; verification failures raise
+  `NetworkError` and there is no way to disable them. A malformed status line, a
+  premature EOF, an unknown host and a refused connection all raise `NetworkError`,
+  and exceeding the deadline raises `TimeoutError`.
 - A header value or URL containing a newline raises `ValueError`, so a request
   cannot be split into extra headers.
 - Unlike the socket methods, the HTTP client is synchronous: it blocks the process
   (bounded by `timeout_ms`) instead of yielding the coroutine.
+
+### Network security
+
+Spark is not a sandbox. `exec` already lets a program run arbitrary commands and
+reach the network, and the socket, HTTP and TLS natives deliberately impose no
+destination allow-list. A program that accepts URLs from untrusted input must apply
+its own policy (for example, restrict schemes and reject loopback or private address
+ranges) before connecting. TLS does not change that: certificate verification
+authenticates the peer, it does not make an arbitrary destination safe to contact.
 
 ### HTTP server library
 
@@ -1153,6 +1199,9 @@ Linter rules:
   stack (up to 4,194,304 items) and up to 4096 call frames.
 - A `recv`/`recv_from` returns at most 16 MiB; `recv_line` is bounded to 16 MiB
   (default 64 KiB) and raises `ValueError` past that.
+- A TLS `read` returns at most 16 MiB and a `write` accepts at most `INT32_MAX`
+  bytes. TLS 1.2 is the minimum accepted version; the handshake, reads and writes
+  are bounded by the socket's `timeout_ms` (0 waits forever).
 - Ports are 16-bit (`0..65535`); port `0` asks the kernel for an ephemeral port.
 - Blocking network calls yield only their coroutine; the scheduler sleeps in `poll(2)`
   until a descriptor is ready or the nearest deadline fires, so an idle wait uses no

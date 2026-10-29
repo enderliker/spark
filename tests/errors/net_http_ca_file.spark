@@ -1,0 +1,1 @@
+http_request({"url": "https://127.0.0.1/", "ca_file": 42});

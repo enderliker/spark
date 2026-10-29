@@ -1,7 +1,7 @@
 CC      ?= cc
 CFLAGS  ?= -std=c11 -O3 -g -Wall -Wextra -Wpedantic
 CPPFLAGS += -Isrc -D_POSIX_C_SOURCE=200809L -MMD -MP
-LDLIBS  += -lm
+LDLIBS  += -lm -lssl -lcrypto
 
 BIN := spark
 SRC := $(wildcard src/*.c)
