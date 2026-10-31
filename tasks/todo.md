@@ -667,16 +667,35 @@ RE2 approach) or an equivalent, exposed as `regex_match_groups(pattern, text)` -
 Keep `regex_match`/`regex_find` as they are so existing programs keep their behavior
 and their cost.
 **Acceptance criteria:**
-- [ ] Groups, nested groups, optional groups that did not participate (`nil`) and named
+- [x] Groups, nested groups, optional groups that did not participate (`nil`) and named
       groups all behave as documented, with the group count exposed.
-- [ ] With N groups the thread state stays bounded: a fixture with 20 groups and a
+- [x] With N groups the thread state stays bounded: a fixture with 20 groups and a
       1 MB haystack does not blow memory or time.
-- [ ] Unbalanced parentheses remain a `ValueError` with the existing message style.
+- [x] Unbalanced parentheses remain a `ValueError` with the existing message style.
 **Verification:**
-- [ ] Fixtures including "unmatched optional group is nil", nested captures and named
+- [x] Fixtures including "unmatched optional group is nil", nested captures and named
       captures; suite + ASan/UBSan (this code holds pointers into the haystack).
 **Dependencies:** T119. **Files:** `src/regex.c`, `src/regex.h`, `src/vm.c`, `tests/`,
 `docs/language.md`. **Scope:** M.
+
+**Done notes:** The engine work landed with T119 (per-thread capture rows written by
+`RE_SAVE`, 32-group bound, `nil` for a slot a thread never entered); T120 exposes it.
+`regex_match_groups(pattern, text, flags?)` builds `{start, end, groups, named}` from
+`regex_match_groups` in `src/regex.c` under a paused collector, with `groups` in
+opening-parenthesis order and `named` pointing at the same maps. Offsets are character
+offsets (the multibyte group fixture matches `ñ` at 1 and `日` at 2). Repeats keep the
+last iteration (`((a|b)+)x` over `"abbx"` reports `"b"`), `(?:...)` takes no slot, and
+a non-matching pattern returns `nil`. Parse errors keep the existing style and add
+three new ones: a duplicate or malformed `(?P<name>)` and the 33rd group are all
+`ValueError` at the pattern's line. `regex_match`/`regex_find` are untouched and do
+not pay for capture tracking unless a group exists. Fixtures: `cases/regex_groups.spark`
+plus `errors/regex_unclosed_group`, `regex_duplicate_group`, `regex_bad_group_name`,
+`regex_too_many_groups`. The 20-group, 1 MB haystack fixture runs in 0.14 s. Suite
+308/308, sanitizers clean. Benchmark: `fib(27)` min 5.10-5.22 ms on a host that
+measures ~5.2 ms for HEAD too (8 interleaved rounds: HEAD 5.07-5.34, work
+5.14-5.71); the regex natives are not on the fib path, and the machine is ~0.3 ms
+slower than during T115 (min 4.91 ms). Docs: `docs/language.md` "Capture groups" subsection and
+the natives table, `README.md`, `docs/architecture.md`, `CHANGELOG.md` Added.
 
 ### T121 - Regex: `regex_split` and group references in `regex_replace`
 **Description:** `regex_split(pattern, text, limit?)` and `$1`/`${name}` expansion in

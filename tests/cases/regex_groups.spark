@@ -1,0 +1,31 @@
+// Capture groups, named groups and the group map shape.
+var m = regex_match_groups("(a)(b)?", "a");
+print(m["start"], m["end"], len(m["groups"]));
+print(m["groups"][0]["start"], m["groups"][0]["end"], m["groups"][0]["text"]);
+print(m["groups"][1]);
+
+var date = regex_match_groups("(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})", "date: 2026-10-31!");
+print(date["start"], date["end"], len(date["groups"]));
+print(date["named"]["year"]["text"], date["named"]["month"]["text"], date["named"]["day"]["text"]);
+print(date["named"]["year"]["start"], date["named"]["year"]["end"]);
+
+var nested = regex_match_groups("((a|b)+)x", "abbx");
+print(len(nested["groups"]), nested["groups"][0]["text"], nested["groups"][1]["text"]);
+
+// A non-capturing group does not take a slot.
+print(len(regex_match_groups("(?:a)(b)", "ab")["groups"]));
+
+// A pattern that does not match returns nil.
+print(regex_match_groups("(a)", "b"));
+
+// Offsets are character offsets, also for groups after multibyte text.
+var mb = regex_match_groups("(ñ)(日)", "añ日本");
+print(mb["groups"][0]["start"], mb["groups"][0]["end"]);
+print(mb["groups"][1]["start"], mb["groups"][1]["end"]);
+
+// With a large haystack the thread state stays bounded: 20 groups over 1 MB.
+var big = regex_match_groups(
+    "((a)(b)(c)(d)(e)(f)(g)(h)(i)(j)(k)(l)(m)(n)(o)(p)(q)(r)(s)(t))",
+    repeat("x", 1000000) + "abcdefghijklmnopqrst");
+print(big["start"], len(big["groups"]), big["groups"][20]["text"]);
+print("groups ok");

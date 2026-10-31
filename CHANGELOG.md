@@ -118,6 +118,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `{start, end}` character offsets, consistent with `len` and `index_of`.
   Matching now uses leftmost-first semantics, and a step budget rejects a
   pathological pattern with `ValueError` instead of hanging the interpreter.
+- Capture groups: `regex_match_groups(pattern, text, flags?)` returns
+  `{start, end, groups, named}` for the first match, or `nil` when there is none.
+  `groups` holds one `{start, end, text}` map per capturing group in
+  opening-parenthesis order and `nil` for a group that did not participate;
+  `named` keys the same maps by the `(?P<name>...)` name. A group repeated by a
+  quantifier keeps its last match, non-capturing groups take no slot, and offsets
+  are character offsets. Names must be unique and well formed, and at most 32
+  capturing groups are allowed; both are `ValueError`s.
 - Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default

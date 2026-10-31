@@ -354,6 +354,7 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `to_json(value)` / `from_json(text)` | JSON encoding and decoding. |
 | `regex_match(p, t, f?)` / `regex_find(p, t, f?)` / `regex_replace(p, r, t, f?)` | Regular expressions, optionally with `i`/`s`/`m` flags. |
 | `regex_find_index(p, t, f?)` / `regex_match_at(p, t, start, f?)` | Matches with character offsets. |
+| `regex_match_groups(p, t, f?)` | First match with its capture groups (`groups`, `named`) or `nil`. |
 | `string_builder(initial?)` / `sb_append(sb, v)` | Build a large string in amortized O(1) per append. |
 | `sb_to_string(sb)` / `sb_len(sb)` / `sb_clear(sb)` | Builder text, character length and reset. |
 | `spawn(fn, args...)` | Starts a coroutine; returns the coroutine object. |

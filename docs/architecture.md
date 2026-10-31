@@ -53,7 +53,9 @@ higher-priority threads keep running and may replace the match later.
 Capture groups are carried by the threads: `SAVE` records a byte offset in a
 per-thread capture row, bounded at 32 groups, and a thread that never enters an
 optional group keeps `-1` there (reported as `nil`). Offsets are converted to
-UTF-8 character offsets before they reach Spark. The `i` flag folds ASCII only;
+UTF-8 character offsets before they reach Spark, so `regex_match_groups` can hand
+Spark the `{start, end, groups, named}` map with the same coordinates `len` and
+`index_of` use. The `i` flag folds ASCII only;
 classes stay byte sets. A step budget (20,000,000 thread steps per operation)
 bounds pathological patterns and raises `ValueError` instead of hanging.
 

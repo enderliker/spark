@@ -870,6 +870,7 @@ names the argument type but never echoes the key or the data.
 | `regex_find(pattern, text, flags?)` | Array of all non-overlapping matches of `pattern` in `text`. |
 | `regex_find_index(pattern, text, flags?)` | The same matches as maps `{start, end}` with character offsets. |
 | `regex_match_at(pattern, text, start, flags?)` | A match starting exactly at character offset `start`, as `{start, end}`, or `nil`. |
+| `regex_match_groups(pattern, text, flags?)` | The first match with `{start, end, groups, named}` captures, or `nil`. |
 | `regex_replace(pattern, repl, text, flags?)` | Replaces non-overlapping matches with `repl`. |
 | `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
 | `spawn(fn, a, b, ...)` | Starts a coroutine that calls `fn` with the given arguments; returns the coroutine object. |
@@ -908,7 +909,7 @@ alternative is tried first.
 | `{n}`, `{n,}`, `{n,m}` | Exactly `n`, at least `n`, or between `n` and `m` repetitions. |
 | `*? +? ?? {n,m}?` | Lazy variants: prefer the fewest repetitions. |
 | `a|b` | Alternation; the left branch has priority. |
-| `( )` | Capturing group (section for the group natives below). |
+| `( )`, `(?P<name> )` | Capturing group; a name also exposes it in the `named` map. |
 | `(?: )` | Non-capturing group. |
 | `(?i)`, `(?s)`, `(?m)` | Inline flags from here to the end of the enclosing group; `(?-i)` clears one. |
 
@@ -937,6 +938,41 @@ print(regex_find_index("\\d+", "ab12cd345"));     // [{start:2,end:4}, {start:6,
 var m = regex_match_at("[a-z]+", "ñandú", 1);     // starts at character 1
 print(m["start"], m["end"]);                      // 1 4
 ```
+
+#### Capture groups
+
+`regex_match_groups(pattern, text, flags?)` returns the first match with every
+capture, or `nil` when there is none:
+
+```spark
+var m = regex_match_groups("(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})",
+                           "release 2026-10-31");
+print(m["start"], m["end"]);          // 8 18, the whole match
+print(len(m["groups"]));              // 3, the capture count
+print(m["groups"][0]["text"]);        // "2026"
+print(m["named"]["month"]["text"]);   // "10"
+print(m["named"]["day"]["start"]);    // 16
+```
+
+| Field | Meaning |
+| --- | --- |
+| `start`, `end` | Character offsets of the whole match. |
+| `groups` | Array of `{start, end, text}` maps, one per capturing group in opening-parenthesis order. |
+| `named` | Map from the `(?P<name>...)` name to the same group map. |
+
+- A group that did not participate (for example the unmatched half of a
+  `(a)|(b)` alternation, or an optional group that matched empty) is `nil` in
+  `groups` and in `named`.
+- A group repeated by a quantifier keeps its **last** match, as in Perl:
+  `regex_match_groups("((a|b)+)x", "abbx")["groups"][1]["text"]` is `"b"`.
+- Non-capturing groups `(?:...)` do not take a slot, so they never appear in
+  `groups`.
+- Names use letters, digits and `_`, cannot start with a digit, and must be
+  unique; a malformed or duplicated name is a `ValueError`. At most 32 capturing
+  groups are allowed.
+- All offsets are character offsets, including groups that come after multibyte
+  text, and the thread state stays bounded: a fixture matches 20 groups against a
+  1 MB haystack without excessive time or memory.
 
 ### URLs and query strings
 

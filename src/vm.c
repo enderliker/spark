@@ -3213,6 +3213,35 @@ static Value native_regex_match_at(int arg_count, Value *args)
     return OBJ_VAL(map);
 }
 
+static Value native_regex_match_groups(int arg_count, Value *args)
+{
+    RegexFlags flags;
+    char error[256] = {0};
+    ObjMap *result = NULL;
+
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY,
+                         "'regex_match_groups' expects 2 or 3 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_match_groups' expects two strings");
+        return NIL_VAL;
+    }
+    if (!regex_flags_argument(arg_count, args, 2, "regex_match_groups", &flags)) {
+        return NIL_VAL;
+    }
+    if (!regex_match_groups(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, flags,
+                            &result, error, sizeof(error))) {
+        if (error[0] != '\0') {
+            vm_runtime_error(ERROR_VALUE, "%s", error);
+        }
+        return NIL_VAL;
+    }
+    return OBJ_VAL(result);
+}
+
 static Value native_regex_replace(int arg_count, Value *args)
 {
     RegexFlags flags;
@@ -9483,6 +9512,7 @@ void vm_init(void)
     define_native("regex_find", native_regex_find, -1);
     define_native("regex_find_index", native_regex_find_index, -1);
     define_native("regex_match_at", native_regex_match_at, -1);
+    define_native("regex_match_groups", native_regex_match_groups, -1);
     define_native("regex_replace", native_regex_replace, -1);
     define_native("time", native_time, 0);
     define_native("sleep", native_sleep, 1);
