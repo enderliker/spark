@@ -722,6 +722,33 @@ ObjServer *object_server(int fd)
     return server;
 }
 
+ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms)
+{
+    ObjWebSocket *websocket;
+
+    /* The WebSocket is not reachable from a root until the caller returns it,
+     * so no collection may run while its buffers are allocated. */
+    mem_pause_gc();
+    websocket = allocate_obj(sizeof(ObjWebSocket), OBJ_WEBSOCKET);
+    websocket->socket = socket;
+    websocket->is_closed = false;
+    websocket->peer_closed = false;
+    websocket->sent_close = false;
+    websocket->receiving = false;
+    websocket->assembling = false;
+    websocket->msg_opcode = 0;
+    websocket->timeout_ms = timeout_ms;
+    websocket->rbuf_cap = 8192;
+    websocket->rbuf = mem_realloc(NULL, 0, (size_t)websocket->rbuf_cap);
+    websocket->rbuf_len = 0;
+    websocket->rbuf_pos = 0;
+    websocket->msg_cap = 8192;
+    websocket->msg = mem_realloc(NULL, 0, (size_t)websocket->msg_cap);
+    websocket->msg_len = 0;
+    mem_resume_gc();
+    return websocket;
+}
+
 ObjStringBuilder *object_string_builder(int initial_capacity)
 {
     if (initial_capacity < 16) {
@@ -869,6 +896,13 @@ void object_free(Obj *obj)
         mem_realloc(server, sizeof(ObjServer), 0);
         break;
     }
+    case OBJ_WEBSOCKET: {
+        ObjWebSocket *websocket = (ObjWebSocket *)obj;
+        mem_realloc(websocket->rbuf, (size_t)websocket->rbuf_cap, 0);
+        mem_realloc(websocket->msg, (size_t)websocket->msg_cap, 0);
+        mem_realloc(websocket, sizeof(ObjWebSocket), 0);
+        break;
+    }
     case OBJ_STRING_BUILDER: {
         ObjStringBuilder *sb = (ObjStringBuilder *)obj;
         mem_realloc(sb->chars, (size_t)sb->capacity, 0);
@@ -923,6 +957,7 @@ const char *obj_type_name(ObjType type)
     case OBJ_CHANNEL: return "channel";
     case OBJ_SOCKET: return "socket";
     case OBJ_SERVER: return "server";
+    case OBJ_WEBSOCKET: return "websocket";
     }
     return "object";
 }
@@ -1124,6 +1159,15 @@ static void value_format(buf_t *b, Value v, bool repr)
                 buf_append_str(b, "<server closed>");
             } else {
                 buf_appendf(b, "<server fd=%d>", server->fd);
+            }
+            break;
+        }
+        case OBJ_WEBSOCKET: {
+            ObjWebSocket *websocket = (ObjWebSocket *)AS_OBJ(v);
+            if (websocket->is_closed) {
+                buf_append_str(b, "<websocket closed>");
+            } else {
+                buf_appendf(b, "<websocket fd=%d>", websocket->socket->fd);
             }
             break;
         }

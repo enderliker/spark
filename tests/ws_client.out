@@ -1,0 +1,35 @@
+type: websocket
+text: 5
+text-recv: text hello
+binary: 3
+binary-recv: binary true
+ping: 2
+pong: pong ka
+bad-close-code: ValueError
+long-reason: ValueError
+long-ping: ValueError
+send-after-close: RuntimeError
+closed: nil
+fragmented: text Hello, fragmented world
+fragmented-closed: nil
+auto-pong: text pong-ok
+server-close: nil
+oversized: NetworkError true
+masked: NetworkError true
+bad-utf8: NetworkError true
+bad-continuation: NetworkError true
+bad-close: NetworkError true
+reserved-bits: NetworkError true
+timeout: TimeoutError
+bad-status: NetworkError true
+bad-accept: NetworkError true
+bad-upgrade: NetworkError true
+bad-connection: NetworkError true
+extensions: NetworkError true
+protocol: NetworkError true
+bad-url: ValueError
+bad-scheme: NetworkError
+wss: 6
+wss-recv: text secret
+wss-closed: nil
+ws client ok

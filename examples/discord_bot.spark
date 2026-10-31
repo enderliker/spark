@@ -1,0 +1,78 @@
+// Minimal Discord gateway client.
+//
+//   export DISCORD_TOKEN="your bot token"
+//   spark examples/discord_bot.spark
+//
+// The token stays in the environment and is never printed. To run it offline
+// against the mock gateway used by the tests, start the gateway in one terminal:
+//
+//   python3 tests/run_tests.py --mock-gateway
+//
+// It prints a ws://127.0.0.1:PORT/?v=10 URL; then run:
+//
+//   DISCORD_TOKEN=test-token DISCORD_GATEWAY_URL="ws://127.0.0.1:PORT/?v=10" \
+//       spark examples/discord_bot.spark
+//
+// The example identifies, heartbeats on the interval sent in HELLO and answers
+// a MESSAGE_CREATE whose content is "ping" with "pong". It stops when the
+// gateway closes the connection.
+
+var token = env("DISCORD_TOKEN");
+if (token == nil or token == "") {
+    print("set DISCORD_TOKEN (and optionally DISCORD_GATEWAY_URL)");
+    exit(2);
+}
+
+var url = env("DISCORD_GATEWAY_URL");
+if (url == nil or url == "") {
+    url = "wss://gateway.discord.gg/?v=10&encoding=json";
+}
+
+var socket = ws_connect(url, 5000);
+var heartbeat_ms = 1000;
+var sequence = nil;
+
+fn heartbeat() {
+    socket.send_text(to_json({"op": 1, "d": sequence}));
+}
+
+while (true) {
+    var frame = nil;
+    try {
+        frame = socket.receive(heartbeat_ms);
+    } catch (e) {
+        if (e.type == "TimeoutError") {
+            heartbeat();
+            continue;
+        }
+        throw e;
+    }
+    if (frame == nil) {
+        break;
+    }
+    if (frame.opcode != "text") {
+        continue;
+    }
+    var event = from_json(frame.data);
+    if (event["s"] != nil) {
+        sequence = event["s"];
+    }
+    var op = event["op"];
+    if (op == 10) {
+        heartbeat_ms = event["d"]["heartbeat_interval"];
+        socket.send_text(to_json({"op": 2, "d": {"token": token, "intents": 0}}));
+    } else if (op == 0 and event["t"] == "READY") {
+        print("ready");
+    } else if (op == 0 and event["t"] == "MESSAGE_CREATE") {
+        print("message:", event["d"]["content"]);
+        socket.send_text(to_json({
+            "op": 0,
+            "t": "MESSAGE_CREATE",
+            "d": {"content": "pong", "channel_id": event["d"]["channel_id"]}
+        }));
+        print("reply sent");
+    }
+}
+
+socket.close();
+print("closed");

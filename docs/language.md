@@ -446,7 +446,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
-| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, or the class name of an instance. |
+| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
 | `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string also works. |
 | `is_a(x, Class)` | `true` when `x` is an instance of `Class` or one of its subclasses. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
@@ -729,6 +729,90 @@ system trust store.
   cannot be split into extra headers.
 - Unlike the socket methods, the HTTP client is synchronous: it blocks the process
   (bounded by `timeout_ms`) instead of yielding the coroutine.
+
+### WebSocket client
+
+`ws_connect(url, timeout_ms?, ca_file?)` opens an RFC 6455 WebSocket client over
+`ws://` or `wss://`. The URL supplies the path and query; the upgrade handshake is
+verified (status `101`, `Upgrade`/`Connection` headers and the
+`Sec-WebSocket-Accept` digest) and the result is a GC-managed `websocket`
+(`type()` reports `"websocket"`):
+
+```spark
+var socket = ws_connect("wss://gateway.example/?v=10", 5000);
+socket.send_text("hello");
+var frame = socket.receive();          // {opcode: "text", data: "hello"}
+print(frame.opcode, frame.data);
+socket.ping("keepalive");
+print(socket.receive().opcode);        // "pong"
+socket.close(1000, "done");
+print(socket.receive());               // nil once the peer closes
+```
+
+| Call | Result |
+| --- | --- |
+| `ws.send_text(data)` / `ws.send_binary(data)` | Sends one masked text or binary message; returns the byte count. |
+| `ws.receive(timeout_ms?)` | The next `{opcode, data}` message, or `nil` when closed. |
+| `ws.ping(data?)` | Sends a ping; returns the payload byte count. |
+| `ws.close(code?, reason?)` | Starts the close handshake (default code `1000`). |
+
+- `receive` returns `{opcode, data}` with `opcode` equal to `"text"`, `"binary"` or
+  `"pong"`. Fragmented messages are reassembled before they are returned. `nil`
+  means the peer closed the connection, the close handshake completed, or a
+  previous `close` already closed it.
+- Pings from the peer are answered automatically with a pong carrying the same
+  payload and are not returned to the program; unsolicited pongs are returned as
+  `"pong"` messages. Control frames may arrive between the fragments of a message.
+- `send_text` requires valid UTF-8. Received text and close reasons are validated
+  too. A protocol violation (masked server frame, reserved bit or opcode, orphan
+  continuation, invalid UTF-8, invalid close code) raises `NetworkError`, sends a
+  close frame with code `1002`, `1007` or `1009`, and closes the transport.
+- Limits: one frame and one assembled message may not exceed 16 MiB, a control
+  payload is at most 125 bytes and a close reason at most 123 bytes. Exceeding a
+  limit raises `ValueError` on send and `NetworkError` on receive.
+- `wss://` uses the same chain and host-name verification as `tls_connect`;
+  `ca_file` injects a PEM trust store and is ignored by `ws://`. The TCP connect
+  and the TLS handshake are synchronous and bounded by `timeout_ms`, which also
+  becomes the default deadline for `receive`; pass an explicit `timeout_ms` to
+  `receive` when the protocol needs heartbeats.
+- `receive` yields the coroutine while it waits for bytes; `send_text`,
+  `send_binary`, `ping` and `close` write synchronously, bounded by the connection
+  timeout.
+
+### Discord gateway example
+
+`examples/discord_bot.spark` is a small Discord-shaped gateway client. It reads
+`DISCORD_TOKEN` from the environment (and never prints it), connects to
+`DISCORD_GATEWAY_URL` or the real `wss://gateway.discord.gg/?v=10&encoding=json`,
+waits for `HELLO`, sends `IDENTIFY`, heartbeats at the interval from `HELLO` and
+answers a `MESSAGE_CREATE` whose content is `ping` with `pong`.
+
+1. Build Spark with `make`.
+2. Start the offline mock gateway in one terminal:
+   `python3 tests/run_tests.py --mock-gateway`. It prints a
+   `ws://127.0.0.1:PORT/?v=10` URL and keeps running.
+3. In another terminal, run the example against it:
+
+   ```bash
+   DISCORD_TOKEN=test-token \
+   DISCORD_GATEWAY_URL="ws://127.0.0.1:PORT/?v=10" \
+   spark examples/discord_bot.spark
+   ```
+
+   Expected output:
+
+   ```
+   ready
+   message: ping
+   reply sent
+   closed
+   ```
+
+4. To use the real gateway, export a bot token and omit `DISCORD_GATEWAY_URL`:
+   `DISCORD_TOKEN=... spark examples/discord_bot.spark`.
+
+The test suite starts the same mock gateway on an ephemeral port, so the example is
+exercised on every run without contacting Discord.
 
 ### Network security
 

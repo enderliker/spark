@@ -1,0 +1,111 @@
+// Phase 19: the WebSocket client against local scripted servers.
+var plain_port = int(argv[1]);
+var secure_port = int(argv[2]);
+var ca = argv[3];
+var base = "ws://127.0.0.1:" + str(plain_port);
+
+// Handshake and a text frame round-trip.
+var socket = ws_connect(base + "/echo", 5000);
+print("type:", type(socket));
+print("text:", socket.send_text("hello"));
+var text = socket.receive();
+print("text-recv:", text.opcode, text.data);
+
+// Binary payloads keep their exact bytes.
+var payload = chr(0) + chr(1) + "A";
+print("binary:", socket.send_binary(payload));
+var binary = socket.receive();
+print("binary-recv:", binary.opcode, binary.data == payload);
+
+// A client ping is answered with a pong carrying the same payload.
+print("ping:", socket.ping("ka"));
+var pong = socket.receive();
+print("pong:", pong.opcode, pong.data);
+
+// Argument validation happens before anything reaches the wire.
+try { socket.close(1005); } catch (e) { print("bad-close-code:", e.type); }
+try { socket.close(1000, repeat("x", 124)); } catch (e) { print("long-reason:", e.type); }
+try { socket.ping(repeat("x", 126)); } catch (e) { print("long-ping:", e.type); }
+
+// The client starts the close handshake; receive reports the peer's close.
+socket.close(1000, "bye");
+try { socket.send_text("late"); } catch (e) { print("send-after-close:", e.type); }
+print("closed:", socket.receive());
+
+// A message split across continuation frames is reassembled.
+var fragmented = ws_connect(base + "/fragmented", 5000);
+var message = fragmented.receive();
+print("fragmented:", message.opcode, message.data);
+fragmented.close();
+print("fragmented-closed:", fragmented.receive());
+
+// A server-initiated ping is answered automatically.
+var pinger = ws_connect(base + "/server-ping", 5000);
+var auto_pong = pinger.receive();
+print("auto-pong:", auto_pong.opcode, auto_pong.data);
+pinger.close();
+pinger.receive();
+
+// A server-initiated close completes with nil.
+var closer = ws_connect(base + "/close", 5000);
+print("server-close:", closer.receive());
+
+// A frame larger than the 16 MiB cap is rejected.
+try { var oversized = ws_connect(base + "/oversized", 5000); oversized.receive(); }
+catch (e) { print("oversized:", e.type, contains(e.message, "maximum")); }
+
+// Server frames must not be masked.
+try { var masked = ws_connect(base + "/masked", 5000); masked.receive(); }
+catch (e) { print("masked:", e.type, contains(e.message, "masked")); }
+
+// Invalid UTF-8 in a text frame fails the connection with 1007.
+try { var bad_utf8 = ws_connect(base + "/bad-utf8", 5000); bad_utf8.receive(); }
+catch (e) { print("bad-utf8:", e.type, contains(e.message, "UTF-8")); }
+
+// A continuation frame without a start is a protocol error.
+try { var orphan = ws_connect(base + "/bad-continuation", 5000); orphan.receive(); }
+catch (e) { print("bad-continuation:", e.type, contains(e.message, "continuation")); }
+
+// Reserved close codes such as 1005 must never appear on the wire.
+try { var bad_close = ws_connect(base + "/bad-close", 5000); bad_close.receive(); }
+catch (e) { print("bad-close:", e.type, contains(e.message, "close code")); }
+
+// Reserved bits are a protocol error.
+try { var reserved = ws_connect(base + "/reserved-bits", 5000); reserved.receive(); }
+catch (e) { print("reserved-bits:", e.type, contains(e.message, "reserved bits")); }
+
+// receive() honours the connection timeout.
+try { var silent = ws_connect(base + "/silent", 250); silent.receive(); }
+catch (e) { print("timeout:", e.type); }
+
+// The handshake rejects a non-101 status and a bad accept digest.
+try { ws_connect(base + "/bad-status", 5000); }
+catch (e) { print("bad-status:", e.type, contains(e.message, "101")); }
+try { ws_connect(base + "/bad-accept", 5000); }
+catch (e) { print("bad-accept:", e.type, contains(e.message, "Accept")); }
+
+// Missing upgrade/connection headers and unrequested extensions fail too.
+try { ws_connect(base + "/bad-upgrade", 5000); }
+catch (e) { print("bad-upgrade:", e.type, contains(e.message, "Upgrade")); }
+try { ws_connect(base + "/bad-connection", 5000); }
+catch (e) { print("bad-connection:", e.type, contains(e.message, "Connection")); }
+try { ws_connect(base + "/extensions", 5000); }
+catch (e) { print("extensions:", e.type, contains(e.message, "extension")); }
+try { ws_connect(base + "/protocol", 5000); }
+catch (e) { print("protocol:", e.type, contains(e.message, "subprotocol")); }
+
+// A URL with a newline cannot inject headers, and non-WebSocket schemes fail.
+try { ws_connect("ws://127.0.0.1:" + str(plain_port) + "/\r\nX: y", 5000); }
+catch (e) { print("bad-url:", e.type); }
+try { ws_connect("http://127.0.0.1:" + str(plain_port) + "/"); }
+catch (e) { print("bad-scheme:", e.type); }
+
+// wss:// verifies the certificate against the injected fixture CA.
+var secure = ws_connect("wss://localhost:" + str(secure_port) + "/echo", 5000, ca);
+print("wss:", secure.send_text("secret"));
+var secure_echo = secure.receive();
+print("wss-recv:", secure_echo.opcode, secure_echo.data);
+secure.close();
+print("wss-closed:", secure.receive());
+
+print("ws client ok");

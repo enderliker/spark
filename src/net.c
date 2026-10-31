@@ -5,10 +5,10 @@
  * shutdown. Every blocking operation takes an optional millisecond timeout; a
  * timeout of zero (or an omitted argument) waits indefinitely.
  *
- * The socket layer adds no dependencies: it uses the POSIX socket API only.
- * Phase 16 routes these waits through the coroutine scheduler; until then a
- * blocking call stalls every coroutine, which is documented in the limits
- * section of the language reference. */
+ * The socket, URL, HTTP and WebSocket layers add no dependencies; OpenSSL is
+ * linked only for the TLS transport (decision Q11). Phase 16 routes these waits
+ * through the coroutine scheduler; a blocking call yields only its coroutine.
+ */
 
 #include "net.h"
 
@@ -63,6 +63,12 @@
 #define NET_HTTP_MAX_HEADERS 1000
 #define NET_HTTP_TIMEOUT_DEFAULT 30000
 #define NET_HTTP_USER_AGENT "spark/0.1"
+
+/* WebSocket limits (RFC 6455). The assembled message may not exceed 16 MiB and
+ * a control frame is limited to 125 bytes by the protocol. */
+#define NET_WS_MAX_MESSAGE NET_READ_MAX
+#define NET_WS_CONTROL_MAX 125
+#define NET_WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 /* Result of a non-blocking socket operation. */
 #define NET_DONE 0
@@ -1078,6 +1084,12 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
         out->port = 80;
         out->port_known = true;
     } else if (strcmp(out->scheme, "https") == 0) {
+        out->port = 443;
+        out->port_known = true;
+    } else if (strcmp(out->scheme, "ws") == 0) {
+        out->port = 80;
+        out->port_known = true;
+    } else if (strcmp(out->scheme, "wss") == 0) {
         out->port = 443;
         out->port_known = true;
     }
@@ -2624,6 +2636,1282 @@ static Value native_http_request(int arg_count, Value *args)
 }
 
 /* ------------------------------------------------------------------ */
+/* WebSocket client (phase 19)                                         */
+/* ------------------------------------------------------------------ */
+
+/* The client speaks RFC 6455 over a wrapped TCP or TLS socket. Sends are
+ * synchronous and bounded by the socket timeout; `receive` suspends the
+ * coroutine through the scheduler, exactly like the socket layer. */
+
+/* The handshake needs SHA-1 and base64, and every client frame needs an
+ * unpredictable mask. Keeping those helpers here leaves the WebSocket layer
+ * free of OpenSSL, which stays confined to the TLS transport (decision Q11). */
+typedef struct {
+    uint32_t state[5];
+    uint64_t length;
+    unsigned char block[64];
+    size_t used;
+} NetSha1;
+
+static uint32_t net_sha1_rotate(uint32_t value, int bits)
+{
+    return (value << bits) | (value >> (32 - bits));
+}
+
+static void net_sha1_transform(NetSha1 *ctx, const unsigned char *block)
+{
+    uint32_t words[80];
+    uint32_t a, b, c, d, e;
+
+    for (int i = 0; i < 16; i++) {
+        words[i] = ((uint32_t)block[4 * i] << 24) | ((uint32_t)block[4 * i + 1] << 16) |
+                   ((uint32_t)block[4 * i + 2] << 8) | (uint32_t)block[4 * i + 3];
+    }
+    for (int i = 16; i < 80; i++) {
+        words[i] = net_sha1_rotate(words[i - 3] ^ words[i - 8] ^ words[i - 14] ^ words[i - 16], 1);
+    }
+    a = ctx->state[0];
+    b = ctx->state[1];
+    c = ctx->state[2];
+    d = ctx->state[3];
+    e = ctx->state[4];
+    for (int i = 0; i < 80; i++) {
+        uint32_t f;
+        uint32_t k;
+        uint32_t temp;
+
+        if (i < 20) {
+            f = (b & c) | ((~b) & d);
+            k = 0x5A827999u;
+        } else if (i < 40) {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1u;
+        } else if (i < 60) {
+            f = (b & c) | (b & d) | (c & d);
+            k = 0x8F1BBCDCu;
+        } else {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6u;
+        }
+        temp = net_sha1_rotate(a, 5) + f + e + k + words[i];
+        e = d;
+        d = c;
+        c = net_sha1_rotate(b, 30);
+        b = a;
+        a = temp;
+    }
+    ctx->state[0] += a;
+    ctx->state[1] += b;
+    ctx->state[2] += c;
+    ctx->state[3] += d;
+    ctx->state[4] += e;
+}
+
+static void net_sha1_update(NetSha1 *ctx, const unsigned char *data, size_t length)
+{
+    ctx->length += (uint64_t)length;
+    while (length > 0) {
+        size_t take = sizeof(ctx->block) - ctx->used;
+
+        if (take > length) {
+            take = length;
+        }
+        memcpy(ctx->block + ctx->used, data, take);
+        ctx->used += take;
+        data += take;
+        length -= take;
+        if (ctx->used == sizeof(ctx->block)) {
+            net_sha1_transform(ctx, ctx->block);
+            ctx->used = 0;
+        }
+    }
+}
+
+static void net_sha1(const unsigned char *data, size_t length, unsigned char digest[20])
+{
+    NetSha1 ctx;
+    uint64_t bits;
+    unsigned char marker = 0x80;
+    unsigned char zero = 0;
+    unsigned char tail[8];
+
+    ctx.state[0] = 0x67452301u;
+    ctx.state[1] = 0xEFCDAB89u;
+    ctx.state[2] = 0x98BADCFEu;
+    ctx.state[3] = 0x10325476u;
+    ctx.state[4] = 0xC3D2E1F0u;
+    ctx.length = 0;
+    ctx.used = 0;
+    net_sha1_update(&ctx, data, length);
+    bits = ctx.length * 8;
+    net_sha1_update(&ctx, &marker, 1);
+    while (ctx.used != 56) {
+        net_sha1_update(&ctx, &zero, 1);
+    }
+    for (int i = 0; i < 8; i++) {
+        tail[i] = (unsigned char)(bits >> (56 - 8 * i));
+    }
+    net_sha1_update(&ctx, tail, sizeof(tail));
+    for (int i = 0; i < 5; i++) {
+        digest[4 * i] = (unsigned char)(ctx.state[i] >> 24);
+        digest[4 * i + 1] = (unsigned char)(ctx.state[i] >> 16);
+        digest[4 * i + 2] = (unsigned char)(ctx.state[i] >> 8);
+        digest[4 * i + 3] = (unsigned char)ctx.state[i];
+    }
+}
+
+/* Standard base64 (RFC 4648) with padding. Returns the output length, or -1
+ * when `capacity` cannot hold the encoded string plus its terminator. */
+static int net_base64_encode(const unsigned char *data, size_t length, char *out, size_t capacity)
+{
+    static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t needed = ((length + 2) / 3) * 4;
+    size_t input = 0;
+    size_t output = 0;
+
+    if (capacity < needed + 1) {
+        return -1;
+    }
+    while (input + 3 <= length) {
+        uint32_t value = ((uint32_t)data[input] << 16) | ((uint32_t)data[input + 1] << 8) |
+                         (uint32_t)data[input + 2];
+
+        out[output++] = alphabet[(value >> 18) & 0x3F];
+        out[output++] = alphabet[(value >> 12) & 0x3F];
+        out[output++] = alphabet[(value >> 6) & 0x3F];
+        out[output++] = alphabet[value & 0x3F];
+        input += 3;
+    }
+    if (input < length) {
+        uint32_t value = (uint32_t)data[input] << 16;
+
+        if (input + 1 < length) {
+            value |= (uint32_t)data[input + 1] << 8;
+        }
+        out[output++] = alphabet[(value >> 18) & 0x3F];
+        out[output++] = alphabet[(value >> 12) & 0x3F];
+        out[output++] = input + 1 < length ? alphabet[(value >> 6) & 0x3F] : '=';
+        out[output++] = '=';
+    }
+    out[output] = '\0';
+    return (int)output;
+}
+
+/* Fills `buffer` from the OS entropy pool. The masks must be unpredictable,
+ * so this never falls back to rand(). */
+static bool net_random_bytes(void *buffer, size_t length)
+{
+    unsigned char *out = buffer;
+    size_t done = 0;
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+
+    if (fd < 0) {
+        return false;
+    }
+    while (done < length) {
+        ssize_t got = read(fd, out + done, length - done);
+
+        if (got > 0) {
+            done += (size_t)got;
+            continue;
+        }
+        if (got < 0 && errno == EINTR) {
+            continue;
+        }
+        close(fd);
+        return false;
+    }
+    close(fd);
+    return true;
+}
+
+/* Read status of the framing transport. */
+#define WS_IO_DATA 0
+#define WS_IO_EOF 1
+#define WS_IO_AGAIN 2
+#define WS_IO_ERROR (-1)
+
+/* Result of one frame parse attempt. */
+#define WS_PARSE_NEED_MORE 0
+#define WS_PARSE_MESSAGE 1
+#define WS_PARSE_CONTINUE 2
+#define WS_PARSE_ERROR (-1)
+
+static void net_waiter_push(ObjCoroutine *coroutine);
+
+static bool net_ws_close_code_valid(int64_t code);
+
+/* Reads up to `capacity` bytes without blocking. Returns WS_IO_DATA with
+ * `*received` set, WS_IO_EOF at end of stream, WS_IO_AGAIN with `*events` set,
+ * or WS_IO_ERROR with `err` filled. */
+static int net_ws_read_transport(ObjSocket *socket, char *buffer, size_t capacity, int *received,
+                                 short *events, NetError *err)
+{
+    if (socket->is_closed || socket->fd < 0) {
+        net_fail(err, ERROR_NETWORK, "the websocket transport is closed");
+        return WS_IO_ERROR;
+    }
+    if (socket->kind == NET_TLS) {
+        size_t got = 0;
+
+        ERR_clear_error();
+        errno = 0;
+        int status = SSL_read_ex((SSL *)socket->ssl, buffer, capacity, &got);
+
+        if (status == 1) {
+            *received = (int)got;
+            return *received == 0 ? WS_IO_EOF : WS_IO_DATA;
+        }
+        int error = SSL_get_error((SSL *)socket->ssl, status);
+
+        if (error == SSL_ERROR_WANT_READ) {
+            *events = POLLIN;
+            return WS_IO_AGAIN;
+        }
+        if (error == SSL_ERROR_WANT_WRITE) {
+            *events = POLLOUT;
+            return WS_IO_AGAIN;
+        }
+        if (error == SSL_ERROR_ZERO_RETURN || (error == SSL_ERROR_SYSCALL && errno == 0)) {
+            return WS_IO_EOF;
+        }
+        net_tls_error(err, "read", error);
+        return WS_IO_ERROR;
+    }
+
+    for (;;) {
+        ssize_t got = recv(socket->fd, buffer, capacity, 0);
+
+        if (got > 0) {
+            *received = (int)got;
+            return WS_IO_DATA;
+        }
+        if (got == 0) {
+            return WS_IO_EOF;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            *events = POLLIN;
+            return WS_IO_AGAIN;
+        }
+        net_fail_errno(err, errno, "recv failed");
+        return WS_IO_ERROR;
+    }
+}
+
+/* Writes all of `data`, sleeping in poll(2) until the deadline when the
+ * descriptor is full. Used by the synchronous sends and control replies. */
+static bool net_ws_write_all(ObjSocket *socket, const char *data, size_t length,
+                             int64_t deadline, NetError *err)
+{
+    size_t sent = 0;
+
+    if (socket->is_closed || socket->fd < 0) {
+        net_fail(err, ERROR_NETWORK, "the websocket transport is closed");
+        return false;
+    }
+    while (sent < length) {
+        if (socket->kind == NET_TLS) {
+            size_t written = 0;
+
+            ERR_clear_error();
+            errno = 0;
+            int status = SSL_write_ex((SSL *)socket->ssl, data + sent, length - sent, &written);
+
+            if (status == 1) {
+                if (written == 0) {
+                    net_fail(err, ERROR_NETWORK, "websocket write failed: no progress");
+                    return false;
+                }
+                sent += written;
+                continue;
+            }
+            int error = SSL_get_error((SSL *)socket->ssl, status);
+
+            if (error == SSL_ERROR_WANT_READ || error == SSL_ERROR_WANT_WRITE) {
+                int ready = net_wait(socket->fd, error == SSL_ERROR_WANT_READ ? POLLIN : POLLOUT,
+                                     deadline);
+
+                if (ready == 0) {
+                    net_fail(err, ERROR_TIMEOUT, "the websocket write timed out");
+                    return false;
+                }
+                if (ready < 0) {
+                    net_fail_errno(err, errno, "poll failed during a websocket write");
+                    return false;
+                }
+                continue;
+            }
+            net_tls_error(err, "write", error);
+            return false;
+        }
+
+        ssize_t written = send(socket->fd, data + sent, length - sent, MSG_NOSIGNAL);
+
+        if (written > 0) {
+            sent += (size_t)written;
+            continue;
+        }
+        if (written == 0) {
+            net_fail(err, ERROR_NETWORK, "websocket write failed: no progress");
+            return false;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            int ready = net_wait(socket->fd, POLLOUT, deadline);
+
+            if (ready == 0) {
+                net_fail(err, ERROR_TIMEOUT, "the websocket write timed out");
+                return false;
+            }
+            if (ready < 0) {
+                net_fail_errno(err, errno, "poll failed during a websocket write");
+                return false;
+            }
+            continue;
+        }
+        net_fail_errno(err, errno, "send failed");
+        return false;
+    }
+    return true;
+}
+
+/* Builds one masked client frame. The caller owns the returned buffer and
+ * releases it with mem_realloc(...,0). */
+static char *net_ws_build_frame(int opcode, const char *payload, size_t length, size_t *out_length,
+                                NetError *err)
+{
+    unsigned char header[14];
+    unsigned char mask[4];
+    int header_length = 2;
+    size_t total;
+    char *frame;
+
+    if (length > (size_t)NET_WS_MAX_MESSAGE) {
+        net_fail(err, ERROR_VALUE, "the websocket payload exceeds the maximum of %d bytes",
+                 NET_WS_MAX_MESSAGE);
+        return NULL;
+    }
+    if (!net_random_bytes(mask, sizeof(mask))) {
+        net_fail(err, ERROR_NETWORK, "cannot generate a websocket mask");
+        return NULL;
+    }
+
+    header[0] = (unsigned char)(0x80 | (opcode & 0x0F)); /* FIN + opcode */
+    if (length <= 125) {
+        header[1] = (unsigned char)(0x80 | (int)length);
+    } else if (length <= 0xFFFF) {
+        header[1] = (unsigned char)(0x80 | 126);
+        header[2] = (unsigned char)((length >> 8) & 0xFF);
+        header[3] = (unsigned char)(length & 0xFF);
+        header_length = 4;
+    } else {
+        header[1] = (unsigned char)(0x80 | 127);
+        for (int i = 0; i < 8; i++) {
+            header[2 + i] = (unsigned char)(((uint64_t)length >> (56 - 8 * i)) & 0xFF);
+        }
+        header_length = 10;
+    }
+    memcpy(header + header_length, mask, sizeof(mask));
+    header_length += (int)sizeof(mask);
+
+    total = (size_t)header_length + length;
+    frame = mem_realloc(NULL, 0, total);
+    if (!frame) {
+        net_fail(err, ERROR_MEMORY, "out of memory building a websocket frame");
+        return NULL;
+    }
+    memcpy(frame, header, (size_t)header_length);
+    for (size_t i = 0; i < length; i++) {
+        frame[header_length + i] = (char)((unsigned char)payload[i] ^ mask[i % 4]);
+    }
+    *out_length = total;
+    return frame;
+}
+
+/* Sends one complete frame with an explicit deadline, blocking only while the
+ * socket is full. */
+static bool net_ws_send_frame_deadline(ObjWebSocket *ws, int opcode, const char *payload,
+                                       size_t length, int64_t deadline, NetError *err)
+{
+    size_t total = 0;
+    char *frame = net_ws_build_frame(opcode, payload, length, &total, err);
+    bool ok;
+
+    if (!frame) {
+        return false;
+    }
+    ok = net_ws_write_all(ws->socket, frame, total, deadline, err);
+    mem_realloc(frame, total, 0);
+    return ok;
+}
+
+/* Sends one complete frame bounded by the connection timeout. */
+static bool net_ws_send_frame(ObjWebSocket *ws, int opcode, const char *payload, size_t length,
+                              NetError *err)
+{
+    int64_t deadline = ws->timeout_ms > 0 ? net_now_ms() + ws->timeout_ms : 0;
+
+    return net_ws_send_frame_deadline(ws, opcode, payload, length, deadline, err);
+}
+
+/* Closes the transport exactly once, releasing the descriptor and TLS state. */
+static void net_ws_shutdown(ObjWebSocket *ws)
+{
+    if (!ws->is_closed) {
+        if (ws->socket && !ws->socket->is_closed) {
+            net_socket_dispose(ws->socket);
+        }
+        ws->is_closed = true;
+    }
+}
+
+/* Sends a close frame with `code` (best effort) and reports a protocol error. */
+static int net_ws_fail_close(ObjWebSocket *ws, int code, const char *message, NetError *err)
+{
+    if (!ws->sent_close && !ws->is_closed) {
+        char payload[2];
+        NetError ignored;
+        int64_t deadline = net_now_ms() + 1000;
+
+        if (ws->timeout_ms > 0 && ws->timeout_ms < 1000) {
+            deadline = net_now_ms() + ws->timeout_ms;
+        }
+        payload[0] = (char)((code >> 8) & 0xFF);
+        payload[1] = (char)(code & 0xFF);
+        net_ws_send_frame_deadline(ws, WS_OP_CLOSE, payload, sizeof(payload), deadline, &ignored);
+        ws->sent_close = true;
+    }
+    net_ws_shutdown(ws);
+    net_fail(err, ERROR_NETWORK, "websocket protocol error: %s", message);
+    return WS_PARSE_ERROR;
+}
+
+/* Strict UTF-8 validation for text messages and close reasons. */
+static bool net_ws_valid_utf8(const unsigned char *data, size_t length)
+{
+    size_t i = 0;
+
+    while (i < length) {
+        unsigned char c = data[i];
+        int extra;
+        unsigned int code;
+
+        if (c < 0x80) {
+            i++;
+            continue;
+        }
+        if ((c & 0xE0) == 0xC0) {
+            extra = 1;
+            code = c & 0x1F;
+        } else if ((c & 0xF0) == 0xE0) {
+            extra = 2;
+            code = c & 0x0F;
+        } else if ((c & 0xF8) == 0xF0) {
+            extra = 3;
+            code = c & 0x07;
+        } else {
+            return false;
+        }
+        if (i + (size_t)extra >= length) {
+            return false;
+        }
+        for (int k = 0; k < extra; k++) {
+            unsigned char continuation = data[i + 1 + (size_t)k];
+
+            if ((continuation & 0xC0) != 0x80) {
+                return false;
+            }
+            code = (code << 6) | (continuation & 0x3F);
+        }
+        if ((extra == 1 && code < 0x80) || (extra == 2 && code < 0x800) ||
+            (extra == 3 && code < 0x10000)) {
+            return false; /* overlong encoding */
+        }
+        if ((code >= 0xD800 && code <= 0xDFFF) || code > 0x10FFFF) {
+            return false; /* surrogate or out of range */
+        }
+        i += (size_t)extra + 1;
+    }
+    return true;
+}
+
+/* Builds the `{opcode, data}` map returned by receive(). */
+static Value net_ws_message(const char *opcode, const char *data, size_t length)
+{
+    mem_pause_gc();
+    ObjMap *map = object_map();
+
+    map_set(map, OBJ_VAL(object_string("opcode", 6)),
+            OBJ_VAL(object_string(opcode, (int)strlen(opcode))));
+    map_set(map, OBJ_VAL(object_string("data", 4)), OBJ_VAL(object_string(data, (int)length)));
+    mem_resume_gc();
+    return OBJ_VAL(map);
+}
+
+/* Appends `length` bytes to the fragmented-message buffer. The caller has
+ * already checked the cap. */
+static void net_ws_append(ObjWebSocket *ws, const char *data, size_t length)
+{
+    if (ws->msg_len + (int)length > ws->msg_cap) {
+        int capacity = ws->msg_cap ? ws->msg_cap : 8192;
+
+        while (capacity < ws->msg_len + (int)length) {
+            capacity *= 2;
+        }
+        ws->msg = mem_realloc(ws->msg, (size_t)ws->msg_cap, (size_t)capacity);
+        ws->msg_cap = capacity;
+    }
+    memcpy(ws->msg + ws->msg_len, data, length);
+    ws->msg_len += (int)length;
+}
+
+/* Parses one frame from the receive buffer. Returns WS_PARSE_MESSAGE with `out`
+ * set, WS_PARSE_NEED_MORE when more bytes are required, WS_PARSE_CONTINUE when
+ * a frame was consumed without producing a message (a fragment or a ping) or
+ * WS_PARSE_ERROR after reporting a protocol violation. */
+static int net_ws_parse_frame(ObjWebSocket *ws, Value *out, NetError *err)
+{
+    int available;
+    const unsigned char *data;
+    unsigned char b0;
+    unsigned char b1;
+    bool fin;
+    int opcode;
+    uint64_t length;
+    int header_length = 2;
+    bool control;
+    const unsigned char *payload;
+    size_t payload_length;
+
+    if (ws->rbuf_pos == ws->rbuf_len) {
+        ws->rbuf_pos = ws->rbuf_len = 0;
+    }
+    available = ws->rbuf_len - ws->rbuf_pos;
+    data = (const unsigned char *)ws->rbuf + ws->rbuf_pos;
+
+    if (available < 2) {
+        return WS_PARSE_NEED_MORE;
+    }
+    b0 = data[0];
+    b1 = data[1];
+    fin = (b0 & 0x80) != 0;
+    opcode = b0 & 0x0F;
+
+    if ((b0 & 0x70) != 0) {
+        return net_ws_fail_close(ws, 1002, "reserved bits must be zero", err);
+    }
+    if ((b1 & 0x80) != 0) {
+        return net_ws_fail_close(ws, 1002, "server frames must not be masked", err);
+    }
+    if (opcode != WS_OP_CONTINUATION && opcode != WS_OP_TEXT && opcode != WS_OP_BINARY &&
+        opcode != WS_OP_CLOSE && opcode != WS_OP_PING && opcode != WS_OP_PONG) {
+        return net_ws_fail_close(ws, 1002, "reserved opcode", err);
+    }
+
+    length = b1 & 0x7F;
+    if (length == 126) {
+        if (available < 4) {
+            return WS_PARSE_NEED_MORE;
+        }
+        length = ((uint64_t)data[2] << 8) | data[3];
+        header_length = 4;
+    } else if (length == 127) {
+        if (available < 10) {
+            return WS_PARSE_NEED_MORE;
+        }
+        length = 0;
+        for (int i = 0; i < 8; i++) {
+            length = (length << 8) | data[2 + i];
+        }
+        header_length = 10;
+        if ((length & 0x8000000000000000ULL) != 0) {
+            return net_ws_fail_close(ws, 1002, "invalid frame length", err);
+        }
+    }
+
+    control = opcode >= 0x8;
+    if (control) {
+        if (!fin) {
+            return net_ws_fail_close(ws, 1002, "control frames must not be fragmented", err);
+        }
+        if (length > NET_WS_CONTROL_MAX) {
+            return net_ws_fail_close(ws, 1002, "control frames are limited to 125 bytes", err);
+        }
+    }
+    if (length > (uint64_t)NET_WS_MAX_MESSAGE) {
+        return net_ws_fail_close(ws, 1009, "the frame exceeds the maximum message size", err);
+    }
+    if ((uint64_t)available < (uint64_t)header_length + length) {
+        return WS_PARSE_NEED_MORE;
+    }
+
+    payload = data + header_length;
+    payload_length = (size_t)length;
+    ws->rbuf_pos += header_length + (int)payload_length;
+
+    switch (opcode) {
+    case WS_OP_TEXT:
+    case WS_OP_BINARY:
+        if (ws->assembling) {
+            return net_ws_fail_close(ws, 1002, "a new data frame arrived during a fragmented message",
+                                     err);
+        }
+        if (fin) {
+            if (opcode == WS_OP_TEXT && !net_ws_valid_utf8(payload, payload_length)) {
+                return net_ws_fail_close(ws, 1007, "the text message is not valid UTF-8", err);
+            }
+            *out = net_ws_message(opcode == WS_OP_TEXT ? "text" : "binary", (const char *)payload,
+                                  payload_length);
+            return WS_PARSE_MESSAGE;
+        }
+        net_ws_append(ws, (const char *)payload, payload_length);
+        ws->assembling = true;
+        ws->msg_opcode = opcode;
+        return WS_PARSE_CONTINUE;
+    case WS_OP_CONTINUATION:
+        if (!ws->assembling) {
+            return net_ws_fail_close(ws, 1002, "a continuation frame arrived without a start", err);
+        }
+        if ((size_t)ws->msg_len + payload_length > (size_t)NET_WS_MAX_MESSAGE) {
+            return net_ws_fail_close(ws, 1009, "the assembled message exceeds the maximum size", err);
+        }
+        net_ws_append(ws, (const char *)payload, payload_length);
+        if (!fin) {
+            return WS_PARSE_CONTINUE;
+        }
+        if (ws->msg_opcode == WS_OP_TEXT &&
+            !net_ws_valid_utf8((const unsigned char *)ws->msg, (size_t)ws->msg_len)) {
+            return net_ws_fail_close(ws, 1007, "the text message is not valid UTF-8", err);
+        }
+        *out = net_ws_message(ws->msg_opcode == WS_OP_TEXT ? "text" : "binary", ws->msg,
+                              (size_t)ws->msg_len);
+        ws->assembling = false;
+        ws->msg_len = 0;
+        return WS_PARSE_MESSAGE;
+    case WS_OP_PING:
+        if (!ws->sent_close &&
+            !net_ws_send_frame(ws, WS_OP_PONG, (const char *)payload, payload_length, err)) {
+            return WS_PARSE_ERROR;
+        }
+        return WS_PARSE_CONTINUE;
+    case WS_OP_PONG:
+        *out = net_ws_message("pong", (const char *)payload, payload_length);
+        return WS_PARSE_MESSAGE;
+    case WS_OP_CLOSE:
+    default: {
+        int code = 1000;
+
+        if (payload_length == 1) {
+            return net_ws_fail_close(ws, 1002, "invalid close payload", err);
+        }
+        if (payload_length >= 2) {
+            code = ((int)payload[0] << 8) | payload[1];
+            if (!net_ws_close_code_valid(code)) {
+                return net_ws_fail_close(ws, 1002, "invalid close code", err);
+            }
+            if (payload_length > 2 &&
+                !net_ws_valid_utf8(payload + 2, payload_length - 2)) {
+                return net_ws_fail_close(ws, 1007, "the close reason is not valid UTF-8", err);
+            }
+        }
+        if (!ws->sent_close) {
+            char reply[2];
+            size_t reply_length = payload_length >= 2 ? sizeof(reply) : 0;
+
+            reply[0] = (char)((code >> 8) & 0xFF);
+            reply[1] = (char)(code & 0xFF);
+            if (!net_ws_send_frame(ws, WS_OP_CLOSE, reply, reply_length, err)) {
+                return WS_PARSE_ERROR;
+            }
+            ws->sent_close = true;
+        }
+        ws->peer_closed = true;
+        net_ws_shutdown(ws);
+        *out = NIL_VAL;
+        return WS_PARSE_MESSAGE;
+    }
+    }
+}
+
+/* Drives one receive attempt: parses buffered frames, reads more bytes when
+ * needed and returns NET_AGAIN when the descriptor would block. */
+static int net_ws_receive_step(ObjWebSocket *ws, short *events, Value *out, NetError *err)
+{
+    *events = POLLIN;
+
+    if (ws->is_closed || ws->peer_closed) {
+        *out = NIL_VAL;
+        return NET_DONE;
+    }
+    for (;;) {
+        int parsed = net_ws_parse_frame(ws, out, err);
+
+        if (parsed == WS_PARSE_MESSAGE) {
+            return NET_DONE;
+        }
+        if (parsed == WS_PARSE_ERROR) {
+            return NET_FAILED;
+        }
+        if (parsed == WS_PARSE_CONTINUE) {
+            continue; /* more buffered frames may follow */
+        }
+
+        if (ws->rbuf_pos == ws->rbuf_len) {
+            ws->rbuf_pos = ws->rbuf_len = 0;
+        }
+        if (ws->rbuf_len == ws->rbuf_cap) {
+            int capacity;
+
+            if (ws->rbuf_cap >= NET_WS_MAX_MESSAGE + 14) {
+                net_ws_shutdown(ws);
+                net_fail(err, ERROR_NETWORK, "the websocket frame exceeds the maximum size");
+                return NET_FAILED;
+            }
+            capacity = ws->rbuf_cap * 2;
+            if (capacity > NET_WS_MAX_MESSAGE + 14) {
+                capacity = NET_WS_MAX_MESSAGE + 14;
+            }
+            ws->rbuf = mem_realloc(ws->rbuf, (size_t)ws->rbuf_cap, (size_t)capacity);
+            ws->rbuf_cap = capacity;
+        }
+
+        int received = 0;
+        int status = net_ws_read_transport(ws->socket, ws->rbuf + ws->rbuf_len,
+                                           (size_t)(ws->rbuf_cap - ws->rbuf_len), &received, events,
+                                           err);
+
+        if (status == WS_IO_ERROR) {
+            return NET_FAILED;
+        }
+        if (status == WS_IO_AGAIN) {
+            return NET_AGAIN;
+        }
+        if (status == WS_IO_EOF) {
+            if (ws->assembling) {
+                net_ws_shutdown(ws);
+                net_fail(err, ERROR_NETWORK,
+                         "the websocket closed in the middle of a fragmented message");
+                return NET_FAILED;
+            }
+            ws->peer_closed = true;
+            net_ws_shutdown(ws);
+            *out = NIL_VAL;
+            return NET_DONE;
+        }
+        ws->rbuf_len += received;
+    }
+}
+
+/* Suspends the current coroutine until `receive` can make progress. */
+static int net_ws_wait_begin(ObjCoroutine *self, ObjWebSocket *ws, int events, int64_t timeout_ms,
+                             Value *out)
+{
+    if (vm_run_depth() > 1) {
+        vm_runtime_error(ERROR_RUNTIME,
+                         "a receive that would block cannot run inside a callback or a module");
+        return -1;
+    }
+    *out = NIL_VAL;
+    ws->receiving = true;
+    self->wait_kind = (events & NET_EVENT_WRITE) ? CORO_WAIT_WRITE : CORO_WAIT_READ;
+    self->wait_op = NET_OP_WS_RECEIVE;
+    self->wait_socket = NULL;
+    self->wait_server = NULL;
+    self->wait_ws = ws;
+    self->wait_sockets = NULL;
+    self->wait_events = events;
+    self->wait_timeout = timeout_ms;
+    self->wait_deadline = timeout_ms > 0 ? net_now_ms() + timeout_ms : 0;
+    self->wait_arg = 0;
+    self->wait_value = NIL_VAL;
+    self->status = CORO_BLOCKED;
+    net_waiter_push(self);
+    return 1;
+}
+
+/* Accepts only the close codes a client may send (RFC 6455 section 7.4). */
+static bool net_ws_close_code_valid(int64_t code)
+{
+    if (code == 1000 || code == 1001 || code == 1002 || code == 1003 || code == 1007 ||
+        code == 1008 || code == 1009 || code == 1010 || code == 1011 || code == 1012 ||
+        code == 1013 || code == 1014) {
+        return true;
+    }
+    return code >= 3000 && code <= 4999;
+}
+
+static int net_ws_dispatch_method(ObjWebSocket *ws, ObjString *name, int arg_count, Value *args,
+                                  Value *out)
+{
+    const char *method = name->chars;
+    NetError err;
+
+    if (strcmp(method, "send_text") == 0 || strcmp(method, "send_binary") == 0) {
+        int opcode = strcmp(method, "send_text") == 0 ? WS_OP_TEXT : WS_OP_BINARY;
+        ObjString *payload;
+
+        if (arg_count != 1) {
+            vm_runtime_error(ERROR_ARITY, "'%s' expects 1 argument, received %d", method, arg_count);
+            return -1;
+        }
+        if (!is_obj_type(args[0], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'%s' expects a string, received %s", method,
+                             net_value_type(args[0]));
+            return -1;
+        }
+        if (ws->is_closed || ws->sent_close) {
+            vm_runtime_error(ERROR_RUNTIME, "the websocket is closed or closing");
+            return -1;
+        }
+        payload = AS_STRING(args[0]);
+        if (payload->length > NET_WS_MAX_MESSAGE) {
+            vm_runtime_error(ERROR_VALUE, "'%s' payload exceeds the maximum of %d bytes", method,
+                             NET_WS_MAX_MESSAGE);
+            return -1;
+        }
+        if (opcode == WS_OP_TEXT &&
+            !net_ws_valid_utf8((const unsigned char *)payload->chars, (size_t)payload->length)) {
+            vm_runtime_error(ERROR_VALUE, "'send_text' requires valid UTF-8");
+            return -1;
+        }
+        if (!net_ws_send_frame(ws, opcode, payload->chars, (size_t)payload->length, &err)) {
+            net_raise(&err);
+            return -1;
+        }
+        *out = INT_VAL(payload->length);
+        return 0;
+    }
+    if (strcmp(method, "ping") == 0) {
+        const char *payload = "";
+        size_t length = 0;
+
+        if (arg_count > 1) {
+            vm_runtime_error(ERROR_ARITY, "'ping' expects at most 1 argument, received %d",
+                             arg_count);
+            return -1;
+        }
+        if (arg_count == 1 && !is_nil(args[0])) {
+            if (!is_obj_type(args[0], OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'ping' expects a string, received %s",
+                                 net_value_type(args[0]));
+                return -1;
+            }
+            payload = AS_STRING(args[0])->chars;
+            length = (size_t)AS_STRING(args[0])->length;
+            if (length > NET_WS_CONTROL_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'ping' payload exceeds the maximum of %d bytes",
+                                 NET_WS_CONTROL_MAX);
+                return -1;
+            }
+        }
+        if (ws->is_closed || ws->sent_close) {
+            vm_runtime_error(ERROR_RUNTIME, "the websocket is closed or closing");
+            return -1;
+        }
+        if (!net_ws_send_frame(ws, WS_OP_PING, payload, length, &err)) {
+            net_raise(&err);
+            return -1;
+        }
+        *out = INT_VAL((int64_t)length);
+        return 0;
+    }
+    if (strcmp(method, "receive") == 0) {
+        short events = POLLIN;
+        int status;
+        int64_t timeout = ws->timeout_ms;
+
+        if (arg_count > 1) {
+            vm_runtime_error(ERROR_ARITY, "'receive' expects at most 1 argument, received %d",
+                             arg_count);
+            return -1;
+        }
+        if (arg_count == 1 && !is_nil(args[0])) {
+            if (!is_int(args[0])) {
+                vm_runtime_error(ERROR_TYPE,
+                                 "'receive' expects an integer timeout in milliseconds, received %s",
+                                 net_value_type(args[0]));
+                return -1;
+            }
+            if (AS_INT(args[0]) < 0) {
+                vm_runtime_error(ERROR_VALUE, "'receive' timeout cannot be negative");
+                return -1;
+            }
+            timeout = AS_INT(args[0]);
+        }
+        if (ws->is_closed || ws->peer_closed) {
+            *out = NIL_VAL;
+            return 0;
+        }
+        if (ws->receiving) {
+            vm_runtime_error(ERROR_RUNTIME, "a websocket receive is already in progress");
+            return -1;
+        }
+        status = net_ws_receive_step(ws, &events, out, &err);
+        if (status == NET_DONE) {
+            return 0;
+        }
+        if (status == NET_FAILED) {
+            net_raise(&err);
+            return -1;
+        }
+        return net_ws_wait_begin(vm_current_coroutine(), ws, events, timeout, out);
+    }
+    if (strcmp(method, "close") == 0) {
+        int64_t code = 1000;
+        const char *reason = "";
+        size_t reason_length = 0;
+        char payload[NET_WS_CONTROL_MAX];
+        size_t length = 2;
+
+        if (arg_count > 2) {
+            vm_runtime_error(ERROR_ARITY, "'close' expects at most 2 arguments, received %d",
+                             arg_count);
+            return -1;
+        }
+        if (arg_count >= 1 && !is_nil(args[0])) {
+            if (!is_int(args[0])) {
+                vm_runtime_error(ERROR_TYPE, "'close' expects an integer code, received %s",
+                                 net_value_type(args[0]));
+                return -1;
+            }
+            code = AS_INT(args[0]);
+            if (!net_ws_close_code_valid(code)) {
+                vm_runtime_error(ERROR_VALUE, "'close' code %lld is not valid", (long long)code);
+                return -1;
+            }
+        }
+        if (arg_count >= 2 && !is_nil(args[1])) {
+            if (!is_obj_type(args[1], OBJ_STRING)) {
+                vm_runtime_error(ERROR_TYPE, "'close' expects a string reason, received %s",
+                                 net_value_type(args[1]));
+                return -1;
+            }
+            reason = AS_STRING(args[1])->chars;
+            reason_length = (size_t)AS_STRING(args[1])->length;
+        }
+        if (ws->is_closed) {
+            *out = NIL_VAL;
+            return 0;
+        }
+        if (reason_length > NET_WS_CONTROL_MAX - length) {
+            vm_runtime_error(ERROR_VALUE, "'close' reason exceeds the maximum of %d bytes",
+                             NET_WS_CONTROL_MAX - 2);
+            return -1;
+        }
+        if (!net_ws_valid_utf8((const unsigned char *)reason, reason_length)) {
+            vm_runtime_error(ERROR_VALUE, "'close' reason must be valid UTF-8");
+            return -1;
+        }
+        if (!ws->sent_close) {
+            payload[0] = (char)((code >> 8) & 0xFF);
+            payload[1] = (char)(code & 0xFF);
+            memcpy(payload + 2, reason, reason_length);
+            length += reason_length;
+            if (!net_ws_send_frame(ws, WS_OP_CLOSE, payload, length, &err)) {
+                net_raise(&err);
+                return -1;
+            }
+            ws->sent_close = true;
+        }
+        *out = NIL_VAL;
+        return 0;
+    }
+    return SPARK_NET_UNHANDLED;
+}
+
+/* Whether a comma-separated header value contains `token` (case-insensitive). */
+static bool net_ws_header_has_token(const char *value, const char *token)
+{
+    size_t token_length = strlen(token);
+
+    while (*value) {
+        const char *start;
+        const char *end;
+
+        while (*value == ' ' || *value == '\t' || *value == ',') {
+            value++;
+        }
+        start = value;
+        while (*value && *value != ',') {
+            value++;
+        }
+        end = value;
+        while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+            end--;
+        }
+        if ((size_t)(end - start) == token_length &&
+            strncasecmp(start, token, token_length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Verifies the 101 response and the Sec-WebSocket-Accept digest. */
+static bool net_ws_validate_handshake(const NetHttpResponse *response, const char *key,
+                                      NetError *err)
+{
+    const char *upgrade = net_http_response_header(response, "upgrade");
+    const char *connection = net_http_response_header(response, "connection");
+    const char *accept = net_http_response_header(response, "sec-websocket-accept");
+    const char *extensions = net_http_response_header(response, "sec-websocket-extensions");
+    const char *protocol = net_http_response_header(response, "sec-websocket-protocol");
+    char combined[128];
+    unsigned char digest[20];
+    char expected[64];
+
+    if (response->status != 101) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: expected HTTP 101 but received %d",
+                 response->status);
+        return false;
+    }
+    if (!upgrade || !net_ws_header_has_token(upgrade, "websocket")) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: missing 'Upgrade: websocket'");
+        return false;
+    }
+    if (!connection || !net_ws_header_has_token(connection, "upgrade")) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: missing 'Connection: Upgrade'");
+        return false;
+    }
+    if ((extensions && extensions[0]) || (protocol && protocol[0])) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: the server selected an unrequested "
+                 "extension or subprotocol");
+        return false;
+    }
+    snprintf(combined, sizeof(combined), "%s%s", key, NET_WS_GUID);
+    net_sha1((const unsigned char *)combined, strlen(combined), digest);
+    if (net_base64_encode(digest, sizeof(digest), expected, sizeof(expected)) != 28) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: cannot encode Sec-WebSocket-Accept");
+        return false;
+    }
+    if (!accept || strcmp(accept, expected) != 0) {
+        net_fail(err, ERROR_NETWORK,
+                 "the websocket handshake failed: bad 'Sec-WebSocket-Accept'");
+        return false;
+    }
+    return true;
+}
+
+/* ws_connect(url, timeout_ms?, ca_file?) */
+static Value native_ws_connect(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'ws_connect' expects between 1 and 3 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'ws_connect' expects a string URL, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *url_string = AS_STRING(args[0]);
+
+    if (net_string_has_null(url_string, "ws_connect") ||
+        !net_http_safe_text(url_string, "ws_connect", "URL")) {
+        return NIL_VAL;
+    }
+
+    int64_t timeout = 0;
+
+    if (!net_optional_timeout(arg_count > 1 ? args[1] : NIL_VAL, arg_count, 1, "ws_connect",
+                              &timeout)) {
+        return NIL_VAL;
+    }
+
+    const char *ca_file = NULL;
+
+    if (arg_count > 2 && !is_nil(args[2])) {
+        if (!is_obj_type(args[2], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'ws_connect' expects a string ca_file, received %s",
+                             net_value_type(args[2]));
+            return NIL_VAL;
+        }
+        if (net_string_has_null(AS_STRING(args[2]), "ws_connect")) {
+            return NIL_VAL;
+        }
+        ca_file = AS_STRING(args[2])->chars;
+    }
+
+    NetError err;
+    NetUrl url;
+
+    if (!net_url_parse(url_string->chars, &url, &err)) {
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    bool secure = strcmp(url.scheme, "wss") == 0;
+
+    if (!secure && strcmp(url.scheme, "ws") != 0) {
+        net_fail(&err, ERROR_NETWORK, "ws_connect does not support the scheme '%s'", url.scheme);
+        net_url_free(&url);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+    if (!url.port_known) {
+        net_fail(&err, ERROR_NETWORK, "invalid URL: missing port");
+        net_url_free(&url);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    int64_t deadline = net_deadline(timeout);
+    int fd = net_connect(url.host, url.port, deadline, &err);
+
+    if (fd < 0) {
+        net_url_free(&url);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    SSL_CTX *context = NULL;
+    SSL *ssl = NULL;
+
+    if (secure) {
+        context = net_tls_context(ca_file, &err);
+        if (!context) {
+            close(fd);
+            net_url_free(&url);
+            net_raise(&err);
+            return NIL_VAL;
+        }
+        ssl = net_tls_client(context, url.host, fd, &err);
+        if (!ssl) {
+            SSL_CTX_free(context);
+            close(fd);
+            net_url_free(&url);
+            net_raise(&err);
+            return NIL_VAL;
+        }
+        if (!net_tls_handshake_blocking(ssl, fd, deadline, &err)) {
+            SSL_shutdown(ssl);
+            ERR_clear_error();
+            SSL_free(ssl);
+            SSL_CTX_free(context);
+            close(fd);
+            net_url_free(&url);
+            net_raise(&err);
+            return NIL_VAL;
+        }
+    }
+
+    /* The handshake runs before the GC-managed socket exists: an unrooted
+     * ObjSocket could be swept if a collection runs while the HTTP reader
+     * allocates, so a stack-local transport owns the descriptor until the
+     * upgrade succeeds. */
+    ObjSocket transport;
+
+    memset(&transport, 0, sizeof(transport));
+    transport.fd = fd;
+    transport.kind = secure ? NET_TLS : NET_TCP;
+    transport.ssl = ssl;
+    transport.ssl_ctx = context;
+    transport.is_closed = false;
+
+    unsigned char nonce[16];
+    char key[32];
+
+    if (!net_random_bytes(nonce, sizeof(nonce)) ||
+        net_base64_encode(nonce, sizeof(nonce), key, sizeof(key)) != 24) {
+        net_fail(&err, ERROR_NETWORK, "cannot generate the websocket key");
+        net_socket_release_tls(&transport);
+        close(fd);
+        net_url_free(&url);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+
+    NetBuffer request;
+    bool default_port = (secure && url.port == 443) || (!secure && url.port == 80);
+
+    net_buffer_init(&request);
+    net_buffer_printf(&request, "GET %s%s%s HTTP/1.1\r\n", url.path, url.query[0] ? "?" : "",
+                      url.query);
+    if (default_port) {
+        net_buffer_printf(&request, "Host: %s\r\n", url.host);
+    } else {
+        net_buffer_printf(&request, "Host: %s:%lld\r\n", url.host, (long long)url.port);
+    }
+    net_buffer_printf(&request,
+                      "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+                      "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n"
+                      "User-Agent: %s\r\n\r\n",
+                      key, NET_HTTP_USER_AGENT);
+
+    bool ok = net_ws_write_all(&transport, request.data, request.length, deadline, &err);
+
+    net_buffer_free(&request);
+
+    ObjWebSocket *websocket = NULL;
+
+    if (ok) {
+        NetHttpReader reader;
+        NetHttpResponse response;
+
+        memset(&response, 0, sizeof(response));
+        net_http_reader_init(&reader, fd, ssl, deadline);
+        if (!net_http_read_status(&reader, &response, &err) ||
+            !net_http_read_headers(&reader, &response, &err) ||
+            !net_ws_validate_handshake(&response, key, &err)) {
+            ok = false;
+        }
+        if (ok) {
+            /* Neither the socket nor the WebSocket is reachable from a root
+             * yet; keep the collector paused until the caller receives it. */
+            mem_pause_gc();
+            ObjSocket *socket = object_socket(fd, transport.kind, timeout);
+
+            socket->ssl = ssl;
+            socket->ssl_ctx = context;
+            transport.ssl = NULL;
+            transport.ssl_ctx = NULL;
+            websocket = object_websocket(socket, timeout);
+
+            size_t leftover = reader.length - reader.position;
+
+            if (leftover > 0) {
+                if ((int)leftover > websocket->rbuf_cap) {
+                    int capacity = websocket->rbuf_cap;
+
+                    while (capacity < (int)leftover) {
+                        capacity *= 2;
+                    }
+                    websocket->rbuf =
+                        mem_realloc(websocket->rbuf, (size_t)websocket->rbuf_cap, (size_t)capacity);
+                    websocket->rbuf_cap = capacity;
+                }
+                memcpy(websocket->rbuf, reader.data + reader.position, leftover);
+                websocket->rbuf_len = (int)leftover;
+            }
+            mem_resume_gc();
+        }
+        net_http_response_free(&response);
+        net_http_reader_free(&reader);
+    }
+
+    if (!ok) {
+        net_socket_release_tls(&transport);
+        close(fd);
+        net_url_free(&url);
+        net_raise(&err);
+        return NIL_VAL;
+    }
+    net_url_free(&url);
+    return OBJ_VAL(websocket);
+}
+
+/* ------------------------------------------------------------------ */
 /* Native functions                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -2879,6 +4167,7 @@ void net_init(void)
 {
     vm_define_native("tcp_connect", native_tcp_connect, -1);
     vm_define_native("tls_connect", native_tls_connect, -1);
+    vm_define_native("ws_connect", native_ws_connect, -1);
     vm_define_native("tcp_listen", native_tcp_listen, -1);
     vm_define_native("udp_bind", native_udp_bind, -1);
     vm_define_native("net_hostname", native_net_hostname, 0);
@@ -3371,6 +4660,7 @@ static const char *net_op_name(NetWaitOp op)
     case NET_OP_TLS_HANDSHAKE: return "tls_connect";
     case NET_OP_TLS_READ: return "read";
     case NET_OP_TLS_WRITE: return "write";
+    case NET_OP_WS_RECEIVE: return "receive";
     }
     return "operation";
 }
@@ -3403,6 +4693,9 @@ void net_mark_waiters(void)
         }
         if (waiter->wait_server) {
             vm_mark_object((Obj *)waiter->wait_server);
+        }
+        if (waiter->wait_ws) {
+            vm_mark_object((Obj *)waiter->wait_ws);
         }
         if (waiter->wait_sockets) {
             vm_mark_object((Obj *)waiter->wait_sockets);
@@ -3468,6 +4761,9 @@ static void net_timeout_wake(ObjCoroutine *waiter)
     }
     if (waiter->wait_op == NET_OP_TLS_HANDSHAKE && waiter->wait_socket) {
         net_socket_dispose(waiter->wait_socket);
+    }
+    if (waiter->wait_op == NET_OP_WS_RECEIVE && waiter->wait_ws) {
+        waiter->wait_ws->receiving = false;
     }
     snprintf(waiter->resume_error_buffer, sizeof(waiter->resume_error_buffer),
              "'%s' timed out after %lld ms", net_op_name(waiter->wait_op),
@@ -3645,6 +4941,25 @@ static bool net_complete_waiter(ObjCoroutine *waiter, struct pollfd *fds, int ba
             return false;
         }
         break;
+    case NET_OP_WS_RECEIVE:
+        if (candidate) {
+            short events = POLLIN;
+            int status = net_ws_receive_step(waiter->wait_ws, &events, &result, &err);
+
+            if (status == NET_DONE) {
+                waiter->wait_ws->receiving = false;
+                vm_wake_coroutine(waiter, result, NULL);
+                return true;
+            }
+            if (status == NET_FAILED) {
+                waiter->wait_ws->receiving = false;
+                net_deferred_error(waiter, err.type, err.message);
+                return true;
+            }
+            waiter->wait_events = (events & POLLOUT) ? NET_EVENT_WRITE : NET_EVENT_READ;
+            return false;
+        }
+        break;
     }
 
     if (expired) {
@@ -3685,8 +5000,11 @@ void net_scheduler_poll(bool may_block)
                 index++;
             }
         } else {
-            int fd = waiter->wait_socket ? waiter->wait_socket->fd
-                                         : (waiter->wait_server ? waiter->wait_server->fd : -1);
+            int fd = waiter->wait_socket
+                         ? waiter->wait_socket->fd
+                         : (waiter->wait_server
+                                ? waiter->wait_server->fd
+                                : (waiter->wait_ws ? waiter->wait_ws->socket->fd : -1));
             short events = 0;
 
             if (waiter->wait_events & NET_EVENT_READ) {
@@ -3760,7 +5078,9 @@ void net_scheduler_poll(bool may_block)
                 candidate = true;
             }
             if ((waiter->wait_socket && waiter->wait_socket->is_closed) ||
-                (waiter->wait_server && waiter->wait_server->is_closed)) {
+                (waiter->wait_server && waiter->wait_server->is_closed) ||
+                (waiter->wait_ws &&
+                 (waiter->wait_ws->is_closed || waiter->wait_ws->socket->is_closed))) {
                 candidate = true;
             }
             index++;
@@ -3903,6 +5223,9 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
     ObjCoroutine *self = vm_current_coroutine();
     NetError err;
 
+    if (is_obj_type(receiver, OBJ_WEBSOCKET)) {
+        return net_ws_dispatch_method(AS_WEBSOCKET(receiver), method, arg_count, args, out);
+    }
     if (is_obj_type(receiver, OBJ_SOCKET)) {
         ObjSocket *socket = AS_SOCKET(receiver);
 

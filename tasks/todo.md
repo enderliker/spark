@@ -268,11 +268,11 @@ fragmentation, a maximum frame size and protocol-error handling. API:
 `ws_connect(url, timeout_ms?)`, `ws.send_text/binary(data)`, `ws.receive()` →
 `{opcode, data}` (or `nil` when closed), `ws.ping(data?)`, `ws.close(code?, reason?)`.
 **Acceptance criteria:**
-- [ ] Handshake, text and binary round-trips, ping/pong and the close handshake work against a local server.
-- [ ] Fragmented messages are reassembled and oversized frames are rejected.
-- [ ] A protocol violation closes with the right code and error.
+- [x] Handshake, text and binary round-trips, ping/pong and the close handshake work against a local server.
+- [x] Fragmented messages are reassembled and oversized frames are rejected.
+- [x] A protocol violation closes with the right code and error.
 **Verification:**
-- [ ] Fixtures against a local WebSocket server; suite; ASan/UBSan.
+- [x] Fixtures against a local WebSocket server; suite; ASan/UBSan.
 **Dependencies:** T83, T85 (and T95 for `wss://`).
 **Files:** `src/net.c`, `src/net.h`, `tests/`, `docs/language.md`.
 **Scope:** M.
@@ -288,23 +288,30 @@ the client fixtures and examples can run without third-party servers.
 **Files:** `src/net.c`, `examples/`, `tests/`.
 **Scope:** S.
 
+**Decision (deferred):** Spark strings are UTF-8 text with character-based lengths, so
+a pure-Spark frame writer cannot emit arbitrary length/mask bytes above `0x7f` without
+a byte-buffer type. A native server would duplicate the client framing before that
+type exists. The client, the mock gateway and the Discord example cover the phase's
+acceptance criteria; T97 stays optional and is recorded as future work in
+`docs/architecture.md`.
+
 ### T98 - End-to-end against a local mock gateway
 **Description:** A local mock gateway (test fixture) that speaks the Discord-shaped
 handshake (HELLO/IDENTIFY/HEARTBEAT/READY/DISPATCH) plus `examples/discord_bot.spark`
 that connects, identifies, heartbeats and answers a message event. Never the real
 Discord API in tests.
 **Acceptance criteria:**
-- [ ] The fixture passes offline and fails if the heartbeat or the close handshake is wrong.
-- [ ] The example documents the token via `env` and needs no edits to run against the mock.
+- [x] The fixture passes offline and fails if the heartbeat or the close handshake is wrong.
+- [x] The example documents the token via `env` and needs no edits to run against the mock.
 **Verification:**
-- [ ] Fixture; suite; manual run of the example against the mock printed in the docs.
+- [x] Fixture; suite; manual run of the example against the mock printed in the docs.
 **Dependencies:** T96.
 **Files:** `tests/`, `examples/`, `docs/language.md`.
 **Scope:** S.
 
 ## Checkpoint: Phase 19
-- [ ] The mock-gateway fixture passes offline
-- [ ] The Discord example is documented step by step
+- [x] The mock-gateway fixture passes offline
+- [x] The Discord example is documented step by step
 
 ---
 

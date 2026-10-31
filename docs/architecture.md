@@ -342,13 +342,14 @@ for strings. The same rule applies to a callback result that is stored after
 The socket layer lives in `src/net.c`. The socket, URL and HTTP layers add no
 dependencies; TLS is the one exception and links OpenSSL (decision Q11).
 `net_init()` registers the global natives (`tcp_connect`, `tls_connect`,
-`tcp_listen`, `udp_bind`, `net_hostname`) from `vm_init`, and the VM routes method
-calls on socket and server receivers to `net_dispatch_method`.
+`ws_connect`, `tcp_listen`, `udp_bind`, `net_hostname`) from `vm_init`, and the VM
+routes method calls on socket, server and websocket receivers to
+`net_dispatch_method`.
 
-- **Resource model.** `ObjSocket` and `ObjServer` follow `ObjFile`: they own a file
-  descriptor, are closed by `close()`, by `object_free` when the collector finalizes
-  them, and on `vm_free`. `type()` reports `"socket"`/`"server"` and using a closed
-  handle is a runtime error.
+- **Resource model.** `ObjSocket`, `ObjServer` and `ObjWebSocket` follow `ObjFile`:
+  they own (or borrow) a file descriptor, are closed by `close()`, by `object_free`
+  when the collector finalizes them, and on `vm_free`. `type()` reports
+  `"socket"`/`"server"`/`"websocket"` and using a closed handle is a runtime error.
 - **Timeouts.** Each operation turns its millisecond timeout into an absolute deadline
   on a monotonic clock and waits with `poll(2)` before the blocking syscall (a timeout
   of `0` waits forever). The handshake runs on a temporarily non-blocking descriptor so
@@ -382,7 +383,8 @@ mix of readers, writers and deadlines. The integration is:
   expired waiter, performs its pending operation or raises the deferred error through
   `coroutine_apply_resume`. Woken coroutines are enqueued by `vm_wake_coroutine`.
 - **GC.** The waiter list is a root in `mark_roots`, and `ObjCoroutine` traces its
-  awaited socket, server and select array, so a waiting socket survives collection.
+  awaited socket, server, websocket and select array, so a waiting handle survives
+  collection.
 - **Guard.** A would-block operation inside a callback or module (`run_depth > 1`)
   raises instead of suspending, exactly like channel waits.
 - **Tail calls.** `return <native>(...)` normally becomes `OP_TAIL_CALL`, whose frame
@@ -486,6 +488,62 @@ are `read`, `write` and `close`.
 argument errors, a missing CA file and the three rejection cases.
 `tests/https_client.spark` repeats the trusted and rejection cases through the HTTP
 client, including the system-store failure and `ca_file` validation.
+
+### WebSocket (phase 19)
+
+`ws_connect(url, timeout_ms?, ca_file?)` adds one native and one GC-managed object,
+`ObjWebSocket`. The object borrows an `ObjSocket` (plain TCP or TLS), which keeps
+owning the descriptor and the OpenSSL state; the WebSocket owns only the receive and
+reassembly buffers. The collector traces the transport through the WebSocket and the
+waiter list traces a WebSocket whose `receive` is suspended.
+
+- **Handshake.** The native parses the URL (`ws`/`wss` default to 80/443), connects
+  through `net_connect`, and for `wss` builds the same context as `tls_connect` and
+  runs the blocking handshake under the connection deadline. It generates a 16-byte
+  nonce from `/dev/urandom`, sends the RFC 6455 upgrade request through
+  `net_ws_write_all`, and parses the response with the existing `NetHttpReader` and
+  `net_http_read_*` helpers. The response must be `101`, carry `Upgrade: websocket`
+  and `Connection: Upgrade`, and echo `Sec-WebSocket-Accept` (SHA-1 of the key plus
+  the GUID, computed with the handwritten `net_sha1`/`net_base64_encode` helpers so
+  the WebSocket layer needs no OpenSSL). Bytes the reader buffered
+  past the headers are moved into the WebSocket receive buffer, so a frame sent with
+  the handshake is not lost.
+- **Framing.** Every client frame is masked with four fresh bytes from
+  `/dev/urandom`; the header
+  uses the 7-bit, 16-bit or 64-bit length form and the payload is XORed in place. The
+  parser rejects masked server frames, reserved bits and opcodes, fragmented or
+  oversized control frames, orphan continuations and a new data frame inside a
+  fragmented message. Text messages and close reasons are validated as strict UTF-8
+  (overlong forms, surrogates and out-of-range code points are rejected).
+  Fragmented messages are reassembled up to the 16 MiB cap; control frames may
+  interleave. A ping is answered with a pong carrying the same payload; a close frame
+  is echoed and completes the receive with `nil`.
+- **Protocol errors.** `net_ws_fail_close` sends a best-effort close frame (`1002`
+  protocol error, `1007` invalid UTF-8, `1009` too big), disposes the transport and
+  raises `NetworkError`. The close-code validator accepts only the codes a peer may
+  put on the wire (`1000`-`1014` except the reserved `1004`/`1005`/`1006`/`1015`, plus
+  the `3000`-`4999` application range).
+- **Asynchronous receive.** `receive` first runs a non-blocking parse/read step. On
+  `EAGAIN` it registers `NET_OP_WS_RECEIVE` with the transport descriptor and
+  suspends the coroutine; `net_complete_waiter` retries the step and flips the poll
+  direction when OpenSSL returns `WANT_WRITE`. A timeout clears the `receiving` flag
+  and raises `TimeoutError`, so the program can heartbeat and retry. Sends and the
+  automatic pong are synchronous, bounded by the socket deadline, and reuse the same
+  `poll(2)` wait helper.
+- **Limits and ownership.** A frame and an assembled message are capped at 16 MiB, a
+  control payload at 125 bytes and a close reason at 123 bytes. `close()` sends the
+  close frame and leaves the transport open so `receive` can observe the peer's
+  reply; the collector finalizer frees the buffers and the transport finalizer closes
+  the descriptor.
+
+`tests/ws_client.spark` runs against a scripted Python RFC 6455 server (plain and
+TLS) and covers the handshake, text/binary/ping/pong/close, fragmentation, the size
+cap, masked frames, invalid UTF-8, orphan continuations, reserved bits and close
+codes, timeouts and the `wss://` trust store. `tests/run_tests.py` also runs
+`examples/discord_bot.spark` against a local mock gateway (HELLO, IDENTIFY, READY,
+MESSAGE_CREATE and a heartbeat-driven reply), so the Discord example is exercised
+offline. A WebSocket server (T97) is deferred: Spark strings are UTF-8 text, so a
+server-side frame writer needs a byte-buffer type first.
 
 ## Modules and loading
 

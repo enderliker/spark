@@ -111,12 +111,12 @@ small amount of VM plumbing.
 - [x] Dependency decision recorded in `AGENTS.md` and `CHANGELOG.md`
 
 ### Phase 19 - WebSocket (enables the Discord gateway)
-- [ ] T96 WebSocket client: upgrade handshake, masking, text/binary/ping/close, fragmentation
-- [ ] T97 (optional) WebSocket server side
-- [ ] T98 End-to-end against a local mock gateway + a documented Discord bot example
+- [x] T96 WebSocket client: upgrade handshake, masking, text/binary/ping/close, fragmentation
+- [ ] T97 (optional, deferred) WebSocket server side
+- [x] T98 End-to-end against a local mock gateway + a documented Discord bot example
 
 ### Checkpoint: Phase 19
-- [ ] The mock-gateway fixture passes offline; the example is documented step by step
+- [x] The mock-gateway fixture passes offline; the example is documented step by step
 
 ### Phase 20 - Hardening, docs and ecosystem
 - [ ] T99 Security hardening pass (limits, SSRF, secrets, sandboxing caveat)

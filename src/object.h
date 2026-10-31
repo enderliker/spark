@@ -142,7 +142,8 @@ typedef enum {
     NET_OP_SELECT,
     NET_OP_TLS_HANDSHAKE,
     NET_OP_TLS_READ,
-    NET_OP_TLS_WRITE
+    NET_OP_TLS_WRITE,
+    NET_OP_WS_RECEIVE
 } NetWaitOp;
 
 /* A cooperative green thread. While suspended it owns a private value stack
@@ -185,6 +186,7 @@ typedef struct ObjCoroutine {
      * absolute monotonic deadline in milliseconds (0 = wait forever). */
     struct ObjSocket *wait_socket;
     struct ObjServer *wait_server;
+    struct ObjWebSocket *wait_ws;
     ObjArray *wait_sockets;
     NetWaitOp wait_op;
     int wait_events;
@@ -258,6 +260,40 @@ typedef struct ObjServer {
     bool is_closed;
 } ObjServer;
 
+/* WebSocket frame opcodes (RFC 6455, low nibble of the first byte). */
+typedef enum {
+    WS_OP_CONTINUATION = 0x0,
+    WS_OP_TEXT = 0x1,
+    WS_OP_BINARY = 0x2,
+    WS_OP_CLOSE = 0x8,
+    WS_OP_PING = 0x9,
+    WS_OP_PONG = 0xA
+} WsOpcode;
+
+/* A GC-managed WebSocket client. It borrows a transport socket (plain TCP or
+ * TLS) that owns the descriptor and, when secure, the SSL state. `rbuf` holds
+ * bytes read from the transport but not yet parsed into a frame, and `msg`
+ * accumulates the payload of a message split across continuation frames until
+ * the final frame arrives. */
+typedef struct ObjWebSocket {
+    Obj obj;
+    struct ObjSocket *socket;
+    bool is_closed;
+    bool peer_closed;    /* a close frame arrived from the peer */
+    bool sent_close;     /* this side sent a close frame */
+    bool receiving;      /* a receive is suspended on this object */
+    bool assembling;     /* a fragmented message is being reassembled */
+    int msg_opcode;      /* opcode of the message being assembled */
+    int64_t timeout_ms;  /* default deadline; 0 = wait forever */
+    char *rbuf;
+    int rbuf_cap;
+    int rbuf_len;
+    int rbuf_pos;
+    char *msg;
+    int msg_cap;
+    int msg_len;
+} ObjWebSocket;
+
 typedef struct {
     Obj obj;
     char *chars;
@@ -272,6 +308,7 @@ typedef struct {
 #define AS_FILE(v) ((ObjFile *)(v).as.obj)
 #define AS_SOCKET(v) ((ObjSocket *)(v).as.obj)
 #define AS_SERVER(v) ((ObjServer *)(v).as.obj)
+#define AS_WEBSOCKET(v) ((ObjWebSocket *)(v).as.obj)
 #define AS_CLASS(v) ((ObjClass *)(v).as.obj)
 #define AS_INSTANCE(v) ((ObjInstance *)(v).as.obj)
 #define AS_COROUTINE(v) ((ObjCoroutine *)(v).as.obj)
@@ -322,6 +359,7 @@ ObjChannel *object_channel(int capacity);
 ObjFile *object_file(FILE *stream, ObjString *path);
 ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms);
 ObjServer *object_server(int fd);
+ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms);
 ObjStringBuilder *object_string_builder(int initial_capacity);
 bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len);
 void string_builder_clear(ObjStringBuilder *sb);

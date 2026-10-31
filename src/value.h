@@ -41,7 +41,8 @@ typedef enum {
     OBJ_COROUTINE,
     OBJ_CHANNEL,
     OBJ_SOCKET,
-    OBJ_SERVER
+    OBJ_SERVER,
+    OBJ_WEBSOCKET
 } ObjType;
 
 struct Obj {

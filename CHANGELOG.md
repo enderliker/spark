@@ -47,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Test fixtures: throwaway CA, leaf, wrong-host, untrusted-chain and self-signed
   certificates under `tests/tls/`, with a regeneration script. The suite runs local
   TLS servers only and never touches the public internet.
+- WebSocket: `ws_connect(url, timeout_ms?, ca_file?)` speaks RFC 6455 over `ws://`
+  and `wss://`. It verifies the upgrade handshake, masks client frames and supports
+  text, binary, ping/pong and the close handshake; fragmented messages are
+  reassembled and protocol violations (masked server frames, reserved bits, orphan
+  continuations, invalid UTF-8, invalid close codes) close with `1002`/`1007`/`1009`.
+  A frame or message is capped at 16 MiB and a control payload at 125 bytes.
+  `receive` suspends the coroutine through the scheduler and accepts a per-call
+  timeout, so a heartbeat loop can time out and retry.
+- `examples/discord_bot.spark`: a Discord-shaped gateway client that identifies,
+  heartbeats and answers a message event. `tests/run_tests.py` runs it against a
+  local mock gateway (HELLO, IDENTIFY, READY, MESSAGE_CREATE), so the example is
+  covered offline and never contacts Discord.
 
 ### Dependencies
 
@@ -72,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reserved type names.
 - Class names may no longer be `socket` or `server`, which are now reserved type
   names.
+- Class names may no longer be `websocket`, which is now a reserved type name.
 - The bytecode file format version is now `5` (needed for `OP_YIELD`).
   `.sparkc` files compiled by an earlier build are rejected with exit code 65;
   recompile them with `spark --compile`.

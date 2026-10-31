@@ -1,3 +1,5 @@
 *.o
 *.d
 /spark
+__pycache__/
+*.pyc

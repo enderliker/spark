@@ -1400,7 +1400,7 @@ static bool is_reserved_type_name(Text name)
     static const char *const reserved[] = {
         "number", "string", "bool", "nil", "array", "map",
         "function", "native function", "file", "string_builder", "class", "instance",
-        "coroutine", "channel", "socket", "server",
+        "coroutine", "channel", "socket", "server", "websocket",
     };
 
     for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {

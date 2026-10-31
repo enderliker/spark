@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
+import hashlib
+import json
+import os
 import select
 import socketserver
 import ssl
+import struct
 import subprocess
 import sys
 import threading
@@ -31,7 +36,8 @@ def report(name: str, ok: bool, detail: str = "") -> None:
             print("         " + line)
 
 
-def run(args: list[str], stdin: str | None = None, timeout: int = 60):
+def run(args: list[str], stdin: str | None = None, timeout: int = 60, env: dict[str, str] | None = None):
+    environment = None if env is None else {**os.environ, **env}
     return subprocess.run(
         [str(BINARY), *args],
         input=stdin,
@@ -39,6 +45,7 @@ def run(args: list[str], stdin: str | None = None, timeout: int = 60):
         text=True,
         encoding="utf-8",
         timeout=timeout,
+        env=environment,
     )
 
 
@@ -688,6 +695,310 @@ def test_https_client() -> None:
             server.server_close()
 
 
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+def ws_frame(opcode: int, payload: bytes = b"", fin: bool = True) -> bytes:
+    first = (0x80 if fin else 0) | opcode
+    length = len(payload)
+    if length <= 125:
+        return bytes([first, length]) + payload
+    if length <= 0xFFFF:
+        return bytes([first, 126]) + struct.pack(">H", length) + payload
+    return bytes([first, 127]) + struct.pack(">Q", length) + payload
+
+
+def ws_masked_frame(opcode: int, payload: bytes) -> bytes:
+    mask = b"\x01\x02\x03\x04"
+    body = bytes(value ^ mask[i % 4] for i, value in enumerate(payload))
+    return bytes([0x80 | opcode, 0x80 | len(payload)]) + mask + body
+
+
+def ws_recv_exact(sock, count: int, buffered: bytes) -> tuple[bytes, bytes]:
+    while len(buffered) < count:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("connection closed")
+        buffered += chunk
+    return buffered[:count], buffered[count:]
+
+
+def ws_read_frame(sock, buffered: bytes) -> tuple[int, bytes, bytes]:
+    header, buffered = ws_recv_exact(sock, 2, buffered)
+    first, second = header[0], header[1]
+    opcode = first & 0x0F
+    masked = bool(second & 0x80)
+    length = second & 0x7F
+    if length == 126:
+        extra, buffered = ws_recv_exact(sock, 2, buffered)
+        length = struct.unpack(">H", extra)[0]
+    elif length == 127:
+        extra, buffered = ws_recv_exact(sock, 8, buffered)
+        length = struct.unpack(">Q", extra)[0]
+    mask = b""
+    if masked:
+        mask, buffered = ws_recv_exact(sock, 4, buffered)
+    payload, buffered = ws_recv_exact(sock, length, buffered)
+    if masked:
+        payload = bytes(value ^ mask[i % 4] for i, value in enumerate(payload))
+    return opcode, payload, buffered
+
+
+def ws_read_until_close(sock, buffered: bytes) -> None:
+    while True:
+        opcode, payload, buffered = ws_read_frame(sock, buffered)
+        if opcode == 8:
+            sock.sendall(ws_frame(8, payload[:2]))
+            return
+        if opcode == 9:
+            sock.sendall(ws_frame(10, payload))
+
+
+class WebSocketHandler(socketserver.BaseRequestHandler):
+    """A scripted RFC 6455 server; the request path selects the scenario."""
+
+    def handle(self) -> None:
+        try:
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    return
+                request += chunk
+            head, buffered = request.split(b"\r\n\r\n", 1)
+            lines = head.decode("latin-1").split("\r\n")
+            path = lines[0].split(" ")[1]
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                name, value = line.split(":", 1)
+                headers[name.strip().lower()] = value.strip()
+            key = headers["sec-websocket-key"]
+            accept = base64.b64encode(
+                hashlib.sha1((key + WS_GUID).encode()).digest()
+            ).decode()
+            status = "101 Switching Protocols"
+            upgrade = "Upgrade: websocket\r\n"
+            connection = "Connection: Upgrade\r\n"
+            extra = ""
+            if path == "/bad-accept":
+                accept = "AAAA"
+            if path == "/bad-status":
+                status = "200 OK"
+            if path == "/bad-upgrade":
+                upgrade = ""
+            if path == "/bad-connection":
+                connection = ""
+            if path == "/extensions":
+                extra = "Sec-WebSocket-Extensions: permessage-deflate\r\n"
+            if path == "/protocol":
+                extra = "Sec-WebSocket-Protocol: chat\r\n"
+            response = (
+                f"HTTP/1.1 {status}\r\n{upgrade}{connection}"
+                f"Sec-WebSocket-Accept: {accept}\r\n{extra}\r\n"
+            )
+            self.request.sendall(response.encode())
+            if path in (
+                "/bad-accept",
+                "/bad-status",
+                "/bad-upgrade",
+                "/bad-connection",
+                "/extensions",
+                "/protocol",
+            ):
+                return
+            if path == "/echo":
+                while True:
+                    opcode, payload, buffered = ws_read_frame(self.request, buffered)
+                    if opcode == 8:
+                        self.request.sendall(ws_frame(8, payload[:2]))
+                        return
+                    if opcode == 9:
+                        self.request.sendall(ws_frame(10, payload))
+                        continue
+                    self.request.sendall(ws_frame(opcode, payload))
+            elif path == "/fragmented":
+                self.request.sendall(ws_frame(1, b"Hello, ", fin=False))
+                self.request.sendall(ws_frame(0, b"fragmented ", fin=False))
+                self.request.sendall(ws_frame(0, b"world", fin=True))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/server-ping":
+                self.request.sendall(ws_frame(9, b"ka"))
+                opcode, payload, buffered = ws_read_frame(self.request, buffered)
+                reply = b"pong-ok" if opcode == 10 and payload == b"ka" else b"pong-missing"
+                self.request.sendall(ws_frame(1, reply))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/oversized":
+                self.request.sendall(bytes([0x81, 127]) + struct.pack(">Q", 16 * 1024 * 1024 + 1))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/masked":
+                self.request.sendall(ws_masked_frame(1, b"hi"))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/bad-utf8":
+                self.request.sendall(ws_frame(1, b"\xff\xfe"))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/bad-continuation":
+                self.request.sendall(ws_frame(0, b"orphan"))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/bad-close":
+                self.request.sendall(ws_frame(8, struct.pack(">H", 1005)))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/reserved-bits":
+                self.request.sendall(bytes([0x81 | 0x40, 1, 0x41]))
+                ws_read_until_close(self.request, buffered)
+            elif path == "/close":
+                self.request.sendall(ws_frame(8, struct.pack(">H", 1000) + b"bye"))
+                try:
+                    ws_read_until_close(self.request, buffered)
+                except ConnectionError:
+                    pass
+            elif path == "/silent":
+                while self.request.recv(4096):
+                    pass
+        except (OSError, ConnectionError, KeyError, IndexError):
+            pass
+
+
+def start_ws_server(cert_name: str | None = None) -> QuietTCPServer:
+    server = QuietTCPServer(("127.0.0.1", 0), WebSocketHandler)
+    if cert_name:
+        server.socket = tls_context(cert_name).wrap_socket(server.socket, server_side=True)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_ws_client() -> None:
+    print("\nWebSocket client")
+    servers: list[QuietTCPServer] = []
+    try:
+        plain = start_ws_server()
+        servers.append(plain)
+        secure = start_ws_server("server")
+        servers.append(secure)
+        run_fixture(
+            "ws_client.spark",
+            "ws_client.out",
+            [
+                str(plain.server_address[1]),
+                str(secure.server_address[1]),
+                str(TLS / "ca.pem"),
+            ],
+            "websocket handshake, framing, control and close",
+        )
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
+class MockGatewayHandler(socketserver.BaseRequestHandler):
+    """A scripted Discord gateway: HELLO, IDENTIFY, READY, MESSAGE_CREATE.
+
+    It exercises the documented bot example end to end: the client identifies
+    with the fixture token, answers the scripted ``ping`` with ``pong`` and
+    stops when the gateway closes the connection.
+    """
+
+    token = "test-token"
+
+    def _read_json(self, buffered: bytes) -> tuple[dict, bytes]:
+        while True:
+            opcode, payload, buffered = ws_read_frame(self.request, buffered)
+            if opcode == 9:
+                self.request.sendall(ws_frame(10, payload))
+                continue
+            if opcode == 8:
+                self.request.sendall(ws_frame(8, payload[:2]))
+                raise ConnectionError("client closed")
+            if opcode == 1:
+                return json.loads(payload), buffered
+
+    def handle(self) -> None:
+        try:
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    return
+                request += chunk
+            head, buffered = request.split(b"\r\n\r\n", 1)
+            lines = head.decode("latin-1").split("\r\n")
+            if not lines[0].split(" ")[1].startswith("/?v=10"):
+                return
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                name, value = line.split(":", 1)
+                headers[name.strip().lower()] = value.strip()
+            key = headers["sec-websocket-key"]
+            accept = base64.b64encode(
+                hashlib.sha1((key + WS_GUID).encode()).digest()
+            ).decode()
+            self.request.sendall(
+                (
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                ).encode()
+            )
+            self.request.settimeout(10)
+            hello = {"op": 10, "d": {"heartbeat_interval": 200}}
+            self.request.sendall(ws_frame(1, json.dumps(hello).encode()))
+            identify, buffered = self._read_json(buffered)
+            if identify.get("op") != 2 or identify.get("d", {}).get("token") != self.token:
+                self.request.sendall(ws_frame(8, struct.pack(">H", 4004)))
+                return
+            ready = {"op": 0, "s": 1, "t": "READY", "d": {"session_id": "mock"}}
+            self.request.sendall(ws_frame(1, json.dumps(ready).encode()))
+            message = {
+                "op": 0,
+                "s": 2,
+                "t": "MESSAGE_CREATE",
+                "d": {"content": "ping", "channel_id": "42"},
+            }
+            self.request.sendall(ws_frame(1, json.dumps(message).encode()))
+            reply, buffered = self._read_json(buffered)
+            while reply.get("op") == 1:  # heartbeat
+                self.request.sendall(ws_frame(11, b"null"))
+                reply, buffered = self._read_json(buffered)
+            if reply.get("d", {}).get("content") != "pong":
+                self.request.sendall(ws_frame(8, struct.pack(">H", 4000)))
+                return
+            self.request.sendall(ws_frame(8, struct.pack(">H", 1000) + b"done"))
+            try:
+                opcode, payload, buffered = ws_read_frame(self.request, buffered)
+                if opcode == 8:
+                    self.request.sendall(ws_frame(8, payload[:2]))
+            except (OSError, ConnectionError):
+                pass
+        except (OSError, ConnectionError, KeyError, IndexError, ValueError):
+            pass
+
+
+def test_discord_example() -> None:
+    print("\nDiscord gateway example")
+    server = QuietTCPServer(("127.0.0.1", 0), MockGatewayHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        url = f"ws://127.0.0.1:{server.server_address[1]}/?v=10"
+        completed = run(
+            [str(ROOT / "examples" / "discord_bot.spark")],
+            timeout=60,
+            env={"DISCORD_TOKEN": "test-token", "DISCORD_GATEWAY_URL": url},
+        )
+        expected = "ready\nmessage: ping\nreply sent\nclosed\n"
+        detail = ""
+        ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+        if completed.returncode != 0:
+            detail += f"exit code {completed.returncode} (expected 0)\n"
+        if completed.stdout != expected:
+            detail += unified(expected, completed.stdout)
+        if completed.stderr:
+            detail += "unexpected stderr:\n" + completed.stderr
+        report("the Discord example runs against a local mock gateway", ok, detail)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_http_client() -> None:
     print("\nHTTP client")
     server = QuietHTTPServer(("127.0.0.1", 0), ScriptedHandler)
@@ -761,6 +1072,8 @@ def main() -> int:
     test_http_server()
     test_tls_client()
     test_https_client()
+    test_ws_client()
+    test_discord_example()
     test_cli()
 
     failed = [name for name, ok, _ in results if not ok]
@@ -773,4 +1086,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    if "--mock-gateway" in sys.argv:
+        gateway = QuietTCPServer(("127.0.0.1", 0), MockGatewayHandler)
+        print(f"ws://127.0.0.1:{gateway.server_address[1]}/?v=10", flush=True)
+        try:
+            gateway.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            gateway.server_close()
+        sys.exit(0)
     sys.exit(main())

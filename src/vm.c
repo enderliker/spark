@@ -517,6 +517,7 @@ static void blacken(Obj *object)
         mark_object((Obj *)coroutine->wait_target);
         mark_object((Obj *)coroutine->wait_socket);
         mark_object((Obj *)coroutine->wait_server);
+        mark_object((Obj *)coroutine->wait_ws);
         mark_object((Obj *)coroutine->wait_sockets);
         for (ObjCoroutine *joiner = coroutine->joiners; joiner;
              joiner = joiner->wait_next) {
@@ -551,6 +552,10 @@ static void blacken(Obj *object)
     case OBJ_SOCKET:
     case OBJ_SERVER:
         /* No object-valued fields: the descriptor is not traced. */
+        break;
+    case OBJ_WEBSOCKET:
+        /* The transport socket and its descriptor are traced through it. */
+        mark_object((Obj *)((ObjWebSocket *)object)->socket);
         break;
     }
 }
@@ -4601,6 +4606,7 @@ static void coroutine_wake(ObjCoroutine *coroutine, Value result, const char *er
     coroutine->wait_value = NIL_VAL;
     coroutine->wait_socket = NULL;
     coroutine->wait_server = NULL;
+    coroutine->wait_ws = NULL;
     coroutine->wait_sockets = NULL;
     coroutine->wait_events = 0;
     coroutine->wait_deadline = 0;
@@ -7785,7 +7791,8 @@ cold_dispatch:
             if (is_obj_type(receiver, OBJ_CHANNEL) ||
                 is_obj_type(receiver, OBJ_COROUTINE) ||
                 is_obj_type(receiver, OBJ_SOCKET) ||
-                is_obj_type(receiver, OBJ_SERVER)) {
+                is_obj_type(receiver, OBJ_SERVER) ||
+                is_obj_type(receiver, OBJ_WEBSOCKET)) {
                 Value result;
                 int status;
 
@@ -8007,7 +8014,8 @@ cold_dispatch:
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
             } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_ARRAY) ||
                        is_obj_type(receiver, OBJ_STRING_BUILDER) || is_obj_type(receiver, OBJ_FILE) ||
-                       is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER)) {
+                       is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER) ||
+                       is_obj_type(receiver, OBJ_WEBSOCKET)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,
                                  value_type_name(receiver));
             } else {
@@ -8036,7 +8044,8 @@ cold_dispatch:
             if (is_obj_type(receiver, OBJ_CHANNEL) ||
                 is_obj_type(receiver, OBJ_COROUTINE) ||
                 is_obj_type(receiver, OBJ_SOCKET) ||
-                is_obj_type(receiver, OBJ_SERVER)) {
+                is_obj_type(receiver, OBJ_SERVER) ||
+                is_obj_type(receiver, OBJ_WEBSOCKET)) {
                 ObjArray *spread = AS_ARRAY(args_val);
                 int count = spread->count;
 
