@@ -1,9 +1,9 @@
-var inicio = clock();
+var start = clock();
 var s = 0;
 for (var i = 0; i < 5000000; i += 1) {
     s += i * 2 - 1;
 }
-var fin = clock();
+var end = clock();
 
 print(s);
-print((fin - inicio) * 1000);
+print((end - start) * 1000);

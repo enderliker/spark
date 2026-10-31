@@ -9,7 +9,7 @@ print(split("abc", ""));
 print(split("ñandú", ""));
 
 print(join([1, 2, 3], "-"), join(["a", "b"], ""));
-print(trim("  hola  "), "|", trim("\t\nhi\n"));
+print(trim("  hello  "), "|", trim("\t\nhi\n"));
 print(upper("Hello ñ"), lower("Hello Ñ"));
 print(repeat("ab", 3), repeat("x", 0), "|");
 print(replace("banana", "na", "NA"), replace("aaa", "a", "bb"));

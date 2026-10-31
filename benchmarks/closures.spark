@@ -3,12 +3,12 @@ fn make_adder(x) {
 }
 
 var add = make_adder(1);
-var inicio = clock();
+var start = clock();
 var s = 0;
 for (var i = 0; i < 1000000; i += 1) {
     s += add(i);
 }
-var fin = clock();
+var end = clock();
 
 print(s);
-print((fin - inicio) * 1000);
+print((end - start) * 1000);

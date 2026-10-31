@@ -1,2 +1,0 @@
-exit: 70
-stderr: NameError at line 1: global variable 'noexiste' not defined

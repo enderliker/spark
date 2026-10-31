@@ -1,0 +1,2 @@
+var text = "hello";
+text[0] = "H";

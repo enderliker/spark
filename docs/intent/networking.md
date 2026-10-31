@@ -4,6 +4,10 @@ Confirmed with the user on 2026-10-28. This records the agreed scope, decisions 
 work order for the networking work stream. It is the input for phases 15-20 in
 `tasks/plan.md` and `tasks/todo.md`; update it if the intent changes.
 
+> **Status (2026-10-31):** this stream is closed. Phases 15-20 are complete, and the one
+> deferred item - the WebSocket server (T97) - continues as T113 in the 0.2 stream,
+> blocked on the `bytes` type. See [`spark-0.2.md`](spark-0.2.md).
+
 ## Outcome
 
 Spark can speak to the network from the language itself: TCP and UDP sockets as

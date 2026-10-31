@@ -5,9 +5,9 @@ fn fib(n) {
     return fib(n - 1) + fib(n - 2);
 }
 
-var inicio = clock();
-var resultado = fib(27);
-var fin = clock();
+var start = clock();
+var result = fib(27);
+var end = clock();
 
-print(resultado);
-print((fin - inicio) * 1000);
+print(result);
+print((end - start) * 1000);

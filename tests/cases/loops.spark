@@ -30,15 +30,15 @@ for (var i = 0; i < 3; i += 1) {
 }
 
 var k = 0;
-var suma = 0;
+var total = 0;
 while (k < 5) {
     k += 1;
     if (k == 3) {
         continue;
     }
-    suma += k;
+    total += k;
 }
-print("while-continue", suma);
+print("while-continue", total);
 
 var n = 0;
 for (;;) {
@@ -47,4 +47,4 @@ for (;;) {
         break;
     }
 }
-print("infinito", n);
+print("infinite", n);

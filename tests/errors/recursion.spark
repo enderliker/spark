@@ -1,2 +1,2 @@
-fn infinita() { return 1 + infinita(); }
-infinita();
+fn infinite() { return 1 + infinite(); }
+infinite();

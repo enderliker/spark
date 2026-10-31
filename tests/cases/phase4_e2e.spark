@@ -1,5 +1,5 @@
 // Phase 4 End-to-End integration test.
-var tmp_path = "/tmp/spark_fase4_e2e.json";
+var tmp_path = "/tmp/spark_phase4_e2e.json";
 
 // 1. Prepare data with random numbers
 srand(12345);
@@ -45,4 +45,4 @@ print(len(ids));
 
 // 6. Clean up
 write_file(tmp_path, "");
-print("fase 4 end-to-end ok");
+print("phase 4 end-to-end ok");

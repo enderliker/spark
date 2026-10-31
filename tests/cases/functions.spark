@@ -6,22 +6,22 @@ fn fib(n) {
 }
 print(fib(15));
 
-fn suma(a, b) {
+fn total(a, b) {
     return a + b;
 }
-print(suma(2, 3));
+print(total(2, 3));
 
-fn sin_retorno() {
+fn no_return() {
     var x = 1;
 }
-print(sin_retorno());
+print(no_return());
 
-fn aplicar(f, x) {
+fn apply(f, x) {
     return f(x);
 }
-print(aplicar(fn(v) { return v * v; }, 7));
+print(apply(fn(v) { return v * v; }, 7));
 
-fn doble(x) {
+fn double(x) {
     return x * 2;
 }
-print(aplicar(doble, 21));
+print(apply(double, 21));

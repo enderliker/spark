@@ -1,0 +1,4 @@
+// A negative index counts from the end, and the error reports the normalized
+// position: -4 on an array of size 3 becomes -1.
+var a = [1, 2, 3];
+print(a[-4]);

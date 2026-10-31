@@ -104,12 +104,15 @@ From highest to lowest precedence:
 
 | Operators | Associativity | Description |
 | --- | --- | --- |
-| `()` `[]` | left | call and indexing |
-| `!` `not` `-` `~` | right | logical, arithmetic and bitwise negation |
+| `()` `[]` `.` `?.` | left | call, indexing/slicing and member access |
+| `++` `--` (postfix) | left | increment and decrement |
+| `!` `not` `-` `~` `++` `--` (prefix) | right | logical, arithmetic and bitwise negation; increment and decrement |
+| `**` | right | exponentiation |
 | `*` `/` `%` `div` | left | multiplication, division, modulo and integer division |
 | `+` `-` | left | addition/concatenation and subtraction |
 | `<<` `>>` | left | bit shifts |
 | `<` `<=` `>` `>=` | left | comparison of numbers or strings |
+| `in` `instanceof` | left | membership and type test |
 | `==` `!=` | left | equality |
 | `&` | left | bitwise AND |
 | `^` | left | bitwise XOR |
@@ -118,6 +121,11 @@ From highest to lowest precedence:
 | `or` | left | short-circuited disjunction |
 | `??` | right | null-coalescing |
 | `?:` | right | conditional expression |
+| `=` `+=` `-=` `*=` `/=` `%=` `&=` `\|=` `^=` `<<=` `>>=` `??=` | n/a | assignment (section 4; statements, not expressions) |
+
+`**` is exponentiation and is right-associative, so `2 ** 3 ** 2` is `2 ** (3 ** 2)`,
+`512`. Unary minus binds **tighter** than `**`, so `-2 ** 2` is `(-2) ** 2`, `4`; Python
+reads the same expression as `-4`. A negative exponent is a float (`2 ** -1` is `0.5`).
 
 `+` adds two numbers or concatenates two strings; it does not mix types. `/` always
 performs floating-point division; `div` is truncating integer division and requires two
@@ -160,6 +168,77 @@ print(value ?? "default");
 print(nil ?? nil ?? "third");   // third
 ```
 
+`in` tests membership: an array by value, a string by substring, a map by key. Any other
+container is a runtime error. `instanceof` tests whether the left operand is an instance
+of the class on the right, subclasses included; `nil` and values that are not instances
+give `false` rather than an error. Both bind looser than the comparisons and tighter
+than `==`:
+
+```spark
+print("a" in ["a", "b"], "ar" in "spark", "k" in {"k": 1});   // true true true
+print(2 in [1, 2] == true);   // true   ((2 in [1, 2]) == true)
+print(1 < 2 in [true]);       // true   ((1 < 2) in [true])
+print(row instanceof Record); // true for a subclass of Record as well
+```
+
+`++` and `--` increment and decrement a variable or an element of an array or a map.
+They are **expressions**, so unlike the assignments in section 4 they can appear inside
+another expression; the postfix form yields the old value and the prefix form the new
+one:
+
+```spark
+var i = 0;
+print(i++, i, ++i);      // 0 1 2
+var counts = {"a": 1};
+counts["a"]++;
+print(counts);           // {"a": 2}
+```
+
+A field of an instance is not a valid target: `self.n++` is a runtime error, so write
+`self.n = self.n + 1`.
+
+`a.b` reads a field or calls a method; `a?.b` and `a?.b(...)` are the same reads and
+calls, except that they yield `nil` when `a` is `nil` instead of raising. The safe form
+guards only the access it is written on, so every link of a longer chain needs its own
+`?.`:
+
+```spark
+print(user?.name);           // nil when user is nil
+print(user?.getName());      // the call form short-circuits the same way
+print(user?.address?.city);  // nil when either link is nil
+print(counts?.len());        // method form on a map
+```
+
+An array literal can inline another array with the spread operator (`[1, ...others, 4]`)
+and a call can unpack arguments with it (`f(...args)`); section 6 describes both. Short
+lambdas have a concise form for a single expression: `fn(x) => x * 2` (section 6).
+
+### Indexing and slicing
+
+`value[index]` reads one element: an element of an array, or one UTF-8 character of a
+string. The index must be an integer, and a negative index counts from the end (`a[-1]`
+is the last element, `"spark"[-1]` is `"k"`). An index outside the range is a runtime
+`IndexError`.
+
+`value[start:end:step]` builds a **new** array or string out of the elements in
+`[start, end)` taken every `step` characters or elements (default `1`). Every part is
+optional: `a[:]` copies, `a[::2]` takes every other element, `a[::-1]` reverses. Negative
+positions count from the end, and a position outside the range is **clamped** instead of
+raising. The step must not be `0` (a runtime error). Only arrays and strings can be
+sliced, and a slice is a value rather than a place: `a[1:3] = x` is a syntax error.
+
+```spark
+var a = [1, 2, 3, 4, 5];
+print(a[1], a[-1]);            // 2 5
+print(a[1:3], a[:2], a[2:]);   // [2, 3] [1, 2] [3, 4, 5]
+print(a[::2], a[::-1]);        // [1, 3, 5] [5, 4, 3, 2, 1]
+print(a[10:20]);               // []      (clamped, not an error)
+print("spark"[1:3], "spark"[::-1]);   // pa kraps
+```
+
+The rule to keep in mind: **indexing is exact and raises when the position is out of
+range, while slicing clamps**. Sections 7 and 9 refer back here.
+
 ## 4. Variables and scope
 
 ```spark
@@ -195,14 +274,21 @@ x -= 2;
 x *= 3;
 x /= 2;
 bits &= mask;   // also |= ^= <<= >>=
+cache ??= {};   // assigns only when the target is nil
 array[0] = 5;
 array[1] += 10;
 map["key"] = 42;
 map["key"] += 1;
+instance.field = 3;
+instance.field += 1;
 ```
 
-The left-hand side must be a variable or an indexing. `print(x = 1)` is a syntax
-error.
+The left-hand side must be a variable, an indexing or an instance field. `print(x = 1)`
+and `print(x += 1)` are syntax errors, and sequencing `a = b = c` is not available.
+`++` and `--` are the exception to the rule: they are expressions (section 3), so they
+can appear inside another expression, but their target may only be a variable or an
+array or map element - an instance field is a runtime error, so use
+`instance.field += 1`.
 
 ## 5. Control flow
 
@@ -316,6 +402,11 @@ print(counter(5), counter(3));   // 5 8
 
 - Functions are values: they can be stored in variables, passed as arguments and
   returned.
+- **Short lambdas**: `fn(x) => expression` is a one-expression function, equivalent to
+  `fn(x) { return expression; }`. It accepts the same parameters (defaults and varargs
+  included) and may be called immediately, as in `(fn(x) => x * 2)(5)`. The body must be
+  an expression: `fn(x) => { ... }` is a syntax error because `{` starts a map literal,
+  so anything statement-shaped needs the full form.
 - A function without `return` returns `nil`.
 - **Default parameters**: `fn f(a, b = 10)` allows omitting trailing arguments; default
   expressions are evaluated per call and may reference earlier parameters. Parameters
@@ -354,7 +445,8 @@ push(a, 4);
 print(a, pop(a));
 ```
 
-- Indexes must be non-negative integers within range.
+- Indexes must be integers; a negative index counts from the end and an out-of-range
+  index is a runtime error. Slicing clamps instead of raising (section 3).
 - Arrays are passed by reference (they are objects).
 - Array literals support the spread operator: `[1, ...items, 4]` unpacks array elements.
 - `len` counts elements; on strings it counts UTF-8 characters.
@@ -391,18 +483,21 @@ Strings are UTF-8 and immutable. Indexing returns a one-character string; `subst
 returns a substring. Positions are counted in characters, not bytes.
 
 ```spark
-print("spark"[0], "spark"[5]);   // c a
+print("spark"[0], "spark"[-1]);    // s k
 print(substr("abcdef", 1, 3));     // bcd
 print(substr("program", 5));       // am
 print(len("ñandú"));               // 5
 print(split("a,b,c", ","));        // ["a", "b", "c"]
-print(upper("hola"), trim("  x  "));
+print(upper("hello"), trim("  x  "));
 ```
 
-- A negative, non-integer or out-of-range index is a runtime error.
+- The index must be an integer; a negative index counts from the end (`"spark"[-1]` is
+  `"k"`) and an out-of-range index is a runtime error. Slicing clamps instead of raising
+  (section 3).
 - `substr(text, start, count?)` starts at `start` and takes `count` characters (or the
-  rest if omitted). Negative `start`/`count` are errors; `start` beyond the end
-  returns `""`.
+  rest if omitted). A negative `start` counts from the end (`substr("abcdef", -2, 1)` is
+  `"e"`, `substr("abcdef", -3)` is `"def"`), `count` must not be negative, and a `start`
+  beyond the end returns `""`.
 - `split`, `join`, `trim`, `upper`, `lower`, `repeat`, `replace`, `starts_with`,
   `ends_with`, `contains` and `index_of` are documented in section 10. `upper` and
   `lower` only change ASCII letters; `trim` only removes ASCII whitespace. Other
@@ -447,8 +542,8 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
 | `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
-| `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string also works. |
-| `is_a(x, Class)` | `true` when `x` is an instance of `Class` or one of its subclasses. |
+| `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string (`"array"`, `"number"`, a class name) also works. |
+| `is_a(x, Class)` | Like `isinstance`, but the second argument must be a class; a type name string is a `TypeError`. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `clock()` | Monotonic clock seconds, for measuring. |
 | `time()` | Wall-clock seconds since the Unix epoch. |
@@ -459,14 +554,14 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `keys(map)` | Array with the map's keys. |
 | `values(map)` | Array with the map's values. |
 | `range(n)` / `range(start, end)` | Array of integers in `[start, end)`. |
-| `substr(text, start, count?)` | Substring by UTF-8 characters. |
+| `substr(text, start, count?)` | Substring by UTF-8 characters; a negative `start` counts from the end, `count` must not be negative, and a `start` past the end gives `""`. |
 | `contains(container, value)` | `true` if an array has the value, a string has the substring, or a map has the key. |
 | `index_of(container, value)` | First index (in array elements or UTF-8 characters) or `-1`. |
 | `insert(array, index, value)` | Inserts at `index`; returns the array. |
 | `remove(array, index)` | Removes the element at `index` and returns it. |
 | `reverse(array)` | Reverses the array in place; returns it. |
 | `fill(array, value)` | Sets every element to `value`; returns the array. |
-| `slice(array, start, end?)` | New array with `[start, end)`; indexes are clamped, negatives are errors. |
+| `slice(array_or_string, start, end?)` | New array or string with `[start, end)`; negative positions count from the end and out-of-range positions are clamped. There is no step; use the `a[start:end:step]` syntax for that (section 3). |
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
 | `split(text, sep)` | Array of parts; an empty separator splits into characters. |
 | `join(array, sep)` | Text joining the stringified elements. |

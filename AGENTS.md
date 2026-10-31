@@ -86,6 +86,8 @@ Every task must satisfy all of the following:
   regenerate them with `tests/tls/generate.sh`.
 - Test fixtures must never touch the public internet: use local servers and
   ephemeral ports.
+- All artifacts are written in English: code, identifiers, comments, documentation,
+  user-facing messages, fixture file names and commit messages.
 
 ## 6. Performance target
 
@@ -100,4 +102,8 @@ dispatch with fused superinstructions; avoid regressing that.
 - [`docs/language.md`](docs/language.md) - the language reference and error behavior.
 - [`docs/architecture.md`](docs/architecture.md) - internals, the GC model and the scheduler.
 - [`tasks/plan.md`](tasks/plan.md) / [`tasks/todo.md`](tasks/todo.md) - the roadmap and its status.
+- [`docs/intent/`](docs/intent) - the agreed scope and decisions per work stream
+  ([`spark-completion.md`](docs/intent/spark-completion.md),
+  [`networking.md`](docs/intent/networking.md),
+  [`spark-0.2.md`](docs/intent/spark-0.2.md)).
 - [`CHANGELOG.md`](CHANGELOG.md) - released and unreleased changes.

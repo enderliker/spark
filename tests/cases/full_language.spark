@@ -1,0 +1,232 @@
+// Walks the whole language following docs/language.md.
+// Every check is an assert: if something disagrees with the reference,
+// the program stops with an error and the test fails.
+
+print("== 1. Lexicon and literals");
+assert(42 == 42 and type(42) == "number" and is_int(42), "integer");
+assert(is_int(0xFF) and 0xFF == 255, "hexadecimal");
+assert(0b1010 == 10 and 0o17 == 15, "binary and octal");
+assert(1_000_000 == 1000000 and 0xFF_FF == 65535, "separators");
+assert(3.14 > 3 and !is_int(3.0) and 1.5e3 == 1500, "floats");
+assert(nil == nil and true != false, "nil and booleans");
+assert(len("a\tb") == 3 and len("\\") == 1 and len("\"") == 1, "escapes in text");
+assert(len("\0") == 1 and len("\r\n") == 2, "null and return escapes");
+assert([1, "two", true][1] == "two", "array literal");
+assert({"k": [2, 3]}["k"][1] == 3, "nested map literal");
+var name = "Spark";
+assert("hello ${name}, x=${1 + 2}" == "hello Spark, x=3", "interpolation");
+assert("costs $$5" == "costs $5", "literal dollar");
+print("ok");
+
+print("== 2. Types");
+assert(type(nil) == "nil" and type(true) == "bool" and type("s") == "string", "basic types");
+assert(type([]) == "array" and type({}) == "map" and type(print) == "function", "composite types");
+assert(type(1.0) == "number" and is_int(1) and !is_int(1.0), "int and number");
+assert(int(3.9) == 3 and int(-3.9) == -3 and float(2) == 2.0, "conversions");
+assert(int("42") == 42 and num("2.5") == 2.5, "conversion from text");
+assert(9223372036854775807 == 9223372036854775807 and is_int(9223372036854775807), "int64 maximum");
+assert(type(9223372036854775807 + 1) == "number" and !is_int(9223372036854775807 + 1), "overflow promotes to float");
+assert(1 == 1.0 and {1: "a"}[1.0] == "a", "1 == 1.0 and the same key");
+assert([1] == [1] == false, "arrays compare by identity");
+assert("ab" == "a" + "b", "strings compare by content");
+assert(!(nil) and !false and 0 and "" and [], "truthy: 0, \"\" and [] are true");
+print("ok");
+
+print("== 3. Operators");
+assert(1 + 2 * 3 == 7 and (1 + 2) * 3 == 9, "arithmetic precedence");
+assert(10 / 4 == 2.5 and 10 div 4 == 2 and -7 div 2 == -3, "/ and div");
+assert(-7 % 2 == -1 and 7 % 3 == 1, "remainder");
+assert("a" + "b" == "ab", "concatenation");
+assert(1 < 2 and 2 <= 2 and 3 > 2 and 2 >= 2 and "a" < "b", "comparisons");
+assert((true and 2) == 2 and (false and 1) == false, "and returns an operand");
+assert((nil or "d") == "d" and (0 or 9) == 0, "or returns an operand");
+assert((nil ?? "x") == "x" and (false ?? "x") == false and (0 ?? 1) == 0, "?? only falls back on nil");
+assert((nil ?? nil ?? 3) == 3, "?? is right-associative");
+assert((1 < 2 ? "yes" : "no") == "yes" and (false ? 1 : false ? 2 : 3) == 3, "nested ternary");
+assert((5 & 3) == 1 and (5 | 3) == 7 and (5 ^ 3) == 6 and ~5 == -6, "bitwise");
+assert((1 << 4) == 16 and (-16 >> 2) == -4, "shifts");
+assert((1 << 2 + 3) == 32 and (2 + 3 & 1) == 1, "bit precedence");
+var m = 6;
+m &= 3; assert(m == 2, "&=");
+m |= 8; assert(m == 10, "|=");
+m ^= 1; assert(m == 11, "^=");
+m <<= 2; assert(m == 44, "<<=");
+m >>= 1; assert(m == 22, ">>=");
+print("ok");
+
+print("== 4. Variables and scope");
+var global = 1;
+{
+    var local = 2;
+    assert(global + local == 3, "a block sees the global");
+    var global = 10;
+    assert(global == 10, "shadowing inside the block");
+}
+assert(global == 1, "shadowing does not leak out");
+var empty_var;
+assert(empty_var == nil, "an uninitialized var is nil");
+const PI_INT = 3;
+assert(PI_INT == 3, "const");
+var x = 10; x += 1; x -= 2; x *= 3; x /= 2;
+assert(x == 13.5, "compound assignments");
+var arr = [1, 2]; arr[1] += 10; arr[0] = 5;
+assert(arr[0] == 5 and arr[1] == 12, "index assignment");
+var mp = {"k": 1}; mp["k"] += 1; mp["n"] = 9;
+assert(mp["k"] == 2 and mp["n"] == 9, "key assignment");
+print("ok");
+
+print("== 5. Control flow");
+var r = "";
+if (1 > 2) { r = "a"; } else if (2 > 1) { r = "b"; } else { r = "c"; }
+assert(r == "b", "if / else if / else");
+var i = 0;
+while (i < 5) { i += 1; }
+assert(i == 5, "while");
+var d = 0;
+do { d += 1; } while (false);
+assert(d == 1, "do/while runs at least once");
+var total = 0;
+for (var j = 0; j < 10; j += 1) {
+    if (j == 3) { continue; }
+    if (j == 8) { break; }
+    total += j;
+}
+assert(total == 0 + 1 + 2 + 4 + 5 + 6 + 7, "for with continue and break");
+var k = 0;
+for (;;) { k += 1; if (k == 4) { break; } }
+assert(k == 4, "for without parts");
+var sum_total = 0;
+for (var v in [10, 20, 30]) { sum_total += v; }
+assert(sum_total == 60, "for-in over an array");
+var map_keys = [];
+for (var key in {"a": 1, "b": 2}) { push(map_keys, key); }
+sort(map_keys);
+assert(map_keys[0] == "a" and map_keys[1] == "b", "for-in over a map");
+var letters = "";
+for (var ch in "spark") { letters = ch + letters; }
+assert(letters == "kraps", "for-in over text");
+var label_count = 0;
+outer: for (var a = 0; a < 3; a += 1) {
+    for (var b = 0; b < 3; b += 1) {
+        if (b == 1) { continue outer; }
+        if (a == 2) { break outer; }
+        label_count += 1;
+    }
+}
+assert(label_count == 2, "labels with break/continue");
+var switch_result = "";
+switch (2) {
+    case 1: switch_result = "one";
+    case 2: switch_result = "two";
+    case 3: switch_result = "three";
+    default: switch_result = "other";
+}
+assert(switch_result == "two", "switch without fallthrough");
+switch (9) { case 1: switch_result = "x"; default: switch_result = "default"; }
+assert(switch_result == "default", "switch default");
+print("ok");
+
+print("== 6. Functions and closures");
+fn add(a, b) { return a + b; }
+var double = fn(x) { return x * 2; };
+assert(add(2, 3) == 5 and double(4) == 8, "functions and anonymous functions");
+fn no_return() { var z = 1; }
+assert(no_return() == nil, "a function without return gives nil");
+fn make_counter() {
+    var running = 0;
+    return fn(inc) { running += inc; return running; };
+}
+var c1 = make_counter();
+assert(c1(5) == 5 and c1(3) == 8, "closure with state");
+var c2 = make_counter();
+assert(c2(1) == 1, "each call gets its own state");
+fn fib_recursive(n) { if (n < 2) { return n; } return fib_recursive(n - 1) + fib_recursive(n - 2); }
+assert(fib_recursive(15) == 610, "recursion");
+var fs = [];
+for (var q = 0; q < 3; q += 1) { var val = q; push(fs, fn() { return val; }); }
+assert(fs[0]() == 0 and fs[1]() == 1 and fs[2]() == 2, "per-iteration capture");
+print("ok");
+
+print("== 7. Arrays");
+var a2 = [1, 2, 3];
+assert(len(a2) == 3 and a2[0] == 1 and a2[2] == 3, "read");
+push(a2, 4);
+assert(pop(a2) == 4 and len(a2) == 3, "push and pop");
+assert(contains(a2, 2) and index_of(a2, 3) == 2 and index_of(a2, 9) == -1, "search");
+insert(a2, 0, 0);
+assert(a2[0] == 0 and len(a2) == 4, "insert");
+assert(remove(a2, 0) == 0 and len(a2) == 3, "remove");
+reverse(a2);
+assert(a2[0] == 3 and a2[2] == 1, "reverse");
+fill(a2, 7);
+assert(a2[0] == 7 and a2[2] == 7, "fill");
+var base = [1, 2, 3, 4, 5];
+assert(len(slice(base, 1, 3)) == 2 and slice(base, 3)[0] == 4, "slice");
+assert(len(slice(base, 2, 99)) == 3, "slice clamps the end");
+var duplicate = slice(base, 0);
+duplicate[0] = 100;
+assert(base[0] == 1, "slice creates a copy");
+assert(len(map([1, 2], fn(x) { return x * 10; })) == 2, "map");
+assert(filter([1, 2, 3, 4], fn(x) { return x % 2 == 0; })[1] == 4, "filter");
+assert(reduce([1, 2, 3, 4], fn(a, b) { return a + b; }) == 10, "reduce without an initial value");
+assert(reduce([], fn(a, b) { return a + b; }, 7) == 7, "reduce with an initial value");
+var accumulated = 0;
+each([1, 2, 3], fn(x) { accumulated += x; });
+assert(accumulated == 6, "each");
+var ordered = [3, 1, 2];
+sort(ordered);
+assert(ordered[0] == 1 and ordered[2] == 3, "sort");
+sort_by(ordered, fn(x, y) { return x > y; });
+assert(ordered[0] == 3, "sort_by");
+var nested = [[1, 2], [3]];
+assert(nested[0][1] == 2 and len(nested[1]) == 1, "nested arrays");
+assert(range(3)[2] == 2 and len(range(2, 5)) == 3, "range");
+print("ok");
+
+print("== 8. Maps");
+var person = {"name": "Ada", "age": 36};
+assert(person["name"] == "Ada" and len(person) == 2, "read and length");
+person["age"] += 1;
+person["city"] = "London";
+assert(has(person, "age") and !has(person, "height"), "has");
+assert(person["missing"] == nil, "a missing key gives nil");
+assert(contains(person, "city") and get(person, "x", "fallback") == "fallback", "contains and get");
+assert(len(keys(person)) == 3 and len(values(person)) == 3, "keys and values");
+assert(del(person, "age") and !del(person, "age"), "del");
+var merged = {"a": 1};
+merge(merged, {"a": 2, "b": 3});
+assert(merged["a"] == 2 and merged["b"] == 3, "merge");
+clear(merged);
+assert(len(merged) == 0, "clear");
+var by_array = {};
+by_array[[1]] = "arr";
+assert(by_array[[1]] == nil, "array keys compare by identity");
+print("ok");
+
+print("== 9. Strings");
+assert("spark"[0] == "s" and "spark"[4] == "k", "indexing");
+assert(substr("abcdef", 1, 3) == "bcd" and substr("program", 5) == "am", "substr");
+assert(substr("abc", 10) == "", "substr past the end");
+assert(len("ñandú") == 5, "length in UTF-8 characters");
+assert(len(split("a,b,c", ",")) == 3 and split("abc", "")[1] == "b", "split");
+assert(join(["a", "b"], "-") == "a-b", "join");
+assert(upper("hello") == "HELLO" and lower("ÁB") == "Áb" and trim("  x  ") == "x", "upper/lower/trim");
+assert(repeat("ab", 3) == "ababab", "repeat");
+assert(replace("aXbX", "X", "-") == "a-b-", "replace");
+assert(starts_with("spark", "sp") and ends_with("spark", "rk"), "prefix and suffix");
+assert(contains("spark", "ar") and index_of("spark", "r") == 3, "search in text");
+assert(str(42) == "42" and str(nil) == "nil", "str");
+print("ok");
+
+print("== 10. Numeric natives");
+assert(abs(-3) == 3 and is_int(abs(-3)), "abs keeps the integer type");
+assert(floor(2.7) == 2 and ceil(2.1) == 3 and round(2.5) == 3, "rounding");
+assert(sqrt(16) == 4 and pow(2, 10) == 1024, "sqrt and pow");
+assert(min(3, 1) == 1 and max(3, 1) == 3, "min and max");
+assert(int(num("12.7")) == 12, "combined conversion");
+print("ok");
+
+print("== 11. Final cleanup");
+assert(clock() >= 0, "clock");
+print("ok");
+print("full language: every check passed");

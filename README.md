@@ -442,7 +442,7 @@ $ ./spark --dump hello.spark
 `tests/run_tests.py` runs valid programs comparing exact output (`tests/cases`),
 error cases checking the exit code and a `stderr` fragment (`tests/errors`), REPL
 sessions and the CLI options, including the debugger, formatter, linter and
-precompiled bytecode. The current suite contains 238 tests and all of them pass.
+precompiled bytecode. The current suite contains 239 tests and all of them pass.
 
 CI (`.github/workflows/ci.yml`) runs four jobs on every push to `main` and on every
 pull request:

@@ -1,0 +1,36 @@
+var person = {"name": "Ada", "language": "C"};
+print(person["name"], len(person));
+person["age"] = 36;
+person["age"] += 1;
+print(person["age"], has(person, "age"), has(person, "height"));
+print(person["missing"]);
+print(del(person, "language"), len(person), has(person, "language"));
+
+var single = {"only": 1};
+print(single, len(single), keys(single), values(single));
+
+var key_count = 0;
+for (var key in person) {
+    key_count += 1;
+}
+print(key_count);
+
+var prices = {"a": 10, "b": 20, "c": 30};
+var total = 0;
+for (var product in prices) {
+    total += prices[product];
+}
+print(total);
+
+var numbers = {1: "one", 2: "two"};
+print(numbers[2]);
+var array_key = [1, 2];
+numbers[array_key] = "array";
+print(numbers[array_key], has(numbers, [1, 2]), len(numbers));
+
+var duplicate = {};
+for (var k in numbers) {
+    duplicate[k] = numbers[k];
+}
+print(len(duplicate));
+print(type(numbers), type({}));

@@ -1,19 +1,19 @@
-var numeros = [3, 1, 2];
-print(numeros);
-print(len(numeros), numeros[0], numeros[2]);
-numeros[0] = 30;
-numeros[1] += 10;
-print(numeros);
-push(numeros, 4);
-push(numeros, 5);
-print(numeros, len(numeros));
-print(pop(numeros));
-print(numeros);
-var matriz = [[1, 2], [3, 4]];
-print(matriz[1][0]);
-var vacio = [];
-print(len(vacio));
+var numbers = [3, 1, 2];
+print(numbers);
+print(len(numbers), numbers[0], numbers[2]);
+numbers[0] = 30;
+numbers[1] += 10;
+print(numbers);
+push(numbers, 4);
+push(numbers, 5);
+print(numbers, len(numbers));
+print(pop(numbers));
+print(numbers);
+var matrix = [[1, 2], [3, 4]];
+print(matrix[1][0]);
+var empty = [];
+print(len(empty));
 for (var i = 0; i < 3; i += 1) {
-    numeros[i] = numeros[i] * 2;
+    numbers[i] = numbers[i] * 2;
 }
-print(numeros);
+print(numbers);

@@ -1,10 +1,10 @@
-var inicio = clock();
+var start = clock();
 var parts = [];
 for (var i = 0; i < 200000; i += 1) {
     push(parts, str(i));
 }
 var joined = join(parts, ",");
-var fin = clock();
+var end = clock();
 
 print(len(joined));
-print((fin - inicio) * 1000);
+print((end - start) * 1000);

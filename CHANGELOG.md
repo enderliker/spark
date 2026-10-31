@@ -90,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escape marking (a channel kept a stale mark, so the blocked coroutines in its
   wait queues were swept) and blocked coroutines were freed while still queued on
   a channel. `tests/cases/coroutine_gc.spark` covers the regression.
+- The language reference no longer contradicts the interpreter: negative indexes
+  count from the end, `slice` and the native of the same name clamp instead of
+  raising, `substr` accepts a negative `start` but not a negative `count`, and the
+  out-of-range example `"spark"[5]` was replaced. The `is_a` row now says that a
+  type-name string is rejected. The operator table lists every operator the lexer
+  has (`**`, `?.`, `??=`, `++`/`--`, slicing, `in`, `instanceof`), and short lambdas
+  plus indexing and slicing are documented.
+- The remaining Spanish identifiers, comments, messages and data in the benchmark
+  sources and the test fixtures were translated, so every artifact is in English,
+  and the rule now lives in `AGENTS.md` as well as `README.md`.
 
 ### Breaking changes
 

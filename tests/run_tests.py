@@ -131,10 +131,10 @@ def test_repl() -> None:
         "_ * 3;\n"
         "var x = 5;\n"
         "x * 2;\n"
-        "fn doble(n) {\n"
+        "fn double(n) {\n"
         "  return n * 2;\n"
         "}\n"
-        "doble(21);\n"
+        "double(21);\n"
         'print("done");\n'
         "exit\n"
     )
@@ -179,7 +179,7 @@ def test_repl() -> None:
 
 def test_error_snippets() -> None:
     print("\nError snippets")
-    runtime = run([str(ERRORS / "tipos.spark")])
+    runtime = run([str(ERRORS / "type_mismatch.spark")])
     report(
         "a runtime error shows the failing line and a caret",
         runtime.returncode == 70
@@ -188,7 +188,7 @@ def test_error_snippets() -> None:
         runtime.stderr,
     )
 
-    syntax = run([str(ERRORS / "falta_punto_y_coma.spark")])
+    syntax = run([str(ERRORS / "missing_semicolon.spark")])
     report(
         "a syntax error shows the failing line and a caret",
         syntax.returncode == 65
@@ -208,7 +208,7 @@ def test_cli() -> None:
     report("--help", help_run.returncode == 0 and "Usage: spark" in help_run.stdout,
            help_run.stdout + help_run.stderr)
 
-    dump = run(["--dump", str(CASES / "hola.spark")])
+    dump = run(["--dump", str(CASES / "hello.spark")])
     ok = (
         dump.returncode == 0
         and "CONSTANT" in dump.stdout
@@ -243,8 +243,8 @@ def test_cli() -> None:
             argv_script.unlink()
 
     # Precompiled bytecode tests (.sparkc)
-    hello_src = CASES / "hola.spark"
-    default_sparkc = CASES / "hola.sparkc"
+    hello_src = CASES / "hello.spark"
+    default_sparkc = CASES / "hello.sparkc"
     custom_sparkc = ROOT / "tests" / "custom.sparkc"
     try:
         c1 = run(["--compile", str(hello_src)])

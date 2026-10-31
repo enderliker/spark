@@ -631,7 +631,7 @@ Spark provides native tools without external dependencies:
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump`, `--compile`, `--debug`, `--format`, `--lint` and bytecode execution, and error cases.
 
-There are 238 tests. The suite is also run under `-fsanitize=address,undefined`
+There are 239 tests. The suite is also run under `-fsanitize=address,undefined`
 (both locally and in CI), and CI builds with `-Werror`, checks the benchmark and
 publishes coverage. Coverage can be measured locally with `make coverage`.
 

@@ -1,4 +1,4 @@
-var inicio = clock();
+var start = clock();
 var arr = [];
 for (var i = 0; i < 1000000; i += 1) {
     push(arr, i);
@@ -7,7 +7,7 @@ var s = 0;
 for (var x in arr) {
     s += x;
 }
-var fin = clock();
+var end = clock();
 
 print(s);
-print((fin - inicio) * 1000);
+print((end - start) * 1000);
