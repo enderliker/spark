@@ -257,18 +257,44 @@ concatenation (bytes + bytes only), `bytes_builder()` mirroring `string_builder(
 Q18 says yes. Reuse `index_to_position` (`src/vm.c:5062`) rather than duplicating index
 validation.
 **Acceptance criteria:**
-- [ ] Indexing out of range is the existing `IndexError`; slicing clamps, consistent
+- [x] Indexing out of range is the existing `IndexError`; slicing clamps, consistent
       with arrays and per T104.
-- [ ] `for (var byte in b)` does not allocate per element (unlike the string path at
+- [x] `for (var byte in b)` does not allocate per element (unlike the string path at
       `src/vm.c:6559`, which materializes an array of one-character strings).
-- [ ] Mixed `bytes + string` is a `TypeError` with the A16 message. Per A31 it names
+- [x] Mixed `bytes + string` is a `TypeError` with the A16 message. Per A31 it names
       only `bytes_from`, because `to_string` does not exist until T110; extend the
       message there.
 **Verification:**
-- [ ] Fixtures for indexing, slicing, iteration, concatenation and each error; suite +
+- [x] Fixtures for indexing, slicing, iteration, concatenation and each error; suite +
       ASan/UBSan; `python3 benchmarks/run.py` unchanged.
 **Dependencies:** T108. **Files:** `src/vm.c`, `src/bytes.c`, `src/object.c`, `tests/`,
 `docs/language.md`. **Scope:** M.
+
+**Done notes:** Indexing reuses `index_to_position` and the same "the message names the
+index the program wrote" rule as arrays; a byte is returned as `INT_VAL`, so `b[i]` and
+both iteration forms allocate nothing. `OP_ITER_KEYS` leaves `bytes` untouched and
+`OP_ITER_PAIR` reads the source instead of a materialized keys array — the string path is
+unchanged. Slicing pulled the three copies of the clamping rules into `slice_bounds`, and
+`OP_SLICE` now keeps its **source on the stack** instead of popping it up front: the
+result is allocated after the pops, and an popped source is not a GC root, so the array
+branch could previously read a collected array when the source was a temporary (the
+string branch was safe only because it copied before allocating). The `slice(x, start,
+end)` native gained the bytes branch too. `bytes + bytes` copies the operands' payloads
+inside a `mem_pause_gc()` window, because `add_values` receives them by value and the
+caller may have already popped them; `object_string_concat` avoids the same hazard by
+copying first. Two latent constructor bugs were fixed while mirroring the pattern:
+`object_bytes_builder` and `object_string_builder` allocated their buffer after
+`allocate_obj` without a root, so a collection there could free the fresh builder. The
+builder is new (Q18): `bytes_builder()`, `bb_append`/`bb_to_bytes`/`bb_len`/`bb_clear`
+and the method forms, dispatched through `bytes_builder_dispatch` from `vm.c` (A17 keeps
+the natives in `bytes.c`). Lookup accepts an integer byte value or a bytes subsequence
+and answers `contains`/`index_of`/`in` from two shared helpers. Three fixtures that pin
+the old index/contains/slice messages were updated with the corrected type lists.
+Verified with a throwaway ASan stress (4,000 slices of temporary arrays and of temporary
+bytes values, 3,000 concatenations, 2,000 iterations over freshly built bytes and a
+builder grown past 100,000 bytes). Suite 255/255, sanitizers clean, `fib(27)` min 4.82 ms
+against 4.84-4.96 ms for a clean `HEAD` build measured interleaved (3 rounds each), so the
+gate is unchanged.
 
 ### T110 - Encoding bridges and `to_json`
 **Description:** Explicit conversions: `to_string(bytes)` (validates UTF-8 and raises

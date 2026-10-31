@@ -35,6 +35,17 @@ struct ObjBytes {
     unsigned char data[];
 };
 
+/* The one mutable companion of `bytes` (decision Q18), mirroring
+ * `ObjStringBuilder`: it owns a growable malloc'd buffer, so appending is
+ * amortized O(1) instead of copying the whole value. `bytes_builder_to_bytes`
+ * copies the buffer once into an ordinary immutable `bytes`. */
+struct ObjBytesBuilder {
+    Obj obj;
+    unsigned char *data;
+    int length;
+    int capacity;
+};
+
 typedef struct {
     Obj obj;
     Value *items;
@@ -343,6 +354,13 @@ ObjString *value_to_string(Value v);
 
 /* A bytes object of `length` zero bytes; a negative `length` is clamped to 0. */
 ObjBytes *object_bytes(int length);
+
+ObjBytesBuilder *object_bytes_builder(int initial_capacity);
+/* May allocate and collect: keep `builder` reachable from a root. */
+bool bytes_builder_append(ObjBytesBuilder *builder, const unsigned char *data, int length);
+void bytes_builder_clear(ObjBytesBuilder *builder);
+/* May allocate and collect: keep `builder` reachable from a root. */
+ObjBytes *bytes_builder_to_bytes(ObjBytesBuilder *builder);
 
 ObjArray *object_array(void);
 bool array_push(ObjArray *array, Value value);

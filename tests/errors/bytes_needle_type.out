@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'contains' requires an integer byte value or a bytes sequence, received string; use bytes_from(x) to convert

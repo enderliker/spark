@@ -248,6 +248,69 @@ ObjBytes *object_bytes(int length)
     return bytes;
 }
 
+ObjBytesBuilder *object_bytes_builder(int initial_capacity)
+{
+    ObjBytesBuilder *builder;
+
+    if (initial_capacity < 16) {
+        initial_capacity = 16;
+    }
+    /* Nothing references the builder until the caller stores it, so the second
+     * allocation must not collect it. object_class and object_instance pause
+     * for the same reason. */
+    mem_pause_gc();
+    builder = allocate_obj(sizeof(ObjBytesBuilder), OBJ_BYTES_BUILDER);
+    builder->data = mem_realloc(NULL, 0, (size_t)initial_capacity);
+    mem_resume_gc();
+    builder->length = 0;
+    builder->capacity = initial_capacity;
+    return builder;
+}
+
+bool bytes_builder_append(ObjBytesBuilder *builder, const unsigned char *data, int length)
+{
+    if (!data || length <= 0) {
+        return true;
+    }
+    if (length > INT_MAX - builder->length) {
+        return false;
+    }
+    int needed = builder->length + length;
+
+    if (needed > builder->capacity) {
+        int new_capacity = builder->capacity > 0 ? builder->capacity : 16;
+
+        while (new_capacity < needed) {
+            if (new_capacity > INT_MAX / 2) {
+                new_capacity = needed;
+                break;
+            }
+            new_capacity *= 2;
+        }
+        builder->data = mem_realloc(builder->data, (size_t)builder->capacity,
+                                    (size_t)new_capacity);
+        builder->capacity = new_capacity;
+    }
+    memcpy(builder->data + builder->length, data, (size_t)length);
+    builder->length = needed;
+    return true;
+}
+
+void bytes_builder_clear(ObjBytesBuilder *builder)
+{
+    builder->length = 0;
+}
+
+ObjBytes *bytes_builder_to_bytes(ObjBytesBuilder *builder)
+{
+    ObjBytes *bytes = object_bytes(builder->length);
+
+    if (builder->length > 0) {
+        memcpy(bytes->data, builder->data, (size_t)builder->length);
+    }
+    return bytes;
+}
+
 static uint32_t hash_value(Value value)
 {
     switch (value.type) {
@@ -794,11 +857,17 @@ ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms)
 
 ObjStringBuilder *object_string_builder(int initial_capacity)
 {
+    ObjStringBuilder *sb;
+
     if (initial_capacity < 16) {
         initial_capacity = 16;
     }
-    ObjStringBuilder *sb = allocate_obj(sizeof(ObjStringBuilder), OBJ_STRING_BUILDER);
+    /* As in object_bytes_builder: nothing references the builder until the
+     * caller stores it, so the buffer allocation must not collect it. */
+    mem_pause_gc();
+    sb = allocate_obj(sizeof(ObjStringBuilder), OBJ_STRING_BUILDER);
     sb->chars = mem_realloc(NULL, 0, (size_t)initial_capacity);
+    mem_resume_gc();
     if (sb->chars) {
         sb->chars[0] = '\0';
     }
@@ -955,6 +1024,12 @@ void object_free(Obj *obj)
         mem_realloc(sb, sizeof(ObjStringBuilder), 0);
         break;
     }
+    case OBJ_BYTES_BUILDER: {
+        ObjBytesBuilder *builder = (ObjBytesBuilder *)obj;
+        mem_realloc(builder->data, (size_t)builder->capacity, 0);
+        mem_realloc(builder, sizeof(ObjBytesBuilder), 0);
+        break;
+    }
     }
 }
 
@@ -990,6 +1065,7 @@ const char *obj_type_name(ObjType type)
     switch (type) {
     case OBJ_STRING: return "string";
     case OBJ_BYTES: return "bytes";
+    case OBJ_BYTES_BUILDER: return "bytes_builder";
     case OBJ_ARRAY: return "array";
     case OBJ_MAP: return "map";
     case OBJ_FUNCTION: return "function";
@@ -1057,6 +1133,40 @@ static void format_number(buf_t *b, double number)
     buf_append_str(b, buffer);
 }
 
+/* A preview of a byte sequence, not a lossless conversion: printable ASCII is
+ * shown as itself and every other byte as an escape, so the output is always
+ * valid text. Recovering the bytes from text is an explicit step of its own,
+ * which `str()` and `print` never take; both use this form. `bytes` and its
+ * builder share it so the two never drift. */
+static void format_bytes_preview(buf_t *b, const unsigned char *data, int length)
+{
+    buf_append_str(b, "b\"");
+    for (int i = 0; i < length; i++) {
+        unsigned char byte = data[i];
+
+        switch (byte) {
+        case '\n': buf_append_str(b, "\\n"); break;
+        case '\t': buf_append_str(b, "\\t"); break;
+        case '\r': buf_append_str(b, "\\r"); break;
+        case '\\': buf_append_str(b, "\\\\"); break;
+        case '"': buf_append_str(b, "\\\""); break;
+        default:
+            if (byte >= 0x20 && byte < 0x7f) {
+                char character = (char)byte;
+
+                buf_append(b, &character, 1);
+            } else {
+                char escape[8];
+
+                snprintf(escape, sizeof(escape), "\\x%02x", byte);
+                buf_append_str(b, escape);
+            }
+            break;
+        }
+    }
+    buf_append_str(b, "\"");
+}
+
 static void value_format(buf_t *b, Value v, bool repr)
 {
     switch (v.type) {
@@ -1102,36 +1212,7 @@ static void value_format(buf_t *b, Value v, bool repr)
         case OBJ_BYTES: {
             ObjBytes *bytes = (ObjBytes *)AS_OBJ(v);
 
-            /* A preview, not a lossless conversion: printable ASCII is shown as
-             * itself and every other byte as an escape, so the output is always
-             * valid text. Recovering the bytes from text is an explicit step of
-             * its own, which `str()` and `print` never take; both use this
-             * form. */
-            buf_append_str(b, "b\"");
-            for (int i = 0; i < bytes->length; i++) {
-                unsigned char byte = bytes->data[i];
-
-                switch (byte) {
-                case '\n': buf_append_str(b, "\\n"); break;
-                case '\t': buf_append_str(b, "\\t"); break;
-                case '\r': buf_append_str(b, "\\r"); break;
-                case '\\': buf_append_str(b, "\\\\"); break;
-                case '"': buf_append_str(b, "\\\""); break;
-                default:
-                    if (byte >= 0x20 && byte < 0x7f) {
-                        char character = (char)byte;
-
-                        buf_append(b, &character, 1);
-                    } else {
-                        char escape[8];
-
-                        snprintf(escape, sizeof(escape), "\\x%02x", byte);
-                        buf_append_str(b, escape);
-                    }
-                    break;
-                }
-            }
-            buf_append_str(b, "\"");
+            format_bytes_preview(b, bytes->data, bytes->length);
             break;
         }
         case OBJ_ARRAY: {
@@ -1193,6 +1274,14 @@ static void value_format(buf_t *b, Value v, bool repr)
         case OBJ_STRING_BUILDER: {
             ObjStringBuilder *sb = (ObjStringBuilder *)AS_OBJ(v);
             buf_append_str(b, sb->chars ? sb->chars : "");
+            break;
+        }
+        case OBJ_BYTES_BUILDER: {
+            ObjBytesBuilder *builder = (ObjBytesBuilder *)AS_OBJ(v);
+
+            /* Like `string_builder`, the builder prints as what it holds, in
+             * the same preview form as the immutable value it produces. */
+            format_bytes_preview(b, builder->data, builder->length);
             break;
         }
         case OBJ_CLASS: {

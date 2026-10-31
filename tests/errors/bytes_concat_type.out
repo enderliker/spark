@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 2: the operands of '+' must both be bytes (received bytes and string); use bytes_from(x) to build bytes from text or an array of integers

@@ -1,8 +1,9 @@
-/* bytes.c - the `bytes` constructors exposed to the language.
+/* bytes.c - the `bytes` constructors and builder exposed to the language.
  *
- * The object itself (allocation, content equality, key hashing and printing)
- * lives in object.c; this module registers the two construction natives with
- * the VM the way net.c registers the network ones. */
+ * The objects themselves (allocation, content equality, key hashing and
+ * printing) live in object.c; this module registers the natives with the VM the
+ * way net.c registers the network ones, and dispatches the `bytes_builder`
+ * methods back to them. */
 #include "bytes.h"
 
 #include <limits.h>
@@ -118,8 +119,171 @@ static Value native_bytes_from(int arg_count, Value *args)
     return NIL_VAL;
 }
 
+/* bytes_builder(): the mutable companion of `bytes` (Q18), mirroring
+ * string_builder(). It takes no argument, an initial capacity (an integer) or
+ * initial contents (a bytes value). */
+static Value native_bytes_builder(int arg_count, Value *args)
+{
+    int64_t capacity = 16;
+    Value initial = NIL_VAL;
+
+    if (arg_count >= 1) {
+        if (is_obj_type(args[0], OBJ_BYTES)) {
+            initial = args[0];
+            capacity = (int64_t)AS_BYTES(initial)->length + 16;
+        } else if (is_int(args[0])) {
+            capacity = AS_INT(args[0]);
+            if (capacity < 0) {
+                vm_runtime_error(ERROR_VALUE,
+                                 "'bytes_builder' does not accept a negative capacity (%lld)",
+                                 (long long)capacity);
+                return NIL_VAL;
+            }
+        } else {
+            /* A string is the other mistake this native invites (A16). */
+            vm_runtime_error(ERROR_TYPE,
+                             "'bytes_builder' expects a capacity or initial bytes, received %s; "
+                             "use bytes_from(x) to convert",
+                             bytes_value_type(args[0]));
+            return NIL_VAL;
+        }
+    }
+    if (capacity > (int64_t)INT_MAX) {
+        capacity = INT_MAX;
+    }
+    ObjBytesBuilder *builder = object_bytes_builder((int)capacity);
+
+    if (!is_nil(initial)) {
+        /* Copied straight into the buffer: the builder has no root of its own
+         * yet, so this must not allocate, and the capacity already fits. */
+        memcpy(builder->data, AS_BYTES(initial)->data, (size_t)AS_BYTES(initial)->length);
+        builder->length = AS_BYTES(initial)->length;
+    }
+    return OBJ_VAL(builder);
+}
+
+static Value native_bb_append(int arg_count, Value *args)
+{
+    ObjBytesBuilder *builder;
+    Value value;
+
+    if (arg_count < 2) {
+        vm_runtime_error(ERROR_ARITY, "'bb_append' expects 2 arguments (builder, value)");
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_BYTES_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'bb_append' first argument must be a bytes_builder, "
+                         "received %s", bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    builder = AS_BYTES_BUILDER(args[0]);
+    value = args[1];
+    if (is_int(value)) {
+        int64_t byte = AS_INT(value);
+
+        if (byte < 0 || byte > 255) {
+            vm_runtime_error(ERROR_VALUE,
+                             "'bb_append' expects a byte value between 0 and 255, received %lld",
+                             (long long)byte);
+            return NIL_VAL;
+        }
+        unsigned char single = (unsigned char)byte;
+
+        if (!bytes_builder_append(builder, &single, 1)) {
+            vm_runtime_error(ERROR_MEMORY, "could not grow the bytes_builder");
+            return NIL_VAL;
+        }
+    } else if (is_obj_type(value, OBJ_BYTES)) {
+        ObjBytes *bytes = AS_BYTES(value);
+
+        if (!bytes_builder_append(builder, bytes->data, bytes->length)) {
+            vm_runtime_error(ERROR_MEMORY, "could not grow the bytes_builder");
+            return NIL_VAL;
+        }
+    } else {
+        vm_runtime_error(ERROR_TYPE,
+                         "'bb_append' expects an integer byte value or bytes, received %s; "
+                         "use bytes_from(x) to convert",
+                         bytes_value_type(value));
+        return NIL_VAL;
+    }
+    return args[0];
+}
+
+static Value native_bb_to_bytes(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_BYTES_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'bb_to_bytes' expects a bytes_builder, received %s",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    return OBJ_VAL(bytes_builder_to_bytes(AS_BYTES_BUILDER(args[0])));
+}
+
+static Value native_bb_len(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_BYTES_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'bb_len' expects a bytes_builder, received %s",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    /* Counted in bytes, exactly like the immutable value it produces. */
+    return INT_VAL(AS_BYTES_BUILDER(args[0])->length);
+}
+
+static Value native_bb_clear(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_BYTES_BUILDER)) {
+        vm_runtime_error(ERROR_TYPE, "'bb_clear' expects a bytes_builder, received %s",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    bytes_builder_clear(AS_BYTES_BUILDER(args[0]));
+    return args[0];
+}
+
+bool bytes_builder_dispatch(Value receiver, ObjString *method, int arg_count, Value *args,
+                            Value *out)
+{
+    const char *name = method->chars;
+
+    if (!is_obj_type(receiver, OBJ_BYTES_BUILDER)) {
+        return false;
+    }
+    if (strcmp(name, "append") == 0 && arg_count == 1) {
+        Value a[2] = { receiver, args[0] };
+
+        *out = native_bb_append(2, a);
+        return true;
+    }
+    if (strcmp(name, "to_bytes") == 0 && arg_count == 0) {
+        Value a[1] = { receiver };
+
+        *out = native_bb_to_bytes(1, a);
+        return true;
+    }
+    if (strcmp(name, "len") == 0 && arg_count == 0) {
+        *out = INT_VAL(AS_BYTES_BUILDER(receiver)->length);
+        return true;
+    }
+    if (strcmp(name, "clear") == 0 && arg_count == 0) {
+        bytes_builder_clear(AS_BYTES_BUILDER(receiver));
+        *out = receiver;
+        return true;
+    }
+    return false;
+}
+
 void bytes_init(void)
 {
     vm_define_native("bytes", native_bytes, 1);
     vm_define_native("bytes_from", native_bytes_from, 1);
+    vm_define_native("bytes_builder", native_bytes_builder, -1);
+    vm_define_native("bb_append", native_bb_append, 2);
+    vm_define_native("bb_to_bytes", native_bb_to_bytes, 1);
+    vm_define_native("bb_len", native_bb_len, 1);
+    vm_define_native("bb_clear", native_bb_clear, 1);
 }

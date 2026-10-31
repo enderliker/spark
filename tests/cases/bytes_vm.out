@@ -1,0 +1,19 @@
+index: 83 107 107 83
+len: 5
+slice: b"pa" b"Sp" b"ark" b"Spark" b"Sp"
+step: b"Sak" b"krapS"
+empty: b"" b"" b""
+native: b"pa" b"ark" b"rk" b""
+sum: 513
+pairs: ["0=83", "1=112", "2=97", "3=114", "4=107"]
+contains: true false true false
+index_of: 1 2 -1 -1
+in: true true false
+concat: b"Spark" true 5
+builder empty: b"" 0
+builder: b"ABC" 3 b"ABC"
+copy: true
+cleared: 0 b""
+globals: b"xy"
+initial: b"hi" 0
+type: bytes bytes_builder

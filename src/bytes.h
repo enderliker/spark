@@ -15,4 +15,10 @@
 /* Registers the `bytes` natives with the VM. Called once from vm_init. */
 void bytes_init(void);
 
+/* Handles a method call whose receiver is a `bytes_builder` (append, to_bytes,
+ * len, clear). Returns false when the name is not one of them, so the VM
+ * reports the same "method not found" error it gives for other types. */
+bool bytes_builder_dispatch(Value receiver, ObjString *method, int arg_count, Value *args,
+                            Value *out);
+
 #endif

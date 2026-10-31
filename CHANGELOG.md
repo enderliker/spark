@@ -69,8 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bytes, `type(b)` is `"bytes"`, and `print`/`str` show a preview with
   non-printable bytes escaped. Equal bytes compare equal and are the same map key
   even as different objects. There is no implicit conversion between `string` and
-  `bytes` (decision A16). Indexing, iteration, concatenation and JSON encoding of
-  `bytes` follow in later tasks of the same phase.
+  `bytes` (decision A16).
+- `bytes` integrates with the operations that are type-directed: `b[i]` and
+  negative indexing yield the byte value as an integer, `b[start:end:step]` and
+  `slice(b, start, end?)` return new bytes with the same clamping as arrays,
+  `for (var byte in b)` iterates without allocating per element (and the
+  two-variable form yields offset and value), `contains`/`index_of`/`in` take an
+  integer byte value or a bytes subsequence, and `+` concatenates two bytes
+  values. Mixing bytes with text in any of these is a `TypeError` naming
+  `bytes_from`. JSON encoding of `bytes` follows in a later task of the same
+  phase.
+- `bytes_builder()` (with `bb_append`, `bb_to_bytes`, `bb_len`, `bb_clear` and the
+  `append`/`to_bytes`/`len`/`clear` methods) is the mutable companion of `bytes`,
+  mirroring `string_builder()`.
 
 ### Security
 

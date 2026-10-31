@@ -409,6 +409,7 @@ static void blacken(Obj *object)
     switch (object->type) {
     case OBJ_STRING:
     case OBJ_BYTES:
+    case OBJ_BYTES_BUILDER:
         /* No object-valued fields: the payload is raw bytes. */
         break;
     case OBJ_ARRAY: {
@@ -1402,6 +1403,54 @@ static void array_push_new_string(ObjArray *array, const char *chars, int length
     pop();
 }
 
+/* Byte offsets into a `bytes` value, mirroring `string_byte_find` for the
+ * integer-needle and subsequence cases. `bytes` has no character positions, so
+ * the offset is the answer in both `contains` and `index_of`. */
+static int bytes_byte_find(ObjBytes *haystack, int64_t byte)
+{
+    if (byte < 0 || byte > 255) {
+        /* Not a byte value at all, so it cannot be present; `contains` answers
+         * false and `index_of` answers -1, exactly as they do for an array. */
+        return -1;
+    }
+    for (int i = 0; i < haystack->length; i++) {
+        if (haystack->data[i] == (unsigned char)byte) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int bytes_sub_find(ObjBytes *haystack, ObjBytes *needle)
+{
+    if (needle->length == 0) {
+        return 0;
+    }
+    for (int i = 0; i + needle->length <= haystack->length; i++) {
+        if (memcmp(haystack->data + i, needle->data, (size_t)needle->length) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* The needle accepted by `contains`, `index_of` and `in` when the container is
+ * bytes: an integer byte value or a byte sequence, never text (A16). Reports
+ * the TypeError and returns false otherwise, naming the one bridge that exists
+ * for the reverse direction. `operation` is how the caller is spelled in the
+ * message, so `'in' on bytes` reads as well as `'contains'`. */
+static bool bytes_needle(Value needle, const char *operation)
+{
+    if (is_int(needle) || is_obj_type(needle, OBJ_BYTES)) {
+        return true;
+    }
+    vm_runtime_error(ERROR_TYPE,
+                     "%s requires an integer byte value or a bytes sequence, received %s; "
+                     "use bytes_from(x) to convert",
+                     operation, value_type_name(needle));
+    return false;
+}
+
 static Value native_contains(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -1431,8 +1480,19 @@ static Value native_contains(int arg_count, Value *args)
 
         return BOOL_VAL(map_get(AS_MAP(container), needle, &ignored));
     }
-    vm_runtime_error(ERROR_TYPE, "'contains' expects an array, a string or a map as first argument, "
-                     "received %s", value_type_name(container));
+    if (is_obj_type(container, OBJ_BYTES)) {
+        ObjBytes *bytes = AS_BYTES(container);
+
+        if (!bytes_needle(needle, "'contains'")) {
+            return NIL_VAL;
+        }
+        if (is_int(needle)) {
+            return BOOL_VAL(bytes_byte_find(bytes, AS_INT(needle)) >= 0);
+        }
+        return BOOL_VAL(bytes_sub_find(bytes, AS_BYTES(needle)) >= 0);
+    }
+    vm_runtime_error(ERROR_TYPE, "'contains' expects an array, a string, a map or bytes as first "
+                     "argument, received %s", value_type_name(container));
     return NIL_VAL;
 }
 
@@ -1466,7 +1526,17 @@ static Value native_index_of(int arg_count, Value *args)
         }
         return INT_VAL(utf8_length(haystack->chars, byte_index));
     }
-    vm_runtime_error(ERROR_TYPE, "'index_of' expects an array or a string as first argument, "
+    if (is_obj_type(container, OBJ_BYTES)) {
+        ObjBytes *bytes = AS_BYTES(container);
+
+        if (!bytes_needle(needle, "'index_of'")) {
+            return NIL_VAL;
+        }
+        /* The offset is in bytes, which is what positions into bytes mean. */
+        return INT_VAL(is_int(needle) ? bytes_byte_find(bytes, AS_INT(needle))
+                                      : bytes_sub_find(bytes, AS_BYTES(needle)));
+    }
+    vm_runtime_error(ERROR_TYPE, "'index_of' expects an array, a string or bytes as first argument, "
                      "received %s", value_type_name(container));
     return NIL_VAL;
 }
@@ -1561,9 +1631,11 @@ static Value native_slice(int arg_count, Value *args)
         vm_runtime_error(ERROR_ARITY, "'slice' expects 2 or 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
-    if (!is_obj_type(args[0], OBJ_ARRAY) && !is_obj_type(args[0], OBJ_STRING)) {
-        vm_runtime_error(ERROR_TYPE, "'slice' expects an array or a string as first argument, received %s",
-                         value_type_name(args[0]));
+    if (!is_obj_type(args[0], OBJ_ARRAY) && !is_obj_type(args[0], OBJ_STRING) &&
+        !is_obj_type(args[0], OBJ_BYTES)) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'slice' expects an array, a string or bytes as first argument, "
+                         "received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
     int start = 0;
@@ -1600,7 +1672,7 @@ static Value native_slice(int arg_count, Value *args)
         }
         pop();
         return OBJ_VAL(result);
-    } else {
+    } else if (is_obj_type(args[0], OBJ_STRING)) {
         ObjString *string = AS_STRING(args[0]);
         int total_chars = utf8_length(string->chars, string->length);
         if (arg_count == 3) {
@@ -1627,6 +1699,32 @@ static Value native_slice(int arg_count, Value *args)
         if (byte_end < byte_start) byte_end = byte_start;
 
         return OBJ_VAL(object_string(string->chars + byte_start, byte_end - byte_start));
+    } else {
+        ObjBytes *bytes = AS_BYTES(args[0]);
+        if (arg_count == 3) {
+            if (!integer_argument(args[2], "end", "slice", &end)) {
+                return NIL_VAL;
+            }
+        } else {
+            end = bytes->length;
+        }
+
+        if (start < 0) start += bytes->length;
+        if (start < 0) start = 0;
+        if (start > bytes->length) start = bytes->length;
+
+        if (end < 0) end += bytes->length;
+        if (end < 0) end = 0;
+        if (end > bytes->length) end = bytes->length;
+
+        if (end < start) end = start;
+
+        ObjBytes *result = object_bytes(end - start);
+
+        if (end > start) {
+            memcpy(result->data, bytes->data + start, (size_t)(end - start));
+        }
+        return OBJ_VAL(result);
     }
 }
 
@@ -3547,6 +3645,8 @@ static bool dispatch_native_method(Value receiver, ObjString *method, int arg_co
             *out = receiver;
             return true;
         }
+    } else if (is_obj_type(receiver, OBJ_BYTES_BUILDER)) {
+        return bytes_builder_dispatch(receiver, method, arg_count, args, out);
     } else if (is_obj_type(receiver, OBJ_FILE)) {
         if (strcmp(name, "read_line") == 0 && arg_count == 0) {
             Value a[1] = { receiver };
@@ -4485,6 +4585,38 @@ static inline bool add_values(Value a, Value b, Value *out)
         *out = OBJ_VAL(result);
         return true;
     }
+    if (is_obj_type(a, OBJ_BYTES) && is_obj_type(b, OBJ_BYTES)) {
+        ObjBytes *left = AS_BYTES(a);
+        ObjBytes *right = AS_BYTES(b);
+        int64_t total = (int64_t)left->length + right->length;
+        ObjBytes *result;
+
+        if (total > INT_MAX) {
+            vm_runtime_error(ERROR_MEMORY, "could not concatenate the bytes");
+            return false;
+        }
+        /* The operands reach this function by value, so neither is guaranteed
+         * to be reachable from a root while the result is allocated. Pausing
+         * the collector across the allocation keeps the payload readable;
+         * nothing runs in between, and the caller stores the result
+         * immediately. */
+        mem_pause_gc();
+        result = object_bytes((int)total);
+        memcpy(result->data, left->data, (size_t)left->length);
+        memcpy(result->data + left->length, right->data, (size_t)right->length);
+        mem_resume_gc();
+        *out = OBJ_VAL(result);
+        return true;
+    }
+    if (is_obj_type(a, OBJ_BYTES) || is_obj_type(b, OBJ_BYTES)) {
+        /* A16 keeps the boundary explicit: no implicit text/binary conversion
+         * either way. Per A31 the message names only the bridge that exists. */
+        vm_runtime_error(ERROR_TYPE,
+                         "the operands of '+' must both be bytes (received %s and %s); "
+                         "use bytes_from(x) to build bytes from text or an array of integers",
+                         value_type_name(a), value_type_name(b));
+        return false;
+    }
     vm_runtime_error(ERROR_TYPE,
                      "the operands of '+' must be two numbers or two strings (received %s and %s); "
                      "use string interpolation (\"value: ${x}\") or str(x) to build text",
@@ -5092,6 +5224,49 @@ static bool index_to_position(Value index, int *out)
     vm_runtime_error(ERROR_TYPE, "the index must be a number, received %s",
                      value_type_name(index));
     return false;
+}
+
+/* Resolves a slice's start and end against `length` the way arrays, strings
+ * and bytes all do: negative positions count from the end and out-of-range
+ * positions clamp to the nearest bound instead of raising (T104). Returns false
+ * after reporting the error for a non-integer bound. */
+static bool slice_bounds(Value start_val, Value end_val, int step, int length, int *out_start,
+                         int *out_end)
+{
+    int start = step > 0 ? 0 : length - 1;
+    int end = step > 0 ? length : -1;
+
+    if (!is_nil(start_val)) {
+        if (!integer_argument(start_val, "start", "slice", &start)) {
+            return false;
+        }
+        if (start < 0) {
+            start += length;
+        }
+        if (start < 0) {
+            start = step > 0 ? 0 : -1;
+        }
+        if (start >= length) {
+            start = step > 0 ? length : length - 1;
+        }
+    }
+    if (!is_nil(end_val)) {
+        if (!integer_argument(end_val, "end", "slice", &end)) {
+            return false;
+        }
+        if (end < 0) {
+            end += length;
+        }
+        if (end < 0) {
+            end = step > 0 ? 0 : -1;
+        }
+        if (end >= length) {
+            end = step > 0 ? length : length - 1;
+        }
+    }
+    *out_start = start;
+    *out_end = end;
+    return true;
 }
 
 #define READ_BYTE() (*frame->ip++)
@@ -6369,10 +6544,29 @@ cold_dispatch:
                 char_length = utf8_char_length(string, byte_index);
 
                 result = OBJ_VAL(object_string(string->chars + byte_index, char_length));
+            } else if (is_obj_type(object, OBJ_BYTES)) {
+                ObjBytes *bytes = AS_BYTES(object);
+                int position;
+
+                if (!index_to_position(index, &position)) {
+                    goto handle_runtime_error;
+                }
+                /* Positions are bytes, and a byte is yielded as its integer
+                 * value 0..255 (A16), so indexing allocates nothing. */
+                int written = position;
+                if (position < 0) {
+                    position += bytes->length;
+                }
+                if (position < 0 || position >= bytes->length) {
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (bytes of length %d)",
+                                     written, bytes->length);
+                    goto handle_runtime_error;
+                }
+                result = INT_VAL(bytes->data[position]);
             } else {
                 vm_runtime_error(ERROR_TYPE,
-                                 "cannot index a value of type %s; expected an array, a map "
-                                 "or a string",
+                                 "cannot index a value of type %s; expected an array, a map, "
+                                 "a string or bytes",
                                  value_type_name(object));
                 goto handle_runtime_error;
             }
@@ -6557,6 +6751,13 @@ cold_dispatch:
             if (is_obj_type(iterable, OBJ_ARRAY)) {
                 break;
             }
+            if (is_obj_type(iterable, OBJ_BYTES)) {
+                /* Left as it is: `OP_LEN` and `OP_INDEX` walk it in place, so a
+                 * `for` over bytes allocates nothing per element, unlike the
+                 * string path below, which materializes one string per
+                 * character. */
+                break;
+            }
             if (is_obj_type(iterable, OBJ_MAP)) {
                 ObjMap *map = AS_MAP(iterable);
                 ObjArray *keys = object_array();
@@ -6598,27 +6799,45 @@ cold_dispatch:
             Value first;
             Value second;
 
-            if (!is_obj_type(keys_val, OBJ_ARRAY) || !is_int(index_val)) {
+            if (!is_int(index_val)) {
                 vm_runtime_error(ERROR_RUNTIME, "corrupt iteration state");
                 goto handle_runtime_error;
             }
             int position = (int)AS_INT(index_val);
-            ObjArray *keys = AS_ARRAY(keys_val);
 
-            if (position < 0 || position >= keys->count) {
-                vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
-                                 keys->count);
-                goto handle_runtime_error;
-            }
-            if (is_obj_type(original, OBJ_MAP)) {
-                Value stored = NIL_VAL;
+            if (is_obj_type(keys_val, OBJ_BYTES)) {
+                /* Bytes iterate in place, so the pair form yields the byte
+                 * offset and the byte value, both without allocating. */
+                ObjBytes *bytes = AS_BYTES(keys_val);
 
-                first = keys->items[position];
-                map_get(AS_MAP(original), first, &stored);
-                second = stored;
-            } else {
+                if (position < 0 || position >= bytes->length) {
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (bytes of length %d)",
+                                     position, bytes->length);
+                    goto handle_runtime_error;
+                }
                 first = INT_VAL(position);
-                second = keys->items[position];
+                second = INT_VAL(bytes->data[position]);
+            } else if (is_obj_type(keys_val, OBJ_ARRAY)) {
+                ObjArray *keys = AS_ARRAY(keys_val);
+
+                if (position < 0 || position >= keys->count) {
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                                     keys->count);
+                    goto handle_runtime_error;
+                }
+                if (is_obj_type(original, OBJ_MAP)) {
+                    Value stored = NIL_VAL;
+
+                    first = keys->items[position];
+                    map_get(AS_MAP(original), first, &stored);
+                    second = stored;
+                } else {
+                    first = INT_VAL(position);
+                    second = keys->items[position];
+                }
+            } else {
+                vm_runtime_error(ERROR_RUNTIME, "corrupt iteration state");
+                goto handle_runtime_error;
             }
             vm.stack_top[-3] = first;
             vm.stack_top[-2] = second;
@@ -6636,6 +6855,9 @@ cold_dispatch:
                 length = AS_MAP(value)->count;
             } else if (is_obj_type(value, OBJ_STRING)) {
                 length = utf8_length(AS_STRING(value)->chars, AS_STRING(value)->length);
+            } else if (is_obj_type(value, OBJ_BYTES)) {
+                /* Bytes are counted in bytes, not characters. */
+                length = AS_BYTES(value)->length;
             } else if (is_obj_type(value, OBJ_INSTANCE)) {
                 Value result;
                 DunderStatus status = call_dunder(value, "__len__", 0, NULL, &result);
@@ -6644,8 +6866,8 @@ cold_dispatch:
                     goto handle_runtime_error;
                 }
                 if (status == DUNDER_ABSENT) {
-                    vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map, a string or an "
-                                     "instance with '__len__', received %s",
+                    vm_runtime_error(ERROR_TYPE, "'len' expects a string, bytes, an array, a map "
+                                     "or an instance with '__len__', received %s",
                                      value_type_name(value));
                     goto handle_runtime_error;
                 }
@@ -6656,8 +6878,8 @@ cold_dispatch:
                 }
                 length = AS_INT(result);
             } else {
-                vm_runtime_error(ERROR_TYPE, "'len' expects an array, a map, a string or an "
-                                 "instance with '__len__', received %s",
+                vm_runtime_error(ERROR_TYPE, "'len' expects a string, bytes, an array, a map "
+                                 "or an instance with '__len__', received %s",
                                  value_type_name(value));
                 goto handle_runtime_error;
             }
@@ -6886,6 +7108,14 @@ cold_dispatch:
                 } else {
                     push(BOOL_VAL(strstr(str->chars, sub->chars) != NULL));
                 }
+            } else if (is_obj_type(coll, OBJ_BYTES)) {
+                ObjBytes *bytes = AS_BYTES(coll);
+
+                if (!bytes_needle(item, "'in' on bytes")) {
+                    goto handle_runtime_error;
+                }
+                push(BOOL_VAL(is_int(item) ? bytes_byte_find(bytes, AS_INT(item)) >= 0
+                                           : bytes_sub_find(bytes, AS_BYTES(item)) >= 0));
             } else {
                 vm_runtime_error(ERROR_TYPE, "cannot use 'in' on %s", value_type_name(coll));
                 goto handle_runtime_error;
@@ -6935,7 +7165,11 @@ cold_dispatch:
             Value step_val = pop();
             Value end_val = pop();
             Value start_val = pop();
-            Value obj_val = pop();
+            /* The source is not popped: the result is allocated below, and the
+             * source still on the stack is what keeps it alive across that
+             * allocation. Each branch leaves the result on top of it, and the
+             * epilogue replaces the source with the result. */
+            Value obj_val = peek(0);
 
             int step = 1;
             if (!is_nil(step_val)) {
@@ -6950,77 +7184,67 @@ cold_dispatch:
 
             if (is_obj_type(obj_val, OBJ_ARRAY)) {
                 ObjArray *arr = AS_ARRAY(obj_val);
-                int len = arr->count;
-                int start = step > 0 ? 0 : len - 1;
-                int end = step > 0 ? len : -1;
+                int start;
+                int end;
 
-                if (!is_nil(start_val)) {
-                    if (!integer_argument(start_val, "start", "slice", &start)) goto handle_runtime_error;
-                    if (start < 0) start += len;
-                    if (start < 0) start = step > 0 ? 0 : -1;
-                    if (start >= len) start = step > 0 ? len : len - 1;
+                if (!slice_bounds(start_val, end_val, step, arr->count, &start, &end)) {
+                    goto handle_runtime_error;
                 }
-                if (!is_nil(end_val)) {
-                    if (!integer_argument(end_val, "end", "slice", &end)) goto handle_runtime_error;
-                    if (end < 0) end += len;
-                    if (end < 0) end = step > 0 ? 0 : -1;
-                    if (end >= len) end = step > 0 ? len : len - 1;
-                }
-
                 ObjArray *res = object_array();
+
                 push(OBJ_VAL(res));
-                if (step > 0) {
-                    for (int i = start; i < end; i += step) {
-                        array_push(res, arr->items[i]);
-                    }
-                } else {
-                    for (int i = start; i > end; i += step) {
-                        array_push(res, arr->items[i]);
-                    }
+                for (int i = start; step > 0 ? i < end : i > end; i += step) {
+                    array_push(res, arr->items[i]);
                 }
-                break;
             } else if (is_obj_type(obj_val, OBJ_STRING)) {
                 ObjString *str = AS_STRING(obj_val);
-                int len = utf8_length(str->chars, str->length);
-                int start = step > 0 ? 0 : len - 1;
-                int end = step > 0 ? len : -1;
-
-                if (!is_nil(start_val)) {
-                    if (!integer_argument(start_val, "start", "slice", &start)) goto handle_runtime_error;
-                    if (start < 0) start += len;
-                    if (start < 0) start = step > 0 ? 0 : -1;
-                    if (start >= len) start = step > 0 ? len : len - 1;
-                }
-                if (!is_nil(end_val)) {
-                    if (!integer_argument(end_val, "end", "slice", &end)) goto handle_runtime_error;
-                    if (end < 0) end += len;
-                    if (end < 0) end = step > 0 ? 0 : -1;
-                    if (end >= len) end = step > 0 ? len : len - 1;
-                }
-
+                int start;
+                int end;
                 buf_t b;
+
+                if (!slice_bounds(start_val, end_val, step, utf8_length(str->chars, str->length),
+                                  &start, &end)) {
+                    goto handle_runtime_error;
+                }
                 buf_init(&b);
-                if (step > 0) {
-                    for (int i = start; i < end; i += step) {
-                        int byte_off = utf8_byte_offset(str, i);
-                        int char_len = utf8_char_length(str, byte_off);
-                        buf_append(&b, str->chars + byte_off, (size_t)char_len);
-                    }
-                } else {
-                    for (int i = start; i > end; i += step) {
-                        int byte_off = utf8_byte_offset(str, i);
-                        int char_len = utf8_char_length(str, byte_off);
-                        buf_append(&b, str->chars + byte_off, (size_t)char_len);
-                    }
+                for (int i = start; step > 0 ? i < end : i > end; i += step) {
+                    int byte_off = utf8_byte_offset(str, i);
+                    int char_len = utf8_char_length(str, byte_off);
+
+                    buf_append(&b, str->chars + byte_off, (size_t)char_len);
                 }
                 ObjString *res = object_string(b.data ? b.data : "", (int)b.len);
+
                 buf_free(&b);
                 push(OBJ_VAL(res));
-                break;
+            } else if (is_obj_type(obj_val, OBJ_BYTES)) {
+                ObjBytes *bytes = AS_BYTES(obj_val);
+                int start;
+                int end;
+                int count = 0;
+
+                if (!slice_bounds(start_val, end_val, step, bytes->length, &start, &end)) {
+                    goto handle_runtime_error;
+                }
+                /* Counted first so the immutable result is allocated once, at
+                 * its final size. */
+                for (int i = start; step > 0 ? i < end : i > end; i += step) {
+                    count++;
+                }
+                ObjBytes *res = object_bytes(count);
+                int written = 0;
+
+                push(OBJ_VAL(res));
+                for (int i = start; step > 0 ? i < end : i > end; i += step) {
+                    res->data[written++] = bytes->data[i];
+                }
             } else {
                 vm_runtime_error(ERROR_TYPE, "cannot slice %s", value_type_name(obj_val));
                 goto handle_runtime_error;
             }
+            vm.stack_top[-2] = vm.stack_top[-1];
+            vm.stack_top--;
+            break;
         }
 
         case OP_NOT:
@@ -8029,7 +8253,8 @@ cold_dispatch:
             if (is_obj_type(receiver, OBJ_MAP)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
             } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_ARRAY) ||
-                       is_obj_type(receiver, OBJ_STRING_BUILDER) || is_obj_type(receiver, OBJ_FILE) ||
+                       is_obj_type(receiver, OBJ_STRING_BUILDER) ||
+                       is_obj_type(receiver, OBJ_BYTES_BUILDER) || is_obj_type(receiver, OBJ_FILE) ||
                        is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER) ||
                        is_obj_type(receiver, OBJ_WEBSOCKET)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on %s", method_name->chars,

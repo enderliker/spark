@@ -1,2 +1,2 @@
 exit: 70
-stderr: 'contains' expects an array, a string or a map as first argument
+stderr: 'contains' expects an array, a string, a map or bytes as first argument, received number

@@ -128,12 +128,39 @@ print(len(abc), type(abc));            // 3 bytes
 - `print` and `str` produce a **preview**, not a lossless conversion: printable ASCII is
   shown as itself and every other byte as an escape, wrapped in `b"..."`. It is always
   valid text, and `len(b)` is the byte count.
-- `bytes` is immutable, and no native changes one in place.
-- Not implemented yet with `bytes` as the subject: indexing, slicing, iteration, `+`
-  concatenation, ordering comparisons, `contains`/`index_of` and JSON encoding. Each
-  raises a `TypeError` naming the type. Bytes are ordinary values everywhere else: an
-  array can hold them, `contains(array, bytes)` and `index_of(array, bytes)` compare
-  them by content, and they nest in `print`.
+- `b[i]` is the byte value at position `i` as an integer in `0..255`, negative indexes
+  count from the end, and an out-of-range position is an `IndexError`. `b[start:end:step]`
+  and `slice(b, start, end?)` return a new `bytes` and clamp like arrays (section 3).
+- `for (var byte in b)` yields one integer per byte and allocates nothing per element;
+  `for (var index, byte in b)` yields the byte offset and the value.
+- `contains`, `index_of` and `in` accept an integer byte value or a `bytes` subsequence
+  as the needle and count offsets in bytes. Text is not accepted as a needle (A16).
+- `bytes + bytes` concatenates into a new value. Any other mix, including
+  `bytes + string`, is a `TypeError` that names `bytes_from`, never an implicit
+  conversion (A16).
+- `bytes` is immutable, and no native changes one in place; ordering comparisons
+  (`<`, `>`), arithmetic other than `+` and JSON encoding are not defined for it.
+  Bytes are ordinary values everywhere else: an array can hold them,
+  `contains(array, bytes)` and `index_of(array, bytes)` compare them by content, and they
+  nest in `print`.
+
+#### `bytes_builder`
+
+The one mutable companion, the binary counterpart of `string_builder()`. It owns a
+growable buffer, so appending is amortized O(1); `to_bytes()` copies the buffer once
+into an ordinary immutable `bytes`.
+
+```spark
+var b = bytes_builder();          // also: bytes_builder(4096), bytes_builder(seed_bytes)
+b.append(72).append(bytes_from("i"));  // append takes a byte value 0..255 or bytes
+print(b, b.len(), b.to_bytes());  // b"Hi" 2 b"Hi"
+b.clear();
+print(b.len());                   // 0
+```
+
+Like `string_builder`, it has a function form (`bb_append`, `bb_to_bytes`, `bb_len`,
+`bb_clear`) and a method form (`append`, `to_bytes`, `len`, `clear`). Appending text is
+a `TypeError`, because it would be an implicit conversion (A16); use `bytes_from(x)`.
 
 ## 3. Operators
 
@@ -252,18 +279,19 @@ lambdas have a concise form for a single expression: `fn(x) => x * 2` (section 6
 
 ### Indexing and slicing
 
-`value[index]` reads one element: an element of an array, or one UTF-8 character of a
-string. The index must be an integer, and a negative index counts from the end (`a[-1]`
-is the last element, `"spark"[-1]` is `"k"`). An index outside the range is a runtime
-`IndexError`, and the message names the index the program wrote: `a[-4]` on a
-three-element array reports `-4`, not the position `-1` it resolves to.
+`value[index]` reads one element: an element of an array, one UTF-8 character of a
+string, or one byte value (`0..255`, as an integer) of `bytes`. The index must be an
+integer, and a negative index counts from the end (`a[-1]` is the last element,
+`"spark"[-1]` is `"k"`). An index outside the range is a runtime `IndexError`, and the
+message names the index the program wrote: `a[-4]` on a three-element array reports
+`-4`, not the position `-1` it resolves to.
 
-`value[start:end:step]` builds a **new** array or string out of the elements in
+`value[start:end:step]` builds a **new** array, string or `bytes` out of the elements in
 `[start, end)` taken every `step` characters or elements (default `1`). Every part is
 optional: `a[:]` copies, `a[::2]` takes every other element, `a[::-1]` reverses. Negative
 positions count from the end, and a position outside the range is **clamped** instead of
-raising. The step must not be `0` (a runtime error). Only arrays and strings can be
-sliced, and a slice is a value rather than a place: `a[1:3] = x` is a syntax error.
+raising. The step must not be `0` (a runtime error). Only arrays, strings and bytes can
+be sliced, and a slice is a value rather than a place: `a[1:3] = x` is a syntax error.
 
 ```spark
 var a = [1, 2, 3, 4, 5];
@@ -272,6 +300,7 @@ print(a[1:3], a[:2], a[2:]);   // [2, 3] [1, 2] [3, 4, 5]
 print(a[::2], a[::-1]);        // [1, 3, 5] [5, 4, 3, 2, 1]
 print(a[10:20]);               // []      (clamped, not an error)
 print("spark"[1:3], "spark"[::-1]);   // pa kraps
+print(bytes_from("spark")[1:3]);      // b"pa"
 ```
 
 The rule to keep in mind: **indexing is exact and raises when the position is out of
@@ -357,8 +386,9 @@ for (;;) {           // all three parts are optional
 }
 ```
 
-`for-in` iterates over the elements of an array, the keys of a map or the characters
-of a string:
+`for-in` iterates over the elements of an array, the keys of a map, the characters of a
+string or the byte values of `bytes`. The two-variable form yields the position and the
+value:
 
 ```spark
 for (var value in [10, 20, 30]) {
@@ -371,6 +401,14 @@ for (var key in {"a": 1, "b": 2}) {
 
 for (var character in "spark") {
     print(character);
+}
+
+for (var byte in bytes_from("hi")) {   // integers, one per byte
+    print(byte);                        // 104, 105
+}
+
+for (var index, byte in bytes_from("hi")) {
+    print(index, byte);                 // 0 104, then 1 105
 }
 ```
 
@@ -581,7 +619,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
-| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
+| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"bytes_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
 | `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string (`"array"`, `"number"`, a class name) also works. |
 | `is_a(x, Class)` | Like `isinstance`, but the second argument must be a class; a type name string is a `TypeError`. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
@@ -595,13 +633,13 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `values(map)` | Array with the map's values. |
 | `range(n)` / `range(start, end)` | Array of integers in `[start, end)`. |
 | `substr(text, start, count?)` | Substring by UTF-8 characters; a negative `start` counts from the end, `count` must not be negative, and a `start` past the end gives `""`. |
-| `contains(container, value)` | `true` if an array has the value, a string has the substring, or a map has the key. |
-| `index_of(container, value)` | First index (in array elements or UTF-8 characters) or `-1`. |
+| `contains(container, value)` | `true` if an array has the value, a string has the substring, a map has the key, or bytes has the byte value or the bytes subsequence. |
+| `index_of(container, value)` | First index (in array elements, UTF-8 characters or bytes) or `-1`. |
 | `insert(array, index, value)` | Inserts at `index`; returns the array. |
 | `remove(array, index)` | Removes the element at `index` and returns it. |
 | `reverse(array)` | Reverses the array in place; returns it. |
 | `fill(array, value)` | Sets every element to `value`; returns the array. |
-| `slice(array_or_string, start, end?)` | New array or string with `[start, end)`; negative positions count from the end and out-of-range positions are clamped. There is no step; use the `a[start:end:step]` syntax for that (section 3). |
+| `slice(array_string_or_bytes, start, end?)` | New array, string or `bytes` with `[start, end)`; negative positions count from the end and out-of-range positions are clamped. There is no step; use the `a[start:end:step]` syntax for that (section 3). |
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
 | `split(text, sep)` | Array of parts; an empty separator splits into characters. |
 | `join(array, sep)` | Text joining the stringified elements. |
@@ -673,9 +711,15 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `sb_to_string(sb)` | The accumulated text as an immutable string. |
 | `sb_len(sb)` | Length of the accumulated text in UTF-8 characters. |
 | `sb_clear(sb)` | Empties the builder; returns it. |
+| `bytes_builder(initial?)` | New bytes builder; a `bytes` argument seeds its content, an integer sets the initial capacity. |
+| `bb_append(bb, value)` | Appends an integer byte value in `0..255` or a `bytes` sequence; returns the builder. |
+| `bb_to_bytes(bb)` | The accumulated bytes as an immutable `bytes`. |
+| `bb_len(bb)` | Length of the accumulated bytes, in bytes. |
+| `bb_clear(bb)` | Empties the builder; returns it. |
 
 Builders also accept the method form, which reads better when chaining:
-`sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`.
+`sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`, and for bytes
+`bb.append(value)`, `bb.to_bytes()`, `bb.len()` and `bb.clear()`.
 
 ### URLs and query strings
 

@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 2: 'bb_append' expects an integer byte value or bytes, received string; use bytes_from(x) to convert

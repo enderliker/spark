@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'bytes_builder' does not accept a negative capacity (-1)

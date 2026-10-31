@@ -1,0 +1,2 @@
+var builder = bytes_builder();
+builder.append("x");

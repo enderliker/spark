@@ -1,0 +1,1 @@
+print(contains(bytes_from("abc"), "b"));

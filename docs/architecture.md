@@ -27,7 +27,7 @@ result / error
 | `chunk.c` | Code, lines and constants arrays; recursive disassembler. |
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
-| `bytes.c` | The immutable `bytes` type: the `bytes` and `bytes_from` constructors. |
+| `bytes.c` | The `bytes` constructors (`bytes`, `bytes_from`) and the `bytes_builder` natives plus their method dispatch. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
 | `table.c` | Hash table used for the global `name -> slot` map (open addressing, tombstones). |
 | `memory.c` | Byte accounting and the GC threshold. |
@@ -82,6 +82,14 @@ Concrete types:
   and `map_set` therefore route object keys through `keys_equal`/`hash_object_key`
   rather than a pointer comparison. It holds no `Value`s, so the collector's `blacken`
   does not traverse it.
+- `ObjBytesBuilder`: the one mutable companion of `bytes` (decision Q18). It owns a
+  growable malloc'd buffer (`unsigned char *data`, `length`, `capacity`) like
+  `ObjStringBuilder`, so `append` is amortized O(1) and `to_bytes` copies the buffer
+  once into an immutable `ObjBytes`. It also holds no `Value`s, so `blacken` does not
+  traverse it, and its payload is freed in `object_free`. Because it is not reachable
+  from a root until its constructor returns, `object_bytes_builder` (like
+  `object_string_builder`) pauses the collector across the buffer allocation; a native
+  that seeds it copies into the already-sized buffer instead of appending.
 - `ObjMap`: open-addressing hash table of `MapEntry` (key, value, hash, state). The state is
   `free`, `occupied` or `tombstone`; it caches the key hash to avoid recomputation,
   uses specialized fast probing for object/string keys, and doubles capacity when it fills
@@ -168,10 +176,17 @@ avoids an extra `POP` per condition. Jumps are emitted with a `0xffff` marker an
 patched once the target is known. `OP_CLOSURE` is followed by an
 `(is_local, index)` pair per upvalue.
 
-`OP_ITER_KEYS` normalizes a `for-in` iterable into an array: arrays are left as-is,
-maps become an array of keys and strings become an array of one-character strings.
-`OP_LEN` leaves the value and pushes its length, which `for-in` uses to initialize its
-counter.
+`OP_ITER_KEYS` normalizes a `for-in` iterable into an array: arrays and `bytes` are left
+as-is, maps become an array of keys and strings become an array of one-character strings.
+Leaving `bytes` in place is what makes iteration allocation-free: `OP_INDEX` returns the
+byte value as an integer, and the two-variable form (`OP_ITER_PAIR`) reads the source
+directly instead of indexing a materialized array. `OP_LEN` leaves the value and pushes
+its length, which `for-in` uses to initialize its counter.
+
+`OP_SLICE` keeps its source value on the stack (it is not popped) while the result is
+allocated, so the collector still sees it, and replaces the source with the result at the
+end; `slice_bounds` is the single implementation of the clamping shared by arrays,
+strings and `bytes`.
 
 ### Compiler design
 
