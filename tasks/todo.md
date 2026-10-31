@@ -372,18 +372,32 @@ then document the type: a section in `docs/language.md`, the limits it obeys, th
 `type()`/`print` behavior, the conversion rules and the new native rows in the section
 10 and README tables.
 **Acceptance criteria:**
-- [ ] Per A30 there is no `bytes` literal, `SPARK_BYTECODE_VERSION` is unchanged, and a
+- [x] Per A30 there is no `bytes` literal, `SPARK_BYTECODE_VERSION` is unchanged, and a
       compiled program that builds bytes still runs; the serializer's existing
       rejection of an unknown constant type is documented as the enforcing mechanism.
-- [ ] A truncated or wrong-magic `.sparkc` keeps failing cleanly (exit 65,
+- [x] A truncated or wrong-magic `.sparkc` keeps failing cleanly (exit 65,
       `corrupt bytecode file` / `invalid Spark bytecode file`) after the type lands.
-- [ ] `docs/architecture.md` describes the object model entry and the GC path.
-- [ ] The `README.md` native table and "Known limits" reflect the new type.
+- [x] `docs/architecture.md` describes the object model entry and the GC path.
+- [x] The `README.md` native table and "Known limits" reflect the new type.
 **Verification:**
-- [ ] Round-trip fixture for the `.sparkc` path; suite; docs cross-check against the
+- [x] Round-trip fixture for the `.sparkc` path; suite; docs cross-check against the
       registered native list.
 **Dependencies:** T108-T111. **Files:** `src/bytecode.c`, `docs/language.md`,
 `docs/architecture.md`, `README.md`, `tests/`. **Scope:** S.
+
+**Done notes:** `src/bytecode.c` needed no change: `serialize_function` tags constants
+as `nil`/`bool`/`int`/`number`/`string`/`function` and falls through to `return false`
+for anything else. Because `bytes` has no literal (A30), nothing builds one before the
+constant pool is frozen — the compiler folds only numbers and strings — so the format,
+its six tags and `SPARK_BYTECODE_VERSION` 5 stay as they were. That fall-through is now
+documented in `docs/architecture.md` as the enforcing mechanism. The harness compiles a
+program that builds bytes (`bytes_from(...) + bytes_from("ok")`, `hex_encode`,
+`to_string`), checks the header is `SPRK` plus version 5, runs the `.sparkc` and compares
+its exact output, then checks that a file truncated right after the header exits 65 with
+`corrupt bytecode file`. `docs/language.md` gained the no-literal/A30 bullet; README's
+`Known limits` and the byte-related native rows were cross-checked against the
+registered list (`bytes`, `bytes_from`, `to_string`, `to_bytes`, `bytes_to_array`,
+`bytes_builder`/`bb_*`, `base64_*`, `hex_*`, `read_bytes`/`write_bytes`/`append_bytes`).
 
 ### T113 - WebSocket server on `bytes` (carry-over T97)
 **Description:** The WebSocket server was deferred because a pure-Spark frame writer

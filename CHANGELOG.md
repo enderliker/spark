@@ -97,6 +97,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `append_bytes`, a handle opened with a `b` mode makes `read` return `bytes` and
   `write` accepts bytes as well as text, `send` takes a string or bytes, and
   `recv_bytes(max)` returns bytes. The text forms are unchanged.
+- `bytes` has no literal and is never a compile-time constant, so the `.sparkc`
+  format keeps its version and constant tags (decision A30); the serializer rejects
+  any unknown constant type instead of writing an unreadable file.
 
 ### Security
 

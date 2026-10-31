@@ -628,6 +628,7 @@ Programs can be serialized to disk via `spark --compile <file> [-o <out>]`:
 - Format starts with 4-byte magic `SPRK` and a 32-bit version number.
 - Active global variable names are saved to preserve global slot mappings across modules.
 - Recursively serializes the chunk bytecode, line/column tables, and constant values (including nested functions and closures).
+- Constants carry one of six tags: `nil`, `bool`, `int`, `number`, `string` and `function`. There is no `bytes` tag (decision A30): `bytes` has no literal, so a program builds one at run time with `bytes_from`/`bytes`, and no `bytes` value ever reaches the constant pool. If one did, `serialize_function` rejects the unknown type instead of writing a file the loader could not read, and `--compile` fails. The format version therefore stays at `SPARK_BYTECODE_VERSION` `5`, and a program that builds bytes compiles and runs unchanged.
 - When loaded, bytecode is executed directly via `vm_run_function()` without invoking the lexer or parser.
 
 ## Developer tooling architecture

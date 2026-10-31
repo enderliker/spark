@@ -272,6 +272,45 @@ def test_cli() -> None:
         if custom_sparkc.exists():
             custom_sparkc.unlink()
 
+    # A compiled program that builds bytes runs, and the format is unchanged:
+    # bytes never reaches the constant pool, so there is no new tag (A30).
+    bytes_src = ROOT / "tests" / "bytes_compile.spark"
+    bytes_sparkc = ROOT / "tests" / "bytes_compile.sparkc"
+    bytes_src.write_text(
+        "var payload = bytes_from([0, 255, 65]) + bytes_from(\"ok\");\n"
+        "print(hex_encode(payload), to_string(payload[2:4]));\n",
+        encoding="utf-8",
+    )
+    try:
+        bc = run(["--compile", str(bytes_src), "-o", str(bytes_sparkc)])
+        header = bytes_sparkc.read_bytes()[:8] if bytes_sparkc.exists() else b""
+        br = run([str(bytes_sparkc)]) if bytes_sparkc.exists() else None
+        report(
+            "compiled program builds bytes and keeps the .sparkc version",
+            bc.returncode == 0
+            and header == b"SPRK\x00\x00\x00\x05"
+            and br is not None
+            and br.returncode == 0
+            and br.stdout == 'b"00ff416f6b" Ao\n',
+            bc.stdout + bc.stderr + ("" if br is None else br.stdout + br.stderr),
+        )
+    finally:
+        if bytes_src.exists():
+            bytes_src.unlink()
+        if bytes_sparkc.exists():
+            bytes_sparkc.unlink()
+
+    truncated = ROOT / "tests" / "truncated.sparkc"
+    truncated.write_bytes(b"SPRK\x00\x00\x00\x05")
+    try:
+        tr = run([str(truncated)])
+        report(".sparkc truncated after the header exits with code 65",
+               tr.returncode == 65 and "corrupt bytecode file" in tr.stderr,
+               tr.stdout + tr.stderr)
+    finally:
+        if truncated.exists():
+            truncated.unlink()
+
     bad_magic = ROOT / "tests" / "bad_magic.sparkc"
     bad_magic.write_bytes(b"BADM\x01\x00\x00\x00")
     try:

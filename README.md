@@ -497,7 +497,7 @@ large strings.
   file/socket I/O (`read_bytes`/`write_bytes`/`append_bytes`, `"rb"` handles and
   `recv_bytes`), but not ordering comparisons. Text and bytes never convert
   implicitly: `bytes_from(x)`, `to_bytes(text)` and `to_string(bytes)` are the explicit
-  bridges.
+  bridges. There is no `bytes` literal, so `.sparkc` keeps its format version (A30).
 - Closures capture the *variable*, not a copy. Variables declared in a loop body
   are fresh per iteration, but the loop variable itself is shared across
   iterations.

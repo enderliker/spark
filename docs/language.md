@@ -117,6 +117,10 @@ print(len(abc), type(abc));            // 3 bytes
 - `bytes_from(array)` requires every element to be an integer in `0..255`;
   `bytes_from(string)` copies the string's UTF-8 bytes as they are, with no decoding,
   and nothing else is accepted (section 10).
+- There is no `bytes` literal, so a `bytes` value is always built at run time
+  (`bytes(n)`, `bytes_from(...)`, a codec, or I/O) and is never a compile-time
+  constant. That is why precompiled `.sparkc` files need no new constant tag
+  (decision A30) and a program that builds bytes compiles and runs unchanged.
 - Two `bytes` values are equal when they hold the same bytes even though they are
   separate objects, so `==` and map keys compare by content: after `m[b] = 1`, both
   `m[b]` and `m[bytes_from("ab")]` find the entry, and re-adding an equal key overwrites
