@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'bytes_to_array' expects bytes, received string

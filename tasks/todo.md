@@ -302,20 +302,34 @@ gate is unchanged.
 `bytes_to_array(bytes)`, and JSON integration (`to_json(bytes)` emits a base64 string
 with a documented marker, `from_json` does not produce bytes).
 **Acceptance criteria:**
-- [ ] A `string.to_bytes().to_string()` round trip is byte-identical for ASCII, Latin-1
+- [x] A `string.to_bytes().to_string()` round trip is byte-identical for ASCII, Latin-1
       range codepoints, 4-byte codepoints and a 1 MB random payload.
-- [ ] Invalid UTF-8 in `to_string` raises `ValueError`; the message names the offset and
+- [x] Invalid UTF-8 in `to_string` raises `ValueError`; the message names the offset and
       does not echo the payload.
-- [ ] `bytes` in `to_json` is documented and `from_json(to_json(b))` returns the
+- [x] `bytes` in `to_json` is documented and `from_json(to_json(b))` returns the
       original bytes when the documented decoding helper is applied.
-- [ ] The reverse half of A16 lands here (A31): passing text where `bytes` is required
+- [x] The reverse half of A16 lands here (A31): passing text where `bytes` is required
       now names `to_string`, and the T108/T109 messages that could only name
       `bytes_from` are extended to name both, with a fixture for each.
 **Verification:**
-- [ ] Fixtures including the 1 MB round trip; suite + sanitizers.
+- [x] Fixtures including the 1 MB round trip; suite + sanitizers.
 **Dependencies:** T108, T109. **Files:** `src/bytes.c`, `src/json.c`, `tests/`,
 `docs/language.md`. **Scope:** S.
 
+**Done notes:** `to_string` validates with a full UTF-8 decoder, so overlong forms,
+surrogates and values past U+10FFFF are rejected exactly where a decoder would, and the
+message carries only the offset. `to_bytes` shares `bytes_from`'s string path; both have
+method forms (`b.to_string()`, `s.to_bytes()`) dispatched through `bytes_dispatch_method`
+so the natives stay private to `bytes.c` (A17). The `to_bytes` test is the last test in
+the string branch, so known string methods never pay for it. The JSON marker is
+`{"$bytes": "<base64>"}` (base64 from T114, which therefore landed first); `from_json`
+returns it as an ordinary map by design, and `base64_decode(m["$bytes"])` is the
+documented recovery. A31: the only T109 message where both bridges make sense is `+`
+(text and bytes cannot be mixed), so it now names `bytes_from` and `to_string`; the
+needle and builder messages are one-directional by nature and keep naming `bytes_from`.
+`bytes` joins the "method not found" type list now that it has a method. Fixtures:
+bytes_convert (including a 1,000,000-byte mixed-width round trip and the JSON path) and
+three error cases. Suite 265/265, sanitizers clean.
 ### T111 - Binary file and socket I/O
 **Description:** Let the file and socket layers move bytes without a UTF-8 detour:
 `read_bytes(path, max?)`, `write_bytes(path, bytes)`, `append_bytes`, `read(file, n)`

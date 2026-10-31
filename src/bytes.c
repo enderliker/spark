@@ -1,14 +1,17 @@
-/* bytes.c - the `bytes` constructors and builder exposed to the language.
+/* bytes.c - the `bytes` constructors, conversions and builder exposed to the
+ * language.
  *
  * The objects themselves (allocation, content equality, key hashing and
  * printing) live in object.c; this module registers the natives with the VM the
  * way net.c registers the network ones, and dispatches the `bytes_builder`
- * methods back to them. */
+ * methods back to them. `to_string` and `to_bytes` are the explicit bridges
+ * between text and bytes; every other conversion goes through `bytes_from`. */
 #include "bytes.h"
 
 #include <limits.h>
 #include <string.h>
 
+#include "memory.h"
 #include "vm.h"
 
 static const char *bytes_value_type(Value value)
@@ -277,10 +280,144 @@ bool bytes_builder_dispatch(Value receiver, ObjString *method, int arg_count, Va
     return false;
 }
 
+/* The first byte offset that is not part of a valid UTF-8 sequence, or -1.
+ * Overlong forms, surrogates and values past U+10FFFF are invalid, so the
+ * result is exactly what a UTF-8 decoder would accept. */
+static int utf8_invalid_offset(const unsigned char *data, int length)
+{
+    int i = 0;
+
+    while (i < length) {
+        unsigned char byte = data[i];
+        uint32_t codepoint;
+        int extra;
+
+        if (byte < 0x80) {
+            i++;
+            continue;
+        }
+        if (byte >= 0xc2 && byte <= 0xdf) {
+            extra = 1;
+            codepoint = byte & 0x1f;
+        } else if (byte >= 0xe0 && byte <= 0xef) {
+            extra = 2;
+            codepoint = byte & 0x0f;
+        } else if (byte >= 0xf0 && byte <= 0xf4) {
+            extra = 3;
+            codepoint = byte & 0x07;
+        } else {
+            /* A continuation byte where a lead belongs, or a lead that cannot
+             * start a sequence (0xc0/0xc1 are always overlong, 0xf5..0xff are
+             * past U+10FFFF). */
+            return i;
+        }
+        if (i + extra >= length) {
+            return i;
+        }
+        for (int k = 1; k <= extra; k++) {
+            if ((data[i + k] & 0xc0) != 0x80) {
+                return i;
+            }
+            codepoint = (codepoint << 6) | (data[i + k] & 0x3f);
+        }
+        if ((extra == 2 && codepoint < 0x800) || (extra == 3 && codepoint < 0x10000) ||
+            (codepoint >= 0xd800 && codepoint <= 0xdfff) || codepoint > 0x10ffff) {
+            return i;
+        }
+        i += extra + 1;
+    }
+    return -1;
+}
+
+/* to_string(bytes): the text those bytes encode, or a ValueError naming the
+ * offset when they are not valid UTF-8. Never echoes the payload: it may be a
+ * secret or megabytes long. */
+static Value native_to_string(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_BYTES)) {
+        vm_runtime_error(ERROR_TYPE, "'to_string' expects bytes, received %s",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjBytes *bytes = AS_BYTES(args[0]);
+    int offset = utf8_invalid_offset(bytes->data, bytes->length);
+
+    if (offset >= 0) {
+        vm_runtime_error(ERROR_VALUE, "'to_string' received invalid UTF-8 at byte offset %d",
+                         offset);
+        return NIL_VAL;
+    }
+    return OBJ_VAL(object_string((const char *)bytes->data, bytes->length));
+}
+
+/* to_bytes(string): the string's UTF-8 bytes, no encoding step. */
+static Value native_to_bytes(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'to_bytes' expects a string, received %s; use bytes_from(x) to build "
+                         "bytes from an array of integers",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    return native_bytes_from(1, args);
+}
+
+/* bytes_to_array(bytes): one integer in 0..255 per byte. */
+static Value native_bytes_to_array(int arg_count, Value *args)
+{
+    ObjBytes *bytes;
+    ObjArray *array;
+
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_BYTES)) {
+        vm_runtime_error(ERROR_TYPE, "'bytes_to_array' expects bytes, received %s",
+                         bytes_value_type(args[0]));
+        return NIL_VAL;
+    }
+    bytes = AS_BYTES(args[0]);
+    /* The array is not rooted yet, so nothing may collect while it is filled;
+     * the elements are integers, so the pushes do not allocate values. */
+    mem_pause_gc();
+    array = object_array();
+    for (int i = 0; i < bytes->length; i++) {
+        array_push(array, INT_VAL(bytes->data[i]));
+    }
+    mem_resume_gc();
+    return OBJ_VAL(array);
+}
+
+bool bytes_dispatch_method(Value receiver, ObjString *method, int arg_count, Value *args,
+                           Value *out)
+{
+    const char *name = method->chars;
+
+    (void)args;
+
+    if (is_obj_type(receiver, OBJ_BYTES) && strcmp(name, "to_string") == 0 && arg_count == 0) {
+        Value a[1] = { receiver };
+
+        *out = native_to_string(1, a);
+        return true;
+    }
+    if (is_obj_type(receiver, OBJ_STRING) && strcmp(name, "to_bytes") == 0 && arg_count == 0) {
+        Value a[1] = { receiver };
+
+        *out = native_to_bytes(1, a);
+        return true;
+    }
+    return false;
+}
+
 void bytes_init(void)
 {
     vm_define_native("bytes", native_bytes, 1);
     vm_define_native("bytes_from", native_bytes_from, 1);
+    vm_define_native("to_string", native_to_string, 1);
+    vm_define_native("to_bytes", native_to_bytes, 1);
+    vm_define_native("bytes_to_array", native_bytes_to_array, 1);
     vm_define_native("bytes_builder", native_bytes_builder, -1);
     vm_define_native("bb_append", native_bb_append, 2);
     vm_define_native("bb_to_bytes", native_bb_to_bytes, 1);

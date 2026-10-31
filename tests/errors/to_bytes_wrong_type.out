@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'to_bytes' expects a string, received number; use bytes_from(x) to build bytes from an array of integers

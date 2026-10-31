@@ -86,6 +86,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on decode) and `hex_encode`/`hex_decode` (lowercase output, either case on
   decode). Each accepts a string as its UTF-8 bytes and returns `bytes`; invalid
   input is a `ValueError`.
+- Explicit text/binary bridges: `to_string(bytes)` validates UTF-8 and reports the
+  offending byte offset (never the payload), `to_bytes(text)`,
+  `bytes_to_array(bytes)`, plus the methods `bytes.to_string()` and
+  `text.to_bytes()`. `str()` and `print` keep the preview form.
+- `to_json` encodes `bytes` as `{"$bytes": "<base64>"}`, a marked object that
+  `from_json` returns as a map; `base64_decode(m["$bytes"])` recovers the payload.
 
 ### Security
 

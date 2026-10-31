@@ -3539,6 +3539,12 @@ static bool dispatch_native_method(Value receiver, ObjString *method, int arg_co
             *out = pad_string_helper(arg_count + 1, a, false, "pad_end");
             return true;
         }
+        /* Last, so known string methods never pay for the extra compare. */
+        if (strcmp(name, "to_bytes") == 0 && arg_count == 0) {
+            return bytes_dispatch_method(receiver, method, arg_count, args, out);
+        }
+    } else if (is_obj_type(receiver, OBJ_BYTES)) {
+        return bytes_dispatch_method(receiver, method, arg_count, args, out);
     } else if (is_obj_type(receiver, OBJ_ARRAY)) {
         ObjArray *arr = AS_ARRAY(receiver);
         if (strcmp(name, "len") == 0 && arg_count == 0) {
@@ -4614,7 +4620,7 @@ static inline bool add_values(Value a, Value b, Value *out)
          * either way. Per A31 the message names only the bridge that exists. */
         vm_runtime_error(ERROR_TYPE,
                          "the operands of '+' must both be bytes (received %s and %s); "
-                         "use bytes_from(x) to build bytes from text or an array of integers",
+                         "use bytes_from(x) to build bytes and to_string(x) to get text",
                          value_type_name(a), value_type_name(b));
         return false;
     }
@@ -8253,7 +8259,8 @@ cold_dispatch:
 
             if (is_obj_type(receiver, OBJ_MAP)) {
                 vm_runtime_error(ERROR_NAME, "method '%s' not found on map", method_name->chars);
-            } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_ARRAY) ||
+            } else if (is_obj_type(receiver, OBJ_STRING) || is_obj_type(receiver, OBJ_BYTES) ||
+                       is_obj_type(receiver, OBJ_ARRAY) ||
                        is_obj_type(receiver, OBJ_STRING_BUILDER) ||
                        is_obj_type(receiver, OBJ_BYTES_BUILDER) || is_obj_type(receiver, OBJ_FILE) ||
                        is_obj_type(receiver, OBJ_SOCKET) || is_obj_type(receiver, OBJ_SERVER) ||

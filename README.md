@@ -266,6 +266,8 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `bytes_builder(initial?)` / `bb_append(bb, v)` | Build a large `bytes` in amortized O(1) per append; `bb_to_bytes(bb)`, `bb_len(bb)` and `bb_clear(bb)` mirror the string builder. |
 | `base64_encode(x)` / `base64_decode(x)` | Standard base64 over `bytes` or a string's UTF-8 bytes; decoding accepts missing padding. |
 | `hex_encode(x)` / `hex_decode(x)` | Hexadecimal over `bytes` or a string's UTF-8 bytes; decoding accepts either case. |
+| `to_string(bytes)` / `to_bytes(text)` | Explicit bridges between text and bytes; `to_string` validates UTF-8 and names the offending offset. |
+| `bytes_to_array(bytes)` | One integer in `0..255` per byte. |
 | `assert(cond, message?)` | Stops the program with an error when `cond` is false. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `isinstance(x, Class)` / `is_a(x, Class)` | Whether `x` is an instance of the class or a subclass. |
@@ -488,9 +490,10 @@ large strings.
 - Modules share one global namespace; there are no per-module namespaces.
 - Assignments are statements (`x = 1;`), not expressions.
 - Strings are immutable, so `s += x` in a loop is O(n²); use `string_builder`.
-- `bytes` supports indexing, slicing, iteration, `contains`/`index_of`, `+` and a
-  `bytes_builder()`, but not ordering comparisons or JSON encoding yet. Text and
-  bytes never convert implicitly: `bytes_from(x)` is the explicit bridge.
+- `bytes` supports indexing, slicing, iteration, `contains`/`index_of`, `+`, a
+  `bytes_builder()` and `to_json` (as a marked `{"$bytes": base64}` object), but not
+  ordering comparisons. Text and bytes never convert implicitly: `bytes_from(x)`,
+  `to_bytes(text)` and `to_string(bytes)` are the explicit bridges.
 - Closures capture the *variable*, not a copy. Variables declared in a loop body
   are fresh per iteration, but the loop variable itself is shared across
   iterations.

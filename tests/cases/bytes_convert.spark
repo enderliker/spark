@@ -1,0 +1,30 @@
+// Conversions between text and bytes, and the JSON form (phase 22, T110).
+
+// to_string validates UTF-8; to_bytes copies the string's UTF-8 bytes.
+print("ascii:", to_string(bytes_from("plain")), "plain".to_bytes() == bytes_from("plain"));
+print("latin-1:", to_string(bytes_from("éÿ")), "éÿ".to_bytes() == bytes_from("éÿ"));
+print("4-byte:", to_string(bytes_from("😀€")), "😀€".to_bytes() == bytes_from("😀€"));
+print("empty:", to_string(bytes(0)) == "", to_bytes("") == bytes(0));
+print("nul:", len(to_string(bytes_from([65, 0, 66]))), bytes_to_array(to_bytes("é")));
+print("array:", bytes_to_array(bytes_from([0, 127, 255])), bytes_to_array(bytes(0)));
+
+// A 1 MB payload of mixed-width characters round-trips byte for byte.
+var unit = "aé€😀";
+var text = repeat(unit, 100000);
+var bytes_back = text.to_bytes();
+print("1 MB:", len(text), len(bytes_back));
+print("1 MB round trip:", bytes_back.to_string() == text, to_string(bytes_back) == text);
+print("1 MB edges:", bytes_back[0], bytes_back[len(bytes_back) - 1]);
+
+// JSON: bytes becomes a marked object holding base64; decoding it is explicit.
+var payload = bytes_from([0, 255, 65]);
+print("json:", to_json(payload), to_json(bytes(0)));
+var decoded = from_json(to_json(payload));
+print("json shape:", type(decoded), keys(decoded), decoded["$bytes"]);
+print("json round trip:", base64_decode(decoded["$bytes"]) == payload);
+print("text stays text:", to_json("hi"), from_json(to_json("hi")));
+
+// Methods and free functions are the same bridge.
+var text_payload = bytes_from("ok");
+print("methods:", text_payload.to_string(), "x".to_bytes(), type(text_payload.to_string()));
+print("natives:", type(to_string), type(to_bytes), type(bytes_to_array));

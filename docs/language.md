@@ -123,8 +123,9 @@ print(len(abc), type(abc));            // 3 bytes
   it instead of creating a second one. A string and the bytes with the same content are
   **different** keys.
 - There is no implicit conversion between `string` and `bytes` (decision A16).
-  `bytes_from(text)` is the explicit bridge in that direction, and comparing a string
-  with bytes is `false`, never an error.
+  `bytes_from(text)` and `to_bytes(text)` are the explicit bridges in that direction,
+  `to_string(b)` in the other, and comparing a string with bytes is `false`, never an
+  error.
 - `print` and `str` produce a **preview**, not a lossless conversion: printable ASCII is
   shown as itself and every other byte as an escape, wrapped in `b"..."`. It is always
   valid text, and `len(b)` is the byte count.
@@ -138,8 +139,16 @@ print(len(abc), type(abc));            // 3 bytes
 - `bytes + bytes` concatenates into a new value. Any other mix, including
   `bytes + string`, is a `TypeError` that names `bytes_from`, never an implicit
   conversion (A16).
+- `to_string(b)` (and `b.to_string()`) is the explicit bridge back to text: it validates
+  UTF-8, and raises `ValueError` naming the byte offset when the bytes are not valid
+  UTF-8, without echoing the payload. `str(b)` and `print` keep the preview, so a value
+  never converts silently. `to_bytes(text)` (and `text.to_bytes()`) is the same bridge
+  from the other side, and `bytes_to_array(b)` yields one integer in `0..255` per byte.
+- `to_json(b)` writes `{"$bytes": "<base64>"}` — a marked object rather than a bare
+  string, so a decoder can tell binary from text. `from_json` returns that map as
+  written; `base64_decode(m["$bytes"])` recovers the payload (section 10).
 - `bytes` is immutable, and no native changes one in place; ordering comparisons
-  (`<`, `>`), arithmetic other than `+` and JSON encoding are not defined for it.
+  (`<`, `>`) and arithmetic other than `+` are not defined for it.
   Bytes are ordinary values everywhere else: an array can hold them,
   `contains(array, bytes)` and `index_of(array, bytes)` compare them by content, and they
   nest in `print`.
@@ -615,6 +624,9 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `base64_decode(x)` | Decodes standard base64 with or without padding; a bad character, a truncated group or misplaced padding is a `ValueError`. |
 | `hex_encode(x)` | Lowercase hexadecimal of `bytes`, or of a string's UTF-8 bytes; returns `bytes`. |
 | `hex_decode(x)` | Decodes hexadecimal, either case; odd length or a bad digit is a `ValueError`. |
+| `to_string(bytes)` | The text those bytes encode; invalid UTF-8 is a `ValueError` naming the byte offset. |
+| `to_bytes(text)` | The string's UTF-8 bytes, unchanged. |
+| `bytes_to_array(bytes)` | Array with one integer in `0..255` per byte. |
 | `push(array, value)` | Appends to the end and returns the array. |
 | `pop(array)` | Removes and returns the last element; error if empty. |
 | `str(x)` | Text representing the value. |
@@ -702,8 +714,8 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `rand()` | Float in `[0.0, 1.0)`. |
 | `randint(max)` / `randint(min, max)` | Random integer in `[min, max]` (inclusive). |
 | `srand(seed)` | Seeds the PRNG with an integer or float. |
-| `to_json(value)` | Serializes a value to a JSON string. |
-| `from_json(text)` | Deserializes a JSON string into Spark values. |
+| `to_json(value)` | Serializes a value to a JSON string; `bytes` becomes `{"$bytes": "<base64>"}`. |
+| `from_json(text)` | Deserializes a JSON string into Spark values; the `$bytes` marker is an ordinary map, decoded explicitly with `base64_decode`. |
 | `regex_match(pattern, text)` | Whether `pattern` matches `text`. |
 | `regex_find(pattern, text)` | Array of all non-overlapping matches of `pattern` in `text`. |
 | `regex_replace(pattern, repl, text)` | Replaces non-overlapping matches with `repl`. |

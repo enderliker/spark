@@ -21,4 +21,9 @@ void bytes_init(void);
 bool bytes_builder_dispatch(Value receiver, ObjString *method, int arg_count, Value *args,
                             Value *out);
 
+/* Handles the conversion methods: `bytes.to_string()` and `string.to_bytes()`.
+ * Returns false when the receiver/name pair is not one of them. */
+bool bytes_dispatch_method(Value receiver, ObjString *method, int arg_count, Value *args,
+                           Value *out);
+
 #endif

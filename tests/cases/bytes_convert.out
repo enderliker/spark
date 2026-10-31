@@ -1,0 +1,15 @@
+ascii: plain true
+latin-1: éÿ true
+4-byte: 😀€ true
+empty: true true
+nul: 3 [195, 169]
+array: [0, 127, 255] []
+1 MB: 400000 1000000
+1 MB round trip: true true
+1 MB edges: 97 128
+json: {"$bytes":"AP9B"} {"$bytes":""}
+json shape: map ["$bytes"] AP9B
+json round trip: true
+text stays text: "hi" hi
+methods: ok b"x" string
+natives: function function function

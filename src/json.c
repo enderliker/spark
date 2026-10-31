@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "buf.h"
+#include "codec.h"
 #include "memory.h"
 #include "object.h"
 
@@ -78,6 +79,18 @@ static bool encode_value(Value val, buf_t *out, char *error, size_t error_size, 
                 }
             }
             buf_append(out, "\"", 1);
+            return true;
+        }
+
+        case OBJ_BYTES: {
+            ObjBytes *bytes = (ObjBytes *)obj;
+
+            /* A marked object rather than a bare string, so a decoder can tell
+             * binary data from text. The payload is base64, which needs no JSON
+             * escaping. */
+            buf_append_str(out, "{\"$bytes\":\"");
+            codec_base64_encode(out, bytes->data, bytes->length);
+            buf_append_str(out, "\"}");
             return true;
         }
 
