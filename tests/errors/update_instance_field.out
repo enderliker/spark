@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 7: can only update an array or a map element, tried to update a value of type instance

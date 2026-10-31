@@ -1,0 +1,3 @@
+// `++` and `--` report the raw index as well.
+var a = [1, 2, 3];
+a[-4]++;

@@ -4002,7 +4002,7 @@ static bool call_value(Value callee, int arg_count)
             break;
         }
     }
-    vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
+    vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a value of type %s",
                      value_type_name(callee));
     return false;
 }
@@ -5082,7 +5082,7 @@ static bool index_to_position(Value index, int *out)
         *out = (int)raw;
         return true;
     }
-    vm_runtime_error(ERROR_TYPE, "the index must be a number, received a %s",
+    vm_runtime_error(ERROR_TYPE, "the index must be a number, received %s",
                      value_type_name(index));
     return false;
 }
@@ -6254,11 +6254,14 @@ cold_dispatch:
                 if (!index_to_position(index, &position)) {
                     goto handle_runtime_error;
                 }
+                /* The error names the index the program wrote; only the lookup
+                 * uses the position counted from the start. */
+                int written = position;
                 if (position < 0) {
                     position += array->count;
                 }
                 if (position < 0 || position >= array->count) {
-                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", written,
                                      array->count);
                     goto handle_runtime_error;
                 }
@@ -6346,12 +6349,13 @@ cold_dispatch:
                     goto handle_runtime_error;
                 }
                 int total_chars = utf8_length(string->chars, string->length);
+                int written = position;
                 if (position < 0) {
                     position += total_chars;
                 }
                 if (position < 0 || position >= total_chars) {
                     vm_runtime_error(ERROR_INDEX, "index out of range: %d (string of %d characters)",
-                                     position, total_chars);
+                                     written, total_chars);
                     goto handle_runtime_error;
                 }
                 byte_index = utf8_byte_offset(string, position);
@@ -6360,7 +6364,8 @@ cold_dispatch:
                 result = OBJ_VAL(object_string(string->chars + byte_index, char_length));
             } else {
                 vm_runtime_error(ERROR_TYPE,
-                                 "cannot index a %s; expected an array, a map or a string",
+                                 "cannot index a value of type %s; expected an array, a map "
+                                 "or a string",
                                  value_type_name(object));
                 goto handle_runtime_error;
             }
@@ -6382,11 +6387,12 @@ cold_dispatch:
                 if (!index_to_position(index, &position)) {
                     goto handle_runtime_error;
                 }
+                int written = position;
                 if (position < 0) {
                     position += array->count;
                 }
                 if (position < 0 || position >= array->count) {
-                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", written,
                                      array->count);
                     goto handle_runtime_error;
                 }
@@ -6430,7 +6436,7 @@ cold_dispatch:
             } else {
                 vm_runtime_error(ERROR_TYPE,
                                  "can only assign to an array, a map, an instance or a class, "
-                                 "tried to assign to a %s",
+                                 "tried to assign to a value of type %s",
                                  value_type_name(object));
                 goto handle_runtime_error;
             }
@@ -6454,11 +6460,12 @@ cold_dispatch:
                 if (!index_to_position(index, &position)) {
                     goto handle_runtime_error;
                 }
+                int written = position;
                 if (position < 0) {
                     position += array->count;
                 }
                 if (position < 0 || position >= array->count) {
-                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", position,
+                    vm_runtime_error(ERROR_INDEX, "index out of range: %d (size %d)", written,
                                      array->count);
                     goto handle_runtime_error;
                 }
@@ -6496,7 +6503,8 @@ cold_dispatch:
                 map_set(map, index, new_value);
             } else {
                 vm_runtime_error(ERROR_TYPE,
-                                 "can only update an array or a map element, tried to update a %s",
+                                 "can only update an array or a map element, tried to update a "
+                                 "value of type %s",
                                  value_type_name(object));
                 goto handle_runtime_error;
             }
@@ -6571,7 +6579,8 @@ cold_dispatch:
                 vm.stack_top--;
                 break;
             }
-            vm_runtime_error(ERROR_TYPE, "cannot iterate over a %s", value_type_name(iterable));
+            vm_runtime_error(ERROR_TYPE, "cannot iterate over a value of type %s",
+                             value_type_name(iterable));
             goto handle_runtime_error;
         }
 
@@ -7425,7 +7434,7 @@ cold_dispatch:
                 frame = &vm.frames[vm.frame_count - 1];
                 break;
             }
-            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
+            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a value of type %s",
                              value_type_name(callee));
             goto handle_runtime_error;
         }
@@ -7605,7 +7614,7 @@ cold_dispatch:
                 frame = &vm.frames[vm.frame_count - 1];
                 break;
             }
-            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a %s",
+            vm_runtime_error(ERROR_TYPE, "can only call functions, tried to call a value of type %s",
                              value_type_name(callee));
             goto handle_runtime_error;
         }

@@ -218,7 +218,8 @@ lambdas have a concise form for a single expression: `fn(x) => x * 2` (section 6
 `value[index]` reads one element: an element of an array, or one UTF-8 character of a
 string. The index must be an integer, and a negative index counts from the end (`a[-1]`
 is the last element, `"spark"[-1]` is `"k"`). An index outside the range is a runtime
-`IndexError`.
+`IndexError`, and the message names the index the program wrote: `a[-4]` on a
+three-element array reports `-4`, not the position `-1` it resolves to.
 
 `value[start:end:step]` builds a **new** array or string out of the elements in
 `[start, end)` taken every `step` characters or elements (default `1`). Every part is

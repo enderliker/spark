@@ -1,0 +1,2 @@
+// Indexing a string reports the raw index too.
+print("abc"[-4]);

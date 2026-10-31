@@ -1,0 +1,3 @@
+// Assigning through an out-of-range negative index reports the raw index.
+var a = [1, 2, 3];
+a[-4] = 9;

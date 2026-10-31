@@ -1,2 +1,2 @@
 exit: 70
-stderr: cannot iterate over a number
+stderr: cannot iterate over a value of type number

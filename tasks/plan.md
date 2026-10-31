@@ -157,13 +157,14 @@ Notes that matter for the performance phase:
 
 ## Task List
 
-### Phase 21 - Coherence and debt (P0; T103-T107 change no behavior)
+### Phase 21 - Coherence and debt (P0; T103-T107 change no behavior, T159 only
+messages)
 - [x] T103 Intent doc for the 0.2 stream (`docs/intent/spark-0.2.md`)
 - [x] T104 Negative-indexing semantics corrected in the reference
 - [x] T105 Operator table and undocumented syntax in the reference
 - [x] T106 Spanish identifiers in benchmarks and artifacts
 - [x] T107 Carry-over reconciliation: T97 deferral and the old checkpoints
-- [ ] T159 Error messages: report the index the user wrote, and drop the "a instance"
+- [x] T159 Error messages: report the index the user wrote, and drop the "a instance"
       article (found during the T104/T105 review; it is a code change, so it takes the
       full definition of done, sanitizers included)
 
@@ -173,6 +174,8 @@ Notes that matter for the performance phase:
 - [x] All artifacts in English; suite and benchmark gates unchanged (239/239,
       `fib(27)` min 4.84 ms)
 - [x] Review with the user before starting the `bytes` work (approved 2026-10-31)
+- [x] T159 verified after that review: 243/243 with five new or updated fixtures,
+      sanitizers clean, `fib(27)` min 4.95 ms
 
 ### Phase 22 - `bytes` and binary I/O (P1, A16)
 - [ ] T108 `bytes` core object type

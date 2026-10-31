@@ -100,6 +100,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The remaining Spanish identifiers, comments, messages and data in the benchmark
   sources and the test fixtures were translated, so every artifact is in English,
   and the rule now lives in `AGENTS.md` as well as `README.md`.
+- An out-of-range negative index reports the index the program wrote instead of the
+  position it resolved to: `[1, 2, 3][-4]` now says `index out of range: -4 (size 3)`
+  rather than `-1`. Positive indexes are unchanged. The same fix covers indexing a
+  string and assigning or incrementing through an array index.
+- Error messages that name a value type no longer pick a fixed article, which produced
+  `tried to update a instance`. They now say `a value of type instance`, and the index
+  type error says `received array` instead of `received a array`.
 
 ### Breaking changes
 

@@ -155,18 +155,36 @@ and normalize only for the lookup. (2) `"can only update an array or a map eleme
 tried to update a %s"` produces `tried to update a instance`; use a phrasing that needs
 no article, for example `received %s`, which is already the style of the other natives.
 **Acceptance criteria:**
-- [ ] `[1,2,3][-4]` reports `index out of range: -4 (size 3)`; positive out-of-range
+- [x] `[1,2,3][-4]` reports `index out of range: -4 (size 3)`; positive out-of-range
       indexes are unchanged (`index_out_of_range` still says `5`).
-- [ ] No message in `src/` produces `a instance` or another article mismatch for the
+- [x] No message in `src/` produces `a instance` or another article mismatch for the
       values `value_type_name` can return.
-- [ ] `tests/errors/negative_index_out_of_range.spark` and its `.out` are updated in the
+- [x] `tests/errors/negative_index_out_of_range.spark` and its `.out` are updated in the
       same commit, plus a fixture for the update message.
 **Verification:**
-- [ ] `python3 tests/run_tests.py` green; sanitizer run clean (VM change);
+- [x] `python3 tests/run_tests.py` green; sanitizer run clean (VM change);
       `python3 benchmarks/run.py` still below 5 ms.
 **Dependencies:** None (found in the T104/T105 review). **Files:** `src/vm.c`,
 `tests/errors/`.
 **Scope:** S.
+
+**Done notes:** the four index paths in `run()` (`OP_INDEX` on an array and on a
+string, `OP_INDEX_SET`, `OP_INC`/`OP_DEC`) keep the value `index_to_position` returned
+in a new `written` local and use it in the message, so only the lookup is normalized;
+the iteration path is internal and stayed as it was. The message audit covered more
+than the reported `tried to update a instance`: `tried to call a %s`, `received a %s`,
+`cannot index a %s`, `tried to assign to a %s`, `tried to update a %s` and `cannot
+iterate over a %s` all took an article before a `value_type_name` result, and the four
+vowel-initial names (`array`, `instance`, `upvalue`, `object`) broke three of them
+(`tried to call a instance`, `received a array`, `cannot iterate over a instance`).
+They now read `a value of type %s`, or plain `received %s` for the index type, so no
+name can mismatch; `src/net.c`'s `a %s that would block` interpolates an operation
+name, not a type. Probed with a throwaway battery covering every type name a program
+can produce against all six messages. Five fixtures: `negative_index_out_of_range`
+updated, plus `string_negative_index_out_of_range`, `negative_index_set_out_of_range`,
+`negative_index_increment_out_of_range` (one per touched path) and `update_instance_field`
+for the message; `destructuring_wrong_type` and `iterate_non_iterable` follow the reworded
+text. Suite 243/243, sanitizers clean, `fib(27)` min 4.95 ms.
 
 ## Checkpoint: Phase 21
 - [x] No claim in `docs/language.md` contradicts the built interpreter (verified for
@@ -175,6 +193,8 @@ no article, for example `received %s`, which is already the style of the other n
 - [x] All artifacts in English; suite and benchmark gates unchanged (239/239,
       `fib(27)` min 4.84 ms)
 - [x] Review with the user before starting the `bytes` work (approved 2026-10-31)
+- [x] T159 verified after that review: 243/243 with five new or updated fixtures,
+      sanitizers clean, `fib(27)` min 4.95 ms
 
 ---
 

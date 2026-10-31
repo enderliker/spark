@@ -1,0 +1,7 @@
+// `++` and `--` update a variable or an array or map element, never an
+// instance field, and the message names the type without an article.
+class Counter {
+    var value = 0;
+}
+var c = new Counter();
+c.value++;
