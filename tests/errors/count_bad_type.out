@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'count' expects an array, a string, a map or bytes as first argument, received number

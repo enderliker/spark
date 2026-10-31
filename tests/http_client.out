@@ -4,6 +4,8 @@ followed: 200 true
 raw: 302 /hello
 post: 200 payload=1
 header: abc
+put: 200 replacement
+delete: 200 true
 map: 200 yes
 loop: NetworkError too many redirects (maximum 5)
 big: NetworkError

@@ -302,12 +302,13 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | Function | Description |
 | --- | --- |
 | `substr(text, start, count?)` | Substring by UTF-8 characters. |
-| `split(text, sep)` / `join(array, sep)` | Text to array and back (empty separator splits into characters). |
-| `trim(text)` / `upper(text)` / `lower(text)` | ASCII whitespace trim and ASCII case conversion. |
+| `split(text, sep, limit?)` / `join(array, sep)` | Text to array and back (empty separator splits into characters; `limit` caps the fields). |
+| `trim(text, chars?)` / `upper(text)` / `lower(text)` | Whitespace or character-set trim and ASCII case conversion. |
 | `repeat(text, n)` / `replace(text, old, new)` | Repeat and replace all occurrences. |
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
 | `contains(container, value)` | Membership in an array, substring in a string or key in a map. |
 | `index_of(container, value)` | First position (elements or UTF-8 characters) or `-1`. |
+| `count(container, value)` | Non-overlapping occurrences of a substring, equal array elements or equal map values. |
 | `chr(code)` / `ord(text)` | Unicode codepoint to one-character string and back. |
 | `pad_start(text, width, fill?)` / `pad_end(...)` | Pads to `width` characters (fill defaults to a space). |
 
@@ -319,11 +320,11 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `insert(array, index, value)` / `remove(array, index)` | Insert at `index`, and remove and return the element at `index`. |
 | `reverse(array)` / `fill(array, value)` | Reverse / overwrite in place; return the array. |
 | `slice(array, start, end?)` | New array with `[start, end)`. |
-| `range(n)` / `range(start, end)` | Array of integers in `[start, end)`. |
+| `range(n)` / `range(start, end)` / `range(start, end, step)` | Array of integers in `[start, end)` with an optional step. |
 | `has(map, key)` / `del(map, key)` | Whether the map contains the key, and delete it. |
 | `keys(map)` / `values(map)` | Arrays with the keys / values. |
 | `clear(map)` / `merge(dest, src)` / `get(map, key, default?)` | Map helpers. |
-| `sort(array)` / `sort_by(array, fn)` | Stable sort in place (numbers or strings) with an optional comparator. |
+| `sort(array, comparator?)` / `sort_by(array, fn)` | Stable in-place sort (numbers or strings) with an optional comparator. |
 
 **Callbacks**
 
@@ -351,6 +352,7 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `env(name?)` / `exit(code?)` | Environment variables and process exit. |
 | `argv` | Global array with the script path and its arguments (empty in the REPL). |
 | `rand()` / `randint(min, max)` / `srand(seed)` | Non-cryptographic PRNG in `[0, 1)`, random integers and seeding. |
+| `shuffle(array)` / `choice(array)` | In-place Fisher-Yates shuffle and a random element, from the same seeded PRNG. |
 | `sha256(x)` / `sha256_hex(x)` | SHA-256 of `bytes` or a string's UTF-8 bytes, as 32 bytes or 64 lowercase hex characters. |
 | `hmac_sha256(key, data)` | 32-byte HMAC-SHA256 of `data` under `key`. |
 | `rand_bytes(n)` | `n` bytes from the CSPRNG (up to 16 MiB); a failure is an error, never a fallback to `rand()`. |

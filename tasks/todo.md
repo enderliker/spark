@@ -790,21 +790,65 @@ comparator so there is one sorting entry point), `shuffle(array)` and `choice(ar
 (seeded by `srand`), `enumerate`/`zip` already exist. Keep `sort_by` as an alias for
 compatibility.
 **Acceptance criteria:**
-- [ ] `range` with a step validates `step != 0` and handles negative steps per the
+- [x] `range` with a step validates `step != 0` and handles negative steps per the
       documented rule; existing two-argument calls are unchanged.
-- [ ] `sort(array, cmp)` and `sort_by` produce identical results (a fixture asserts it)
+- [x] `sort(array, cmp)` and `sort_by` produce identical results (a fixture asserts it)
       and `sort` stays stable.
-- [ ] `shuffle` respects `srand` for reproducibility (fixture with a fixed seed) and
+- [x] `shuffle` respects `srand` for reproducibility (fixture with a fixed seed) and
       uses the same PRNG as `rand`.
 **Verification:**
-- [ ] Fixtures per native and per error; `benchmarks/sort*.spark` still pass; suite.
+- [x] Fixtures per native and per error; `benchmarks/sort*.spark` still pass; suite.
 **Dependencies:** None. **Files:** `src/vm.c`, `tests/`, `docs/language.md`, `README.md`.
 **Scope:** M.
 
+**Done notes:** Added `count`, the `limit` argument of `split`, `chars` for `trim`,
+`step` for `range`, the comparator for `sort`, and `shuffle`/`choice`. `count`
+reuses the `contains`/`index_of` type dispatch (arrays by `values_equal`, text by
+non-overlapping substrings with `len+1` for an empty needle, maps by value, bytes by
+byte value or subsequence). `split` keeps the literal separator and its
+empty-separator character split, and applies `regex_split`'s limit rules (maximum
+fields, `0` → `[]`, the last field keeps the remainder); with an empty separator a
+limit leaves the remaining characters as the last field. `trim`'s `chars` is a set
+of whole UTF-8 codepoints: the start is walked forward and the end backward over
+continuation bytes, so no multibyte character is split. `range` counts elements with
+`int64_t` math and never loops when the direction is wrong; `step == 0` is a
+`ValueError` and the 10-million cap still applies. `sort` and `sort_by` are now the
+same call into the existing stable merge sort. `rand`, `shuffle` and `choice` share
+`prng_double`, so `srand` reproduces all three and a fixture proves that
+`choice(range(100))` consumes exactly the draw `rand()` returns for the same seed.
+
+Adding `count` as a native broke `tests/cases/tail_call.spark`: the compiler
+refused to tail-call any global whose *name* was native, so the fixture's own
+`fn count` recursed with a frame per call and hit `RecursionError`. Fixed in
+`src/compiler.c` with a per-compilation `ProgramFunction` list: a top-level `fn`
+declaration marks the name, and `tail_call_target_is_native` lets calls through
+that name be tail-called again. New fixture `native_name_shadowing` covers self
+and mutual recursion through the names of natives (`count`, `choice`) plus native
+access through another name.
+
+Fixtures: `cases/collection_conveniences.spark` (every native, empty and limited
+splits, multibyte trim, step directions, stable comparator sort, seeded shuffle
+and choice, and direct `bb_len`/`bb_clear` calls) and
+`cases/native_name_shadowing.spark`; errors `range_zero_step`, `choice_empty`,
+`shuffle_not_array`, `count_bad_type`, `split_bad_limit`, `trim_bad_chars`.
+For the phase-23 native-coverage checkpoint, the audit also filled the remaining
+gaps: `cases/math_extras.spark` now calls `sin`, `cos`, `log` and `exp`,
+`cases/process.spark` calls `exec` and `mkdir`, `tests/input.spark` exercises
+`input` through the harness with fed stdin, and the HTTP client fixture calls
+`http_put` and `http_delete` against the local scripted server (whose handler now
+answers PUT/DELETE). A scan of all 168 registered natives against tests, examples,
+lib and benchmarks finds every name called at least once, and all 168 have rows in
+`docs/language.md` and `README.md`. `benchmarks/sort.spark` and `sort_by.spark`
+still run (6.57/35.93 ms min), and the full `run_all.py` set is green. Suite
+333/333, sanitizers clean, `fib(27)` min 5.02-5.22 ms (same noise floor). Docs:
+`docs/language.md` "Collection, text and range conveniences" and the table rows,
+`README.md`, `docs/architecture.md` (the tail-call note), `CHANGELOG.md` Added and
+Fixed.
+
 ## Checkpoint: Phase 23
-- [ ] Every native has a fixture and a reference-table row
+- [x] Every native has a fixture and a reference-table row
 - [x] The tokenizer example in `docs/language.md` uses capture groups and offsets
-- [ ] Suite + sanitizers green; `fib(27)` min unchanged
+- [x] Suite + sanitizers green; `fib(27)` min unchanged
 
 ---
 

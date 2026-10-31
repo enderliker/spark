@@ -1,0 +1,9 @@
+// exec runs a shell command and reports its streams and exit code.
+var ok = exec("printf hi");
+print(ok["exit_code"], ok["stdout"], ok["stderr"] == "");
+var failed = exec("exit 3");
+print(failed["exit_code"], failed["stdout"] == "", failed["stderr"] == "");
+
+// mkdir succeeds when the directory already exists.
+print(mkdir("tests"), mkdir("tests/cases"));
+print("process ok");

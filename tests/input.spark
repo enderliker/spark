@@ -1,0 +1,6 @@
+// `input` reads one line; without a terminal it reports EOF as nil.
+var line = input();
+if (line == nil) {
+    line = "(eof)";
+}
+print("line:", line);

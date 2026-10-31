@@ -793,19 +793,20 @@ names the argument type but never echoes the key or the data.
 | `del(map, key)` | Deletes the key and returns whether it existed. |
 | `keys(map)` | Array with the map's keys. |
 | `values(map)` | Array with the map's values. |
-| `range(n)` / `range(start, end)` | Array of integers in `[start, end)`. |
+| `range(n)` / `range(start, end)` / `range(start, end, step)` | Array of integers in `[start, end)` with an optional step (default `1`); a negative step counts down and `0` is an error. |
 | `substr(text, start, count?)` | Substring by UTF-8 characters; a negative `start` counts from the end, `count` must not be negative, and a `start` past the end gives `""`. |
 | `contains(container, value)` | `true` if an array has the value, a string has the substring, a map has the key, or bytes has the byte value or the bytes subsequence. |
 | `index_of(container, value)` | First index (in array elements, UTF-8 characters or bytes) or `-1`. |
+| `count(container, value)` | Occurrences: array elements equal to `value`, non-overlapping substrings, map values equal to `value`, or byte values/subsequences. |
 | `insert(array, index, value)` | Inserts at `index`; returns the array. |
 | `remove(array, index)` | Removes the element at `index` and returns it. |
 | `reverse(array)` | Reverses the array in place; returns it. |
 | `fill(array, value)` | Sets every element to `value`; returns the array. |
 | `slice(array_string_or_bytes, start, end?)` | New array, string or `bytes` with `[start, end)`; negative positions count from the end and out-of-range positions are clamped. There is no step; use the `a[start:end:step]` syntax for that (section 3). |
 | `starts_with(text, prefix)` / `ends_with(text, suffix)` | Prefix/suffix test. |
-| `split(text, sep)` | Array of parts; an empty separator splits into characters. |
+| `split(text, sep, limit?)` | Array of parts; an empty separator splits into characters, and `limit` caps the field count exactly as `regex_split` does. |
 | `join(array, sep)` | Text joining the stringified elements. |
-| `trim(text)` | Removes leading and trailing ASCII whitespace. |
+| `trim(text, chars?)` | Removes leading and trailing ASCII whitespace, or any of the whole UTF-8 characters in `chars`. |
 | `upper(text)` / `lower(text)` | ASCII upper/lower case. |
 | `repeat(text, n)` | `text` repeated `n` times. |
 | `replace(text, old, new)` | Replaces every occurrence of `old`. |
@@ -822,8 +823,8 @@ names the argument type but never echoes the key or the data.
 | `sum(array)` | Sum of the numeric elements; integer when every element is an integer. |
 | `enumerate(array)` | Array of `[index, value]` pairs. |
 | `zip(a, b)` | Array of `[a[i], b[i]]` pairs, up to the shorter array. |
-| `sort(array)` | Sorts numbers or strings in place; mixing types is an error. |
-| `sort_by(array, fn)` | Sorts in place with `fn(x, y)` returning whether `x` goes before `y`. |
+| `sort(array, comparator?)` | Stable in-place sort; natural order for numbers or strings (mixing types is an error), or `comparator(x, y)` returning whether `x` goes before `y`. |
+| `sort_by(array, fn)` | The same call as `sort(array, fn)`, kept for compatibility. |
 | `abs(x)` | Absolute value; an integer stays an integer. |
 | `floor(x)` / `ceil(x)` / `trunc(x)` | Rounding toward ±infinity or zero; an integer input is returned unchanged. |
 | `round(x, digits?)` | Rounds half away from zero, optionally to `digits` decimal places by binary scaling; an integer input is returned unchanged. |
@@ -873,7 +874,9 @@ names the argument type but never echoes the key or the data.
 | `rand_bytes(n)` | `n` bytes from the CSPRNG (`0..16 MiB`; a failure is a `RuntimeError`, never a fallback to `rand()`). |
 | `rand()` | Float in `[0.0, 1.0)`. |
 | `randint(max)` / `randint(min, max)` | Random integer in `[min, max]` (inclusive). |
-| `srand(seed)` | Seeds the PRNG with an integer or float. |
+| `srand(seed)` | Seeds the PRNG shared by `rand`, `randint`, `shuffle` and `choice`. |
+| `shuffle(array)` | Shuffles the array in place (Fisher-Yates) and returns it. |
+| `choice(array)` | A random element of a non-empty array. |
 | `to_json(value)` | Serializes a value to a JSON string; `bytes` becomes `{"$bytes": "<base64>"}`. |
 | `from_json(text)` | Deserializes a JSON string into Spark values; the `$bytes` marker is an ordinary map, decoded explicitly with `base64_decode`. |
 | `regex_match(pattern, text, flags?)` | Whether `pattern` matches `text`. |
@@ -900,6 +903,44 @@ names the argument type but never echoes the key or the data.
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`, and for bytes
 `bb.append(value)`, `bb.to_bytes()`, `bb.len()` and `bb.clear()`.
+
+### Collection, text and range conveniences
+
+```spark
+print(count("banana", "a"));          // 3
+print(count([1, 1, 2], 1));           // 2
+print(split("a,b,c", ",", 2));        // ["a", "b,c"]
+print(trim("xxhixx", "x"));           // "hi"
+print(range(0, 10, 3));               // [0, 3, 6, 9]
+print(range(5, 0, -2));               // [5, 3, 1]
+print(sort([3, 1, 2], fn(a, b) { return a > b; }));   // [3, 2, 1]
+```
+
+- `count(text, substring)` counts non-overlapping occurrences, so
+  `count("aaaa", "aa")` is `2`. An empty substring counts `len(text) + 1`, the
+  number of positions where it occurs; an empty bytes needle behaves the same
+  way. On a map it counts **values** equal to `value`, not keys, and on bytes it
+  takes a byte value or a bytes subsequence, like `contains`.
+- `split(text, sep, limit?)` uses the same limit rules as `regex_split`: the
+  maximum number of fields, `0` returns `[]`, a negative value (or no argument)
+  means no limit, and the last field keeps the unresolved remainder. The
+  separator stays a literal string, and an empty separator splits into
+  characters; with a limit, the last field gets the remaining characters.
+- `trim(text, chars?)` strips a set of **characters**, not bytes, so
+  `trim("ñandú", "ñú")` is `"and"`. Without `chars` it strips ASCII whitespace,
+  as before. Only the ends are touched and each character is removed whole.
+- `range(...)` validates `step != 0` and yields nothing when the direction is
+  wrong (`range(0, 5, -1)` and `range(5, 0, 1)` are both `[]`). The 10-million
+  element cap applies to every form, and the arguments and results are 32-bit
+  integers, as before.
+- `sort(array, comparator?)` and `sort_by(array, fn)` are the same stable
+  merge sort, so equal elements keep their original order. Without a comparator
+  the elements must all be numbers or all be strings.
+- `shuffle` and `choice` draw from the same PRNG as `rand`, so `srand(seed)`
+  makes their sequence reproducible and `choice(range(n))` consumes exactly one
+  draw of `rand()`. `shuffle` shuffles in place and returns the same array;
+  `choice` on an empty array is a `ValueError`. All of them are
+  non-cryptographic; use `rand_bytes` for secrets.
 
 ### Math
 

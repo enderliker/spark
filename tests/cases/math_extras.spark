@@ -1,4 +1,5 @@
 // Trigonometry and logarithms always return floats, like sin/cos/log.
+print(sin(0), cos(0), log(1), exp(0));
 print(tan(0));
 print(asin(1));
 print(acos(0));

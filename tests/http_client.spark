@@ -21,6 +21,12 @@ print("post:", posted.status, posted.body);
 var echoed = http_get(base + "/hdr", nil, {"X-Probe": "abc"});
 print("header:", echoed.body);
 
+// PUT and DELETE use the same request path.
+var put = http_put(base + "/echo", "replacement");
+print("put:", put.status, put.body);
+var deleted = http_delete(base + "/echo");
+print("delete:", deleted.status, deleted.body == "");
+
 // The map-driven form behaves the same way.
 var mapped = http_request({"url": base + "/hello", "method": "GET"});
 print("map:", mapped.status, mapped.headers["x-test"]);

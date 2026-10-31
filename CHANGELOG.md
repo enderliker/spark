@@ -147,6 +147,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `lcm` result past 64 bits) are `ValueError`s. `round(x, digits)` scales in
   binary floating point rather than decimal, which the reference states with
   examples.
+- Collection and text conveniences: `count(container, value)` (non-overlapping
+  substrings, equal array elements, equal map values, byte values or bytes
+  subsequences), `split(text, sep, limit?)` with the same field limit as
+  `regex_split`, `trim(text, chars?)` stripping a set of whole UTF-8 characters,
+  and `range(start, end, step)` with a non-zero, possibly negative step.
+- `sort(array, comparator?)` accepts the `sort_by` comparator (the two are the
+  same stable merge sort; `sort_by` stays as an alias), and `shuffle(array)` and
+  `choice(array)` draw from the same PRNG as `rand`, so `srand` reproduces them.
 - Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default
@@ -182,6 +190,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   development headers (`libssl-dev` on Debian/Ubuntu).
 
 ### Fixed
+
+- A top-level function that shadows a native keeps tail-call optimization. The
+  compiler used to decide from the name alone, so `fn count(n)` — now that
+  `count` is a native — recursed with a full frame per call and failed at
+  `count(100000, 0)`. It now tracks the functions the program itself declares
+  and treats those names as ordinary calls again; the native stays reachable
+  through another name.
 
 - The collector no longer loses objects. `object_coroutine` and `object_channel`
   zeroed the whole object after `allocate_obj` had already linked it, which

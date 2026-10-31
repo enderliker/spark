@@ -1,0 +1,1 @@
+print(trim("x", 1));

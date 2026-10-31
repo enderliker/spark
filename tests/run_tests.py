@@ -97,6 +97,13 @@ def test_cases() -> None:
             detail += "unexpected stderr:\n" + completed.stderr
         report(program.name, ok, detail)
 
+    fed = run([str(ROOT / "tests" / "input.spark")], stdin="hello\n")
+    report(
+        "input reads a line from standard input",
+        fed.returncode == 0 and fed.stdout == "line: hello\n" and not fed.stderr,
+        fed.stdout + fed.stderr,
+    )
+
 
 def test_errors() -> None:
     print("\nExpected errors")
@@ -681,6 +688,12 @@ class ScriptedHandler(BaseHTTPRequestHandler):
             self.reply(200, self.rfile.read(length))
         else:
             self.reply(404, b"not found")
+
+    def do_PUT(self):
+        self.do_POST()
+
+    def do_DELETE(self):
+        self.do_POST()
 
 
 class QuietHTTPServer(ThreadingHTTPServer):

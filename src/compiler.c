@@ -57,6 +57,14 @@ typedef struct ConstGlobal {
     struct ConstGlobal *next;
 } ConstGlobal;
 
+/* Top-level functions the program itself declares. A name in this list shadows
+ * a native of the same name, so a call to it may be tail-called even though the
+ * native registration still has that name. */
+typedef struct ProgramFunction {
+    ObjString *name;
+    struct ProgramFunction *next;
+} ProgramFunction;
+
 typedef struct {
     jmp_buf jump;
     char message[256];
@@ -66,6 +74,7 @@ typedef struct {
     const char *source;
     ObjString *script_path;
     ConstGlobal *const_globals;
+    ProgramFunction *program_functions;
 } CompileContext;
 
 typedef struct Compiler {
@@ -506,6 +515,33 @@ static void mark_global_const(Compiler *compiler, ObjString *name, int line)
     entry->name = name;
     entry->next = compiler->ctx->const_globals;
     compiler->ctx->const_globals = entry;
+}
+
+static void mark_program_function(Compiler *compiler, ObjString *name, int line)
+{
+    for (ProgramFunction *entry = compiler->ctx->program_functions; entry; entry = entry->next) {
+        if (entry->name == name) {
+            return;
+        }
+    }
+    ProgramFunction *entry = malloc(sizeof(ProgramFunction));
+
+    if (!entry) {
+        compile_error(compiler, line, "out of memory while compiling the program functions");
+    }
+    entry->name = name;
+    entry->next = compiler->ctx->program_functions;
+    compiler->ctx->program_functions = entry;
+}
+
+static bool is_program_function(Compiler *compiler, const char *chars, int length)
+{
+    for (ProgramFunction *entry = compiler->ctx->program_functions; entry; entry = entry->next) {
+        if (entry->name->length == length && memcmp(entry->name->chars, chars, (size_t)length) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void check_mutable(Compiler *compiler, VarRef ref, Text name, int line)
@@ -1618,6 +1654,7 @@ static void compile_statement(Compiler *compiler, Stmt *stmt)
                 compile_error(compiler, line, "cannot redefine constant '%.*s'",
                               stmt->as.function.name.length, stmt->as.function.name.chars);
             }
+            mark_program_function(compiler, name, line);
             compile_function_value(compiler, stmt->as.function.name, stmt->as.function.params,
                                    stmt->as.function.body, line);
             emit_byte(compiler, OP_DEFINE_GLOBAL, line);
@@ -1716,10 +1753,16 @@ static void compile_call_with_arguments(Compiler *compiler, Expr *expr, int line
 
 /* A call to a global native cannot be tail-called: the native may suspend the
  * coroutine (for example net_select), which needs the caller's frame to remain.
- * Falling back to a normal call + return keeps the resume path simple. */
-static bool tail_call_target_is_native(Expr *callee)
+ * Falling back to a normal call + return keeps the resume path simple. A
+ * top-level function declared by the program shadows the native, so a call to
+ * that name is an ordinary function call again. */
+static bool tail_call_target_is_native(Compiler *compiler, Expr *callee)
 {
     if (callee->kind != EXPR_VARIABLE) {
+        return false;
+    }
+    if (is_program_function(compiler, callee->as.variable.chars,
+                            callee->as.variable.length)) {
         return false;
     }
     return vm_name_is_native(callee->as.variable.chars, callee->as.variable.length);
@@ -1746,7 +1789,7 @@ static void compile_tail_return(Compiler *compiler, Expr *expr, int line, int co
     }
     if (expr->kind == EXPR_CALL && !expr->as.call.is_new &&
         expr->as.call.callee->kind != EXPR_SUPER &&
-        !tail_call_target_is_native(expr->as.call.callee)) {
+        !tail_call_target_is_native(compiler, expr->as.call.callee)) {
         compile_expression(compiler, expr->as.call.callee);
         if (expr_list_has_spread(expr->as.call.arguments)) {
             compile_spread_arguments(compiler, expr->as.call.arguments, expr->as.call.argument_count, line);
@@ -2552,6 +2595,7 @@ static void compile_expression(Compiler *compiler, Expr *expr)
 static void free_const_globals(CompileContext *ctx)
 {
     ConstGlobal *entry = ctx->const_globals;
+    ProgramFunction *function = ctx->program_functions;
 
     while (entry) {
         ConstGlobal *next = entry->next;
@@ -2560,6 +2604,13 @@ static void free_const_globals(CompileContext *ctx)
         entry = next;
     }
     ctx->const_globals = NULL;
+    while (function) {
+        ProgramFunction *next = function->next;
+
+        free(function);
+        function = next;
+    }
+    ctx->program_functions = NULL;
 }
 
 ObjFunction *compile_ast(Stmt *program, const char *name, const char *source, bool repl_mode,

@@ -475,7 +475,9 @@ mix of readers, writers and deadlines. The integration is:
   raises instead of suspending, exactly like channel waits.
 - **Tail calls.** `return <native>(...)` normally becomes `OP_TAIL_CALL`, whose frame
   reuse cannot deliver a resumed result; the compiler therefore compiles a tail return
-  whose callee is a global native as an ordinary call.
+  whose callee is a global native as an ordinary call. A top-level function declared
+  by the program shadows a native of the same name, so the compiler tracks the
+  program's own functions and still tail-calls through them.
 
 `tests/cases/net_load.spark` runs 32 concurrent echo clients against one server
 coroutine, asserts the descriptor count returns to baseline and checks that a 300 ms

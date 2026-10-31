@@ -1001,6 +1001,8 @@ static Value native_range(int arg_count, Value *args)
 {
     int start = 0;
     int end;
+    int step = 1;
+    int64_t count;
 
     if (arg_count == 1) {
         if (!integer_argument(args[0], "end", "range", &end)) {
@@ -1011,15 +1013,29 @@ static Value native_range(int arg_count, Value *args)
             !integer_argument(args[1], "end", "range", &end)) {
             return NIL_VAL;
         }
+    } else if (arg_count == 3) {
+        if (!integer_argument(args[0], "start", "range", &start) ||
+            !integer_argument(args[1], "end", "range", &end) ||
+            !integer_argument(args[2], "step", "range", &step)) {
+            return NIL_VAL;
+        }
+        if (step == 0) {
+            vm_runtime_error(ERROR_VALUE, "'range' expects a non-zero step");
+            return NIL_VAL;
+        }
     } else {
-        vm_runtime_error(ERROR_ARITY, "'range' expects 1 or 2 arguments, received %d", arg_count);
+        vm_runtime_error(ERROR_ARITY, "'range' expects 1 to 3 arguments, received %d", arg_count);
         return NIL_VAL;
     }
 
-    if (end < start) {
-        end = start;
+    if (step > 0) {
+        count = end > start ? ((int64_t)end - start + step - 1) / step : 0;
+    } else {
+        int64_t magnitude = -(int64_t)step;
+
+        count = start > end ? ((int64_t)start - end + magnitude - 1) / magnitude : 0;
     }
-    if ((long long)end - start > 10000000LL) {
+    if (count > 10000000LL) {
         vm_runtime_error(ERROR_VALUE, "'range' cannot generate more than 10 million elements");
         return NIL_VAL;
     }
@@ -1027,8 +1043,14 @@ static Value native_range(int arg_count, Value *args)
     ObjArray *array = object_array();
 
     push(OBJ_VAL(array));
-    for (int i = start; i < end; i++) {
-        array_push(array, INT_VAL(i));
+    if (step > 0) {
+        for (int64_t i = start; i < end; i += step) {
+            array_push(array, INT_VAL(i));
+        }
+    } else {
+        for (int64_t i = start; i > end; i += step) {
+            array_push(array, INT_VAL(i));
+        }
     }
     pop();
     return OBJ_VAL(array);
@@ -1840,6 +1862,104 @@ static Value native_index_of(int arg_count, Value *args)
     return NIL_VAL;
 }
 
+static Value native_count(int arg_count, Value *args)
+{
+    Value container = args[0];
+    Value needle = args[1];
+
+    (void)arg_count;
+    if (is_obj_type(container, OBJ_ARRAY)) {
+        ObjArray *array = AS_ARRAY(container);
+        int64_t total = 0;
+
+        for (int i = 0; i < array->count; i++) {
+            if (values_equal(array->items[i], needle)) {
+                total++;
+            }
+        }
+        return INT_VAL(total);
+    }
+    if (is_obj_type(container, OBJ_STRING)) {
+        ObjString *haystack;
+        ObjString *pattern;
+        int64_t total = 0;
+        int i = 0;
+
+        if (!is_obj_type(needle, OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE,
+                             "'count' expects a string as the value to look up when the container "
+                             "is a string, received %s",
+                             value_type_name(needle));
+            return NIL_VAL;
+        }
+        haystack = AS_STRING(container);
+        pattern = AS_STRING(needle);
+        /* An empty needle sits before every character, as `index_of` reports 0. */
+        if (pattern->length == 0) {
+            return INT_VAL(utf8_length(haystack->chars, haystack->length) + 1);
+        }
+        while (i + pattern->length <= haystack->length) {
+            if (memcmp(haystack->chars + i, pattern->chars, (size_t)pattern->length) == 0) {
+                total++;
+                i += pattern->length;
+            } else {
+                i++;
+            }
+        }
+        return INT_VAL(total);
+    }
+    if (is_obj_type(container, OBJ_MAP)) {
+        ObjMap *map = AS_MAP(container);
+        int64_t total = 0;
+
+        for (int i = 0; i < map->capacity; i++) {
+            if (map->entries[i].state == 1 && values_equal(map->entries[i].value, needle)) {
+                total++;
+            }
+        }
+        return INT_VAL(total);
+    }
+    if (is_obj_type(container, OBJ_BYTES)) {
+        ObjBytes *bytes = AS_BYTES(container);
+
+        if (!bytes_needle(needle, "'count'")) {
+            return NIL_VAL;
+        }
+        if (is_int(needle)) {
+            int64_t byte = AS_INT(needle);
+            int64_t total = 0;
+
+            if (byte < 0 || byte > 255) {
+                return INT_VAL(0);
+            }
+            for (int i = 0; i < bytes->length; i++) {
+                if (bytes->data[i] == (unsigned char)byte) {
+                    total++;
+                }
+            }
+            return INT_VAL(total);
+        }
+        ObjBytes *pattern = AS_BYTES(needle);
+        int64_t total = 0;
+
+        if (pattern->length == 0) {
+            return INT_VAL(bytes->length + 1);
+        }
+        for (int i = 0; i + pattern->length <= bytes->length;) {
+            if (memcmp(bytes->data + i, pattern->data, (size_t)pattern->length) == 0) {
+                total++;
+                i += pattern->length;
+            } else {
+                i++;
+            }
+        }
+        return INT_VAL(total);
+    }
+    vm_runtime_error(ERROR_TYPE, "'count' expects an array, a string, a map or bytes as first "
+                     "argument, received %s", value_type_name(container));
+    return NIL_VAL;
+}
+
 static Value native_insert(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -2062,30 +2182,50 @@ static Value native_ends_with(int arg_count, Value *args)
 
 static Value native_split(int arg_count, Value *args)
 {
-    (void)arg_count;
+    int limit = -1;
+    ObjString *text;
+    ObjString *separator;
+    ObjArray *parts;
+
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'split' expects 2 or 3 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
         vm_runtime_error(ERROR_TYPE, "'split' expects two strings");
         return NIL_VAL;
     }
-    ObjString *text = AS_STRING(args[0]);
-    ObjString *separator = AS_STRING(args[1]);
-    ObjArray *parts = object_array();
+    if (arg_count == 3 && !integer_argument(args[2], "limit", "split", &limit)) {
+        return NIL_VAL;
+    }
+    if (limit == 0) {
+        return OBJ_VAL(object_array());
+    }
+    text = AS_STRING(args[0]);
+    separator = AS_STRING(args[1]);
+    parts = object_array();
 
     push(OBJ_VAL(parts));
     if (separator->length == 0) {
         int byte_index = 0;
 
-        while (byte_index < text->length) {
+        while (byte_index < text->length && (limit < 0 || parts->count < limit - 1)) {
             int char_length = utf8_char_length(text, byte_index);
 
             array_push_new_string(parts, text->chars + byte_index, char_length);
             byte_index += char_length;
         }
+        /* An empty separator uses one field per character, so only a limit
+         * leaves a remainder to append. */
+        if (byte_index < text->length) {
+            array_push_new_string(parts, text->chars + byte_index, text->length - byte_index);
+        }
     } else {
         int start = 0;
         int i = 0;
 
-        while (i + separator->length <= text->length) {
+        while (i + separator->length <= text->length &&
+               (limit < 0 || parts->count < limit - 1)) {
             if (memcmp(text->chars + i, separator->chars, (size_t)separator->length) == 0) {
                 array_push_new_string(parts, text->chars + start, i - start);
                 i += separator->length;
@@ -2161,22 +2301,73 @@ static bool is_whitespace(char c)
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
 }
 
+/* Whether the UTF-8 character at `index` of `string` is one of the characters
+ * in `set` (compared by whole codepoints, never by byte). */
+static bool character_in_set(ObjString *string, int index, ObjString *set)
+{
+    int length = utf8_char_length(string, index);
+    int i = 0;
+
+    while (i < set->length) {
+        int candidate = utf8_char_length(set, i);
+
+        if (candidate == length && memcmp(set->chars + i, string->chars + index,
+                                         (size_t)length) == 0) {
+            return true;
+        }
+        i += candidate;
+    }
+    return false;
+}
+
 static Value native_trim(int arg_count, Value *args)
 {
-    (void)arg_count;
+    ObjString *string;
+    ObjString *strip = NULL;
+    int start = 0;
+    int end;
+
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'trim' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_STRING)) {
         vm_runtime_error(ERROR_TYPE, "'trim' expects a string, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
-    ObjString *string = AS_STRING(args[0]);
-    int start = 0;
-    int end = string->length;
-
-    while (start < end && is_whitespace(string->chars[start])) {
-        start++;
+    if (arg_count == 2) {
+        if (!is_obj_type(args[1], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE, "'trim' expects the characters to strip as a string, "
+                             "received %s", value_type_name(args[1]));
+            return NIL_VAL;
+        }
+        strip = AS_STRING(args[1]);
     }
-    while (end > start && is_whitespace(string->chars[end - 1])) {
-        end--;
+    string = AS_STRING(args[0]);
+    end = string->length;
+
+    if (strip) {
+        while (start < end && character_in_set(string, start, strip)) {
+            start += utf8_char_length(string, start);
+        }
+        while (end > start) {
+            int last = end - 1;
+
+            while (last > start && ((unsigned char)string->chars[last] & 0xC0) == 0x80) {
+                last--;
+            }
+            if (!character_in_set(string, last, strip)) {
+                break;
+            }
+            end = last;
+        }
+    } else {
+        while (start < end && is_whitespace(string->chars[start])) {
+            start++;
+        }
+        while (end > start && is_whitespace(string->chars[end - 1])) {
+            end--;
+        }
     }
     return OBJ_VAL(object_string(string->chars + start, end - start));
 }
@@ -2586,15 +2777,22 @@ static bool sort_array_with(ObjArray *array, ValueLess less, Value callback)
 
 static Value native_sort(int arg_count, Value *args)
 {
-    (void)arg_count;
+    ObjArray *array;
+
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'sort' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_ARRAY)) {
         vm_runtime_error(ERROR_TYPE, "'sort' expects an array, received %s", value_type_name(args[0]));
         return NIL_VAL;
     }
-    ObjArray *array = AS_ARRAY(args[0]);
-
+    array = AS_ARRAY(args[0]);
     if (array->count < 2) {
         return args[0];
+    }
+    if (arg_count == 2) {
+        return sort_array_with(array, less_callback, args[1]) ? args[0] : NIL_VAL;
     }
     return sort_array_with(array, less_natural, NIL_VAL) ? args[0] : NIL_VAL;
 }
@@ -3279,12 +3477,64 @@ static Value native_srand(int arg_count, Value *args)
     return NIL_VAL;
 }
 
+/* A uniform double in [0, 1) from the shared PRNG. `rand`, `shuffle` and
+ * `choice` all draw from this one stream, so `srand` reproduces all three. */
+static double prng_double(void)
+{
+    return (double)(prng_next() >> 11) * (1.0 / 9007199254740992.0);
+}
+
+static int prng_index(int count)
+{
+    int index = (int)(prng_double() * (double)count);
+
+    return index < 0 || index >= count ? 0 : index;
+}
+
 static Value native_rand(int arg_count, Value *args)
 {
     (void)arg_count;
     (void)args;
-    double r = (double)(prng_next() >> 11) * (1.0 / 9007199254740992.0);
-    return NUMBER_VAL(r);
+    return NUMBER_VAL(prng_double());
+}
+
+static Value native_shuffle(int arg_count, Value *args)
+{
+    ObjArray *array;
+
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'shuffle' expects an array, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    array = AS_ARRAY(args[0]);
+    for (int i = array->count - 1; i > 0; i--) {
+        int j = prng_index(i + 1);
+        Value swapped = array->items[i];
+
+        array->items[i] = array->items[j];
+        array->items[j] = swapped;
+    }
+    return args[0];
+}
+
+static Value native_choice(int arg_count, Value *args)
+{
+    ObjArray *array;
+
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_ARRAY)) {
+        vm_runtime_error(ERROR_TYPE, "'choice' expects an array, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    array = AS_ARRAY(args[0]);
+    if (array->count == 0) {
+        vm_runtime_error(ERROR_VALUE, "'choice' cannot pick from an empty array");
+        return NIL_VAL;
+    }
+    return array->items[prng_index(array->count)];
 }
 
 static Value native_randint(int arg_count, Value *args)
@@ -9812,6 +10062,7 @@ void vm_init(void)
     define_native("max", native_max, -1);
     define_native("contains", native_contains, 2);
     define_native("index_of", native_index_of, 2);
+    define_native("count", native_count, 2);
     define_native("insert", native_insert, 3);
     define_native("remove", native_remove, 2);
     define_native("reverse", native_reverse, 1);
@@ -9819,9 +10070,9 @@ void vm_init(void)
     define_native("slice", native_slice, -1);
     define_native("starts_with", native_starts_with, 2);
     define_native("ends_with", native_ends_with, 2);
-    define_native("split", native_split, 2);
+    define_native("split", native_split, -1);
     define_native("join", native_join, 2);
-    define_native("trim", native_trim, 1);
+    define_native("trim", native_trim, -1);
     define_native("upper", native_upper, 1);
     define_native("lower", native_lower, 1);
     define_native("repeat", native_repeat, 2);
@@ -9833,7 +10084,7 @@ void vm_init(void)
     define_native("filter", native_filter, 2);
     define_native("each", native_each, 2);
     define_native("reduce", native_reduce, -1);
-    define_native("sort", native_sort, 1);
+    define_native("sort", native_sort, -1);
     define_native("sort_by", native_sort_by, 2);
     define_native("exit", native_exit, -1);
     define_native("env", native_env, -1);
@@ -9853,6 +10104,8 @@ void vm_init(void)
     define_native("eof", native_eof, 1);
     define_native("srand", native_srand, 1);
     define_native("rand", native_rand, 0);
+    define_native("shuffle", native_shuffle, 1);
+    define_native("choice", native_choice, 1);
     define_native("randint", native_randint, -1);
     define_native("to_json", native_to_json, 1);
     define_native("from_json", native_from_json, 1);

@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'trim' expects the characters to strip as a string, received number
