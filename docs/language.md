@@ -657,6 +657,47 @@ print(format("%-6s|%+d|%%", "hi", 7));                       // hi    |+7|%
   the template is an `ArityError`, and an unknown specifier, a trailing `%` or an
   out-of-range width/precision is a `ValueError`.
 
+### Dates and times
+
+Timestamps are Unix seconds. `time_format` and `time_parse` are **UTC by default**,
+so their results do not depend on the host's zone; a third argument selects the local
+zone explicitly:
+
+```spark
+var t = time_parse("2024-02-29 12:34:56", "%Y-%m-%d %H:%M:%S");  // UTC
+print(time_format(t, "%a %d %b %Y %H:%M:%S %z"));               // Thu 29 Feb 2024 12:34:56 +0000
+print(time_format(t, "%Y-%m-%d %H:%M", true));                  // host-local rendering
+print(time_parse("2024-02-29 12:34:56", "%Y-%m-%d %H:%M:%S", true)); // local input
+```
+
+| Call | Result |
+| --- | --- |
+| `time_format(timestamp?, format, local?)` | Formats the timestamp (default: now) with the directives below. |
+| `time_parse(text, format, local?)` | Unix timestamp (integer seconds) parsed in UTC, or in the local zone when `local` is true. |
+| `time_utc(timestamp)` | The UTC offset, always `0`, for symmetry with `time_local`. |
+| `time_local(timestamp)` | The host's offset from UTC at that instant, in seconds (positive east of Greenwich). |
+| `time_ms()` | Wall-clock milliseconds since the Unix epoch (`clock()` is the monotonic clock for measuring). |
+
+Directives: `%Y` (0001..9999), `%m`, `%d`, `%H`, `%M`, `%S`, `%j` (day of year), `%w`
+(weekday, Sunday is 0), `%a`/`%A` (short/long weekday), `%b`/`%B` (short/long month),
+`%z` (`+0300`), `%Z` (zone name) and `%%`.
+
+- Month and weekday names are always English: the formatter never consults the
+  locale, so output is the same on every machine.
+- In a parse pattern `%b`/`%B` accept the English names in either case, `%a`/`%A`
+  accept a weekday name and ignore it (the date determines it), `%w` is parsed and
+  ignored, and an explicit `%z` overrides the `local` flag.
+- `%Z` is best-effort: formatting in local mode prints the C library's abbreviation
+  for the host zone (possibly empty), and parsing skips a zone name, because the text
+  carries no reliable offset.
+- Fields missing from the parse pattern default to the Unix epoch's date and
+  midnight: `time_parse("2024", "%Y")` is 2024-01-01T00:00:00Z. `%j` may be used
+  instead of `%m`/`%d`, not together with them.
+- The supported range is 0001-01-01T00:00:00Z to 9999-12-31T23:59:59Z. A timestamp,
+  year, date or time of day outside its range, text that does not match the pattern,
+  an unknown directive and a trailing `%` are all `ValueError`s; a non-numeric
+  timestamp or a non-boolean `local` flag is a `TypeError`.
+
 ## 10. Natives
 
 | Call | Result |
@@ -687,6 +728,10 @@ print(format("%-6s|%+d|%%", "hi", 7));                       // hi    |+7|%
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `clock()` | Monotonic clock seconds, for measuring. |
 | `time()` | Wall-clock seconds since the Unix epoch. |
+| `time_ms()` | Wall-clock milliseconds since the Unix epoch. |
+| `time_format(timestamp?, format, local?)` | Date/time text with the directives in section 9; UTC by default. |
+| `time_parse(text, format, local?)` | Unix timestamp (integer seconds) from text; UTC by default. |
+| `time_utc(timestamp)` / `time_local(timestamp)` | Offset from UTC in seconds (`0` for UTC, the host's offset for local). |
 | `sleep(ms)` | Suspends the program for the given number of milliseconds. |
 | `assert(cond, message?)` | Runtime error if `cond` is falsey. |
 | `has(map, key)` | Whether the map contains the key. |
@@ -1534,6 +1579,8 @@ Linter rules:
 ## 19. Limits
 
 - Integers are 64-bit; a literal or result outside that range becomes a float.
+- Dates cover 0001-01-01T00:00:00Z to 9999-12-31T23:59:59Z; `time_format`/`time_parse`
+  reject a timestamp or field outside that range.
 - 255 parameters, arguments and elements per array literal.
 - Up to 1024 local variables per function (slots beyond 255 use 16-bit local instructions).
 - 4096 call frames (non-tail calls deeper than this produce a `RecursionError`; tail calls reuse frames via TCO and are unconstrained).

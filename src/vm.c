@@ -24,6 +24,7 @@
 #include "codec.h"
 #include "chunk.h"
 #include "compiler.h"
+#include "datetime.h"
 #include "debugger.h"
 #include "json.h"
 #include "memory.h"
@@ -9385,6 +9386,7 @@ void vm_init(void)
     net_init();
     bytes_init();
     codec_init();
+    datetime_init();
     vm_set_args(0, NULL);
 
     int underscore_slot = vm_global_slot(object_string("_", 1));

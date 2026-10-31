@@ -1,0 +1,23 @@
+leap: 1709210096 2024-02-29 12:34:56
+names: Thu Thursday Feb February 060 4
+zones: +0000 UTC %
+epoch: 1970-01-01 00:00:00
+before epoch: 1969-12-31 23:59:59
+upper bound: 9999-12-31 23:59:59
+utc offset: 0 0
+round trips: true
+day of year: 2024-02-29 2023-03-01
+name parse: true
+abbrev parse: true
+weekday parse: true
+zone parse: true
+zone name: true
+defaults: true true
+unknown: ValueError 'time_format' does not know the '%q' directive
+type: TypeError
+bad date: ValueError 'time_parse' day is out of range for that month: 29
+mismatch: ValueError 'time_parse' text does not match the format at offset 4
+incomplete: ValueError 'time_format' ends with an incomplete '%'
+month: ValueError
+flag: TypeError
+now: 4 true true

@@ -518,6 +518,42 @@ def test_cli() -> None:
             lint_modern.unlink()
 
 
+def test_time_zones() -> None:
+    """Time formatting/parsing is UTC by default; the local flag is checked
+    against two fixed POSIX TZ values so the test never depends on tzdata."""
+    print("\nTime zones")
+    script = ROOT / "tests" / "time_zones.spark"
+    script.write_text(
+        'var t = 1700000000;\n'
+        'var fmt = "%Y-%m-%d %H:%M:%S";\n'
+        'var local_text = time_format(t, fmt, true);\n'
+        'print(local_text, time_parse(local_text, fmt, true) == t);\n'
+        'print(time_local(t), time_utc(t));\n'
+        'print(time_format(t, "%z", true));\n'
+        'print(time_parse(local_text + " +0000", fmt + " %z"));\n',
+        encoding="utf-8",
+    )
+    expected = {
+        "UTC0": "2023-11-14 22:13:20 true\n0 0\n+0000\n1700000000\n",
+        # An explicit %z overrides the local flag: the +3 h wall-clock text is
+        # read as UTC, so it lands three hours after 1700000000.
+        "XXX-3": "2023-11-15 01:13:20 true\n10800 0\n+0300\n1700010800\n",
+    }
+    try:
+        for zone, body in expected.items():
+            completed = run([str(script)], env={"TZ": zone})
+            report(
+                f"time functions with TZ={zone}",
+                completed.returncode == 0
+                and completed.stdout == body
+                and not completed.stderr,
+                completed.stdout + completed.stderr,
+            )
+    finally:
+        if script.exists():
+            script.unlink()
+
+
 def test_network_limits() -> None:
     print("\nNetwork limits")
     script = ROOT / "tests" / "net_fd_exhausted.spark"
@@ -1204,6 +1240,7 @@ def main() -> int:
     test_errors()
     test_repl()
     test_error_snippets()
+    test_time_zones()
     test_network_limits()
     test_http_client()
     test_http_server()

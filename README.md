@@ -256,6 +256,9 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `print(...)` | Prints its arguments separated by spaces and a newline. |
 | `str(x)` | Text representing the value (uses `to_string()` on instances). |
 | `format(template, args...)` | printf-style text (`%s %d %f %g %x %X %o %b %c`, width and precision). |
+| `time_format(timestamp?, format, local?)` / `time_parse(text, format, local?)` | Date/time formatting and parsing; UTC unless `local` is true. |
+| `time_utc(timestamp)` / `time_local(timestamp)` | Offset from UTC in seconds (UTC is always `0`). |
+| `time_ms()` | Wall-clock milliseconds since the Unix epoch. |
 | `num(x)` | Number from a numeric string (always a float); numbers pass through. |
 | `int(x)` / `float(x)` | Convert between integers and floats (or from a numeric string). |
 | `is_int(x)` | Whether the value is an integer. |

@@ -103,6 +103,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `format(template, args...)`: printf-style text with `%s %d %i %f %g %x %X %o %b %c`
   and `%%`, plus the `-`, `0` and `+` flags, width and `.precision`, built in one
   linear pass.
+- Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
+  `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
+  and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default
+  and the calendar arithmetic is locale-independent; local time is opt-in.
 
 ### Security
 

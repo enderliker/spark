@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'time_format' does not know the '%q' directive

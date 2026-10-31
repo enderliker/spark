@@ -1,0 +1,59 @@
+// Date and time formatting/parsing in UTC (phase 22, T117).
+var t = time_parse("2024-02-29 12:34:56", "%Y-%m-%d %H:%M:%S");
+print("leap:", t, time_format(t, "%Y-%m-%d %H:%M:%S"));
+print("names:", time_format(t, "%a %A %b %B %j %w"));
+print("zones:", time_format(t, "%z %Z %%"));
+print("epoch:", time_format(0, "%Y-%m-%d %H:%M:%S"));
+print("before epoch:", time_format(-1, "%Y-%m-%d %H:%M:%S"));
+print("upper bound:", time_format(253402300799, "%Y-%m-%d %H:%M:%S"));
+print("utc offset:", time_utc(t), time_local(t) - time_local(t));
+
+// Round trips: every directive set survives format -> parse unchanged.
+var full = "%Y-%m-%dT%H:%M:%S";
+var stamps = [0, 1709210096, -1, 253402300799];
+var ok = true;
+var i = 0;
+while (i < len(stamps)) {
+    if (time_parse(time_format(stamps[i], full), full) != stamps[i]) {
+        ok = false;
+        print("round trip failed:", stamps[i]);
+    }
+    i += 1;
+}
+var dates = [0, 1709164800, -86400, 253402214400];
+var date_formats = ["%Y-%m-%d", "%d %b %Y %H:%M:%S", "%B %d, %Y %H:%M:%S", "%Y-%j %H:%M:%S"];
+var f = 0;
+while (f < len(date_formats)) {
+    i = 0;
+    while (i < len(dates)) {
+        var text = time_format(dates[i], date_formats[f]);
+        if (time_parse(text, date_formats[f]) != dates[i]) {
+            ok = false;
+            print("date round trip failed:", dates[i], date_formats[f], text);
+        }
+        i += 1;
+    }
+    f += 1;
+}
+print("round trips:", ok);
+
+print("day of year:", time_format(time_parse("2024-060", "%Y-%j"), "%Y-%m-%d"),
+      time_format(time_parse("2023-060", "%Y-%j"), "%Y-%m-%d"));
+print("name parse:", time_parse("29 February 2024", "%d %B %Y") == time_parse("2024-02-29", "%Y-%m-%d"));
+print("abbrev parse:", time_parse("29 Feb 2024", "%d %b %Y") == time_parse("2024-02-29", "%Y-%m-%d"));
+print("weekday parse:", time_parse("Thu 29 Feb 2024", "%a %d %b %Y") == time_parse("2024-02-29", "%Y-%m-%d"));
+print("zone parse:", time_parse("2024-01-01 00:00:00 +0300", "%Y-%m-%d %H:%M:%S %z") + 3 * 3600 == time_parse("2024-01-01", "%Y-%m-%d"));
+print("zone name:", time_parse("2024-01-01 00:00 UTC", "%Y-%m-%d %H:%M %Z") == time_parse("2024-01-01", "%Y-%m-%d"));
+print("defaults:", time_parse("2024", "%Y") == time_parse("2024-01-01", "%Y-%m-%d"),
+      time_parse("12:30", "%H:%M") == 12 * 3600 + 30 * 60);
+
+try { time_format(0, "%q"); } catch (e) { print("unknown:", e.type, e.message); }
+try { time_format(true, "%Y"); } catch (e) { print("type:", e.type); }
+try { time_parse("2023-02-29", "%Y-%m-%d"); } catch (e) { print("bad date:", e.type, e.message); }
+try { time_parse("2024/01", "%Y-%m"); } catch (e) { print("mismatch:", e.type, e.message); }
+try { time_format(0, "%"); } catch (e) { print("incomplete:", e.type, e.message); }
+try { time_parse("2024-13-01", "%Y-%m-%d"); } catch (e) { print("month:", e.type); }
+try { time_format(0, "%Y-%m-%d %H:%M:%S", 1); } catch (e) { print("flag:", e.type); }
+
+var now = time_format("%Y");
+print("now:", len(now), is_int(time_ms()), time_ms() > 0);

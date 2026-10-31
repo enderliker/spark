@@ -513,17 +513,37 @@ sanitizers clean.
 Unix timestamp, `time_utc(time)` / `time_local(time)` for the offset, and `time_ms()`
 for a millisecond clock. All in UTC by default so tests are deterministic.
 **Acceptance criteria:**
-- [ ] UTC is the default for both formatting and parsing; local-time behavior is
+- [x] UTC is the default for both formatting and parsing; local-time behavior is
       explicit and documented (and fixtured against a fixed `TZ`).
-- [ ] `time_parse(time_format(t, f), f) == t` for a table of timestamps, including
+- [x] `time_parse(time_format(t, f), f) == t` for a table of timestamps, including
       leap-day (2024-02-29) and year boundaries.
-- [ ] Out-of-range or unmatchable input raises `ValueError`; `%Z` handling is documented
+- [x] Out-of-range or unmatchable input raises `ValueError`; `%Z` handling is documented
       as best-effort.
 **Verification:**
-- [ ] Fixtures with `TZ=UTC` pinned in the harness; suite. No network, no locale
+- [x] Fixtures with `TZ=UTC` pinned in the harness; suite. No network, no locale
       dependence (documented).
 **Dependencies:** None. **Files:** `src/time.c`, `src/time.h`, `src/vm.c`, `tests/`,
 `docs/language.md`. **Scope:** M.
+
+**Done notes:** The module is `src/datetime.c`/`src/datetime.h`, not `src/time.*`:
+`-Isrc` makes `#include <time.h>` resolve to a project `src/time.h` first, which would
+break every file that includes the system header. Calendar arithmetic (days from
+civil and back) is implemented in the module, so the English month/weekday names are
+fixed and no locale is consulted; `localtime_r` supplies the opt-in local zone, and
+the offset is derived by converting its `struct tm` back to seconds (strict C11 +
+POSIX 200809 does not expose `tm_gmtoff`). `time_format(timestamp?, format, local?)`
+and `time_parse(text, format, local?)` are UTC by default; `%z` on input overrides the
+local flag; `time_utc`/`time_local` return offsets in seconds, `time_ms` is wall-clock
+milliseconds and `clock()` stays monotonic. Parsing defaults missing fields to
+1970-01-01T00:00:00Z and supports `%j` instead of `%m/%d` (`%j` is implemented by
+zeroing month/day and letting the resolver expand it). The format and parse patterns
+share one directive table; `%Z` formatting is best-effort (the C library's zone
+abbreviation) and `%Z` parsing skips the name. Fixtures: `cases/time.spark` (every
+directive, format/parse round trips over four timestamps and four date formats, leap
+day, epoch edges, `%j`, names, `%z`/`%Z`, defaults and each error) plus two `errors/`
+fixtures, and `test_time_zones` in the harness runs `tests/time_zones.spark` under
+`TZ=UTC0` and `TZ=XXX-3` with exact expected output. Suite 283/283, sanitizers
+clean.
 
 ### T118 - `sha256`, `hmac_sha256`, `rand_bytes` through OpenSSL
 **Description:** New `src/crypto.c` using the already-linked OpenSSL crypto library

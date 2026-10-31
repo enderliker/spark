@@ -28,11 +28,25 @@ result / error
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
 | `bytes.c` | The `bytes` constructors (`bytes`, `bytes_from`) and the `bytes_builder` natives plus their method dispatch. |
+| `codec.c` | base64/hex codecs over `bytes` (T114); inflate/gzip decoding lands here (T115). |
+| `datetime.c` | Date/time formatting and parsing. Named `datetime` because `src/time.h` would shadow the system `<time.h>` for every file compiled with `-Isrc`. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
 | `table.c` | Hash table used for the global `name -> slot` map (open addressing, tombstones). |
 | `memory.c` | Byte accounting and the GC threshold. |
 | `value.h` | `Value` (tag + union) and the `Obj` header. |
 | `main.c` | CLI, file reading and REPL. |
+
+### Date and time
+
+`datetime.c` implements the calendar itself (days from a civil date and the inverse,
+after Howard Hinnant) instead of `strftime`/`strptime`, so `%a/%A/%b/%B` are fixed
+English names and output never depends on the locale. UTC is the default. Local time is
+opt-in and comes from `localtime_r`; the offset is derived by converting the returned
+`struct tm` back to seconds and subtracting the instant, because `tm_gmtoff` is a BSD
+extension that strict C11 with POSIX 200809 does not expose. An explicit `%z` in the
+parse pattern wins over the local flag, and local parsing applies the offset twice so
+a DST transition settles. `time_ms` is the wall clock; `clock()` stays the monotonic
+clock for measuring durations. The supported dates are 0001-01-01 to 9999-12-31.
 
 ## Values and objects
 
