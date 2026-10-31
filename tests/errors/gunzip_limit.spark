@@ -1,0 +1,1 @@
+gunzip(read_bytes("tests/codec/bomb.gz"));

@@ -29,7 +29,7 @@ result / error
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
 | `bytes.c` | The `bytes` constructors (`bytes`, `bytes_from`) and the `bytes_builder` natives plus their method dispatch. |
-| `codec.c` | base64/hex codecs over `bytes` (T114); inflate/gzip decoding lands here (T115). |
+| `codec.c` | base64/hex codecs over `bytes` and the bounded DEFLATE/gzip decoder (`inflate`, `gunzip`). |
 | `crypto.c` | SHA-256, HMAC-SHA256 and the CSPRNG (`sha256`, `sha256_hex`, `hmac_sha256`, `rand_bytes`) through OpenSSL (T118). |
 | `datetime.c` | Date/time formatting and parsing. Named `datetime` because `src/time.h` would shadow the system `<time.h>` for every file compiled with `-Isrc`. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
@@ -37,6 +37,19 @@ result / error
 | `memory.c` | Byte accounting and the GC threshold. |
 | `value.h` | `Value` (tag + union) and the `Obj` header. |
 | `main.c` | CLI, file reading and REPL. |
+
+### Decompression
+
+`inflate`/`gunzip` in `codec.c` follow the structure of Mark Adler's puff.c, the
+public-domain ("zlib licence") reference minimal inflate from zlib's `contrib`
+directory: a bit-at-a-time canonical-Huffman decoder with the fixed and dynamic block
+handling and the length/distance tables of RFC 1951. zlib is not a dependency
+(decision Q17), so the cap that bounds a decompression bomb is code we own: every
+emitted literal and match checks a 16 MiB output limit (a caller may lower it), and a
+stream that would exceed it raises `ValueError`. `gunzip` parses the RFC 1952 header
+(skipping FEXTRA/FNAME/FCOMMENT/FHCRC), decodes the member, then verifies the
+trailing CRC-32 and ISIZE. Truncation is detected from the bit reader, corruption
+from the Huffman constraints and the checksum.
 
 ### Date and time
 

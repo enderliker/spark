@@ -270,6 +270,8 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `bytes_builder(initial?)` / `bb_append(bb, v)` | Build a large `bytes` in amortized O(1) per append; `bb_to_bytes(bb)`, `bb_len(bb)` and `bb_clear(bb)` mirror the string builder. |
 | `base64_encode(x)` / `base64_decode(x)` | Standard base64 over `bytes` or a string's UTF-8 bytes; decoding accepts missing padding. |
 | `hex_encode(x)` / `hex_decode(x)` | Hexadecimal over `bytes` or a string's UTF-8 bytes; decoding accepts either case. |
+| `inflate(data, max?)` | Decodes raw DEFLATE (RFC 1951), capped at 16 MiB of output by default. |
+| `gunzip(data, max?)` | Decodes gzip (RFC 1952), verifying CRC-32 and size, with the same output cap. |
 | `to_string(bytes)` / `to_bytes(text)` | Explicit bridges between text and bytes; `to_string` validates UTF-8 and names the offending offset. |
 | `bytes_to_array(bytes)` | One integer in `0..255` per byte. |
 | `assert(cond, message?)` | Stops the program with an error when `cond` is false. |

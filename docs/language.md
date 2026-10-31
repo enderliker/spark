@@ -162,6 +162,30 @@ print(len(abc), type(abc));            // 3 bytes
   `contains(array, bytes)` and `index_of(array, bytes)` compare them by content, and they
   nest in `print`.
 
+#### Compression
+
+`inflate` decodes a raw DEFLATE stream (RFC 1951) and `gunzip` a complete gzip
+member (RFC 1952); both take `bytes` or a string and return `bytes`.
+
+```spark
+var page = gunzip(read_bytes("page.html.gz"));
+print(to_string(page));
+var raw = inflate(read_bytes("payload.deflate"));
+```
+
+- `gunzip` verifies the gzip header, the trailing CRC-32 and the uncompressed
+  size, so a corruption anywhere in the member is reported instead of returning
+  wrong bytes. `inflate` has no trailer to verify: a truncated raw stream fails
+  while it is being decoded.
+- Both cap the output at **16 MiB** by default; a second argument may lower that
+  limit (it cannot raise it). A stream that would write past the cap, a truncated
+  stream, a malformed one, a checksum mismatch and data that is not gzip all raise
+  a `ValueError`. The cap means a decompression bomb fails instead of exhausting
+  memory.
+- Only complete gzip members are supported: the first member is decoded and
+  trailing data is ignored. There is no compressor and no zlib (RFC 1950)
+  wrapper; wrap or unwrap with the protocol that needs it.
+
 #### `bytes_builder`
 
 The one mutable companion, the binary counterpart of `string_builder()`. It owns a
@@ -736,6 +760,8 @@ names the argument type but never echoes the key or the data.
 | `base64_decode(x)` | Decodes standard base64 with or without padding; a bad character, a truncated group or misplaced padding is a `ValueError`. |
 | `hex_encode(x)` | Lowercase hexadecimal of `bytes`, or of a string's UTF-8 bytes; returns `bytes`. |
 | `hex_decode(x)` | Decodes hexadecimal, either case; odd length or a bad digit is a `ValueError`. |
+| `inflate(data, max?)` | Decodes a raw DEFLATE stream (RFC 1951); the output is capped at 16 MiB (`max` may lower it); any failure is a `ValueError`. |
+| `gunzip(data, max?)` | Decodes a gzip member (RFC 1952), verifying CRC-32 and size; same cap and error behavior. |
 | `to_string(bytes)` | The text those bytes encode; invalid UTF-8 is a `ValueError` naming the byte offset. |
 | `to_bytes(text)` | The string's UTF-8 bytes, unchanged. |
 | `bytes_to_array(bytes)` | Array with one integer in `0..255` per byte. |
@@ -1630,6 +1656,9 @@ Linter rules:
 - `rand_bytes(n)` accepts `0..16,777,216` and raises `ValueError` outside it. A
   failure of the operating system's CSPRNG is a `RuntimeError`; there is no
   fallback to the predictable `rand()` sequence.
+- `inflate` and `gunzip` produce at most 16 MiB per call by default (a smaller
+  `max` may be given); a decompression bomb aborts with `ValueError` instead of
+  growing without bound.
 - Ports are 16-bit (`0..65535`); port `0` asks the kernel for an ephemeral port.
 - Blocking network calls yield only their coroutine; the scheduler sleeps in `poll(2)`
   until a descriptor is ready or the nearest deadline fires, so an idle wait uses no

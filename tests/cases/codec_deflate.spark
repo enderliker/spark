@@ -1,0 +1,77 @@
+// gzip and raw-DEFLATE streams generated offline with zlib (see tests/codec/).
+var hello_file = read_bytes("tests/codec/hello.txt");
+var hello_gz = read_bytes("tests/codec/hello.txt.gz");
+var hello = gunzip(hello_gz);
+print(type(hello), len(hello) == len(hello_file), hello == hello_file);
+
+var payload = read_bytes("tests/codec/payload.bin");
+print(gunzip(read_bytes("tests/codec/payload.bin.gz")) == payload);
+print(inflate(read_bytes("tests/codec/payload.deflate")) == payload);
+print(inflate(read_bytes("tests/codec/stored.deflate")) == hello_file);
+print(len(inflate(read_bytes("tests/codec/empty.deflate"))), len(gunzip(read_bytes("tests/codec/empty.gz"))));
+print(len(gunzip(hello_gz, 4000)) == len(hello_file));
+
+// An explicit smaller cap is enforced.
+try {
+    gunzip(hello_gz, 10);
+    print("no cap error");
+} catch (e) {
+    print(e["type"]);
+}
+
+// Corrupt or non-gzip input is a catchable error, never a crash.
+try {
+    gunzip(read_bytes("tests/codec/corrupt.gz"));
+    print("no corrupt error");
+} catch (e) {
+    print(e["type"]);
+}
+try {
+    gunzip(read_bytes("tests/codec/not_gzip.bin"));
+    print("no magic error");
+} catch (e) {
+    print(e["type"]);
+}
+try {
+    inflate(hex_decode("ffff"));
+    print("no invalid error");
+} catch (e) {
+    print(e["type"]);
+}
+
+// The default cap bounds a decompression bomb (17 MiB of zeros).
+try {
+    gunzip(read_bytes("tests/codec/bomb.gz"));
+    print("no bomb error");
+} catch (e) {
+    print(e["type"]);
+}
+
+// Truncating the gzip member at every byte must fail cleanly.
+var failures = 0;
+for (var n = 0; n < len(hello_gz); n = n + 1) {
+    try {
+        gunzip(hello_gz[0:n]);
+        failures = failures + 1;
+    } catch (e) {
+        if (e["type"] != "ValueError") {
+            failures = failures + 1;
+        }
+    }
+}
+print(failures);
+
+// Same for the raw stream.
+var raw = read_bytes("tests/codec/payload.deflate");
+for (var n = 0; n < len(raw); n = n + 1) {
+    try {
+        inflate(raw[0:n]);
+        failures = failures + 1;
+    } catch (e) {
+        if (e["type"] != "ValueError") {
+            failures = failures + 1;
+        }
+    }
+}
+print(failures);
+print("codec ok");

@@ -1,0 +1,1 @@
+inflate(hex_decode("ffff"));

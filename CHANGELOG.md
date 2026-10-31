@@ -86,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on decode) and `hex_encode`/`hex_decode` (lowercase output, either case on
   decode). Each accepts a string as its UTF-8 bytes and returns `bytes`; invalid
   input is a `ValueError`.
+- DEFLATE and gzip decoding: `inflate(data, max?)` (RFC 1951) and
+  `gunzip(data, max?)` (RFC 1952, with the member's CRC-32 and size verified),
+  both returning `bytes` and capped at 16 MiB of output (a smaller `max` is
+  allowed). The decoder follows Mark Adler's public-domain ("zlib licence")
+  puff.c and carries its provenance in the `src/codec.c` header; zlib is not a
+  dependency (decision Q17). A truncated, malformed or non-gzip stream and a
+  stream past the cap raise `ValueError`.
 - Explicit text/binary bridges: `to_string(bytes)` validates UTF-8 and reports the
   offending byte offset (never the payload), `to_bytes(text)`,
   `bytes_to_array(bytes)`, plus the methods `bytes.to_string()` and
@@ -124,6 +131,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The crypto natives name the received type in a `TypeError` but never echo the key
   or the data, so a secret cannot leak through an exception; a fixture checks both
   argument positions.
+- `inflate`/`gunzip` enforce a 16 MiB output cap, so a decompression bomb raises
+  `ValueError` instead of exhausting memory. Fixtures cover a 17 MiB bomb, a
+  corrupt member, non-gzip input and a truncation loop over every prefix of a gzip
+  and a raw stream.
 
 ### Dependencies
 

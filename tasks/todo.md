@@ -464,17 +464,39 @@ provenance and licence of the adapted code in the file header and `CHANGELOG.md`
 Decompression must be **bounded**: a maximum output size with a hard error, so a
 decompression bomb cannot exhaust memory.
 **Acceptance criteria:**
-- [ ] Decoding a fixture gzip/deflate stream returns the exact original bytes; a
+- [x] Decoding a fixture gzip/deflate stream returns the exact original bytes; a
       truncated or corrupt stream raises `ValueError`/`NetworkError`, never hangs.
-- [ ] An output cap (documented, default 16 MiB) is enforced with an explicit error,
+- [x] An output cap (documented, default 16 MiB) is enforced with an explicit error,
       and a fixture with a zip bomb trips it.
-- [ ] The adapted source's origin and licence are stated in the file header, and
+- [x] The adapted source's origin and licence are stated in the file header, and
       `AGENTS.md` still lists OpenSSL as the only third-party dependency.
 **Verification:**
-- [ ] Fixtures: pre-generated `.gz`/`deflate` blobs under `tests/` (no network), the
+- [x] Fixtures: pre-generated `.gz`/`deflate` blobs under `tests/` (no network), the
       bomb fixture, and a fuzz-ish loop over truncated inputs; suite + sanitizers.
 **Dependencies:** T108, T114. **Files:** `src/codec.c`, `AGENTS.md`, `CHANGELOG.md`,
 `tests/`, `docs/language.md`. **Scope:** M.
+
+**Done notes:** `src/codec.c` gains `inflate(data, max?)` (raw RFC 1951) and
+`gunzip(data, max?)` (RFC 1952), both accepting bytes or a string and returning
+`bytes`. The decoder follows the structure of Mark Adler's public-domain ("zlib
+licence") puff.c: bit-at-a-time canonical-Huffman decode, stored/fixed/dynamic
+blocks, the standard length/distance tables, the same legality rules for incomplete
+codes (the fixed distance table is intentionally 30 of 32 codes) and the same
+`16,17,18` repeat handling. No zlib dependency was added (Q17); `AGENTS.md` still
+lists OpenSSL as the only third-party dependency, and the provenance and licence are
+in the file header and CHANGELOG. `gunzip` parses the header (FEXTRA/FNAME/FCOMMENT/
+FHCRC skipped), decodes the member and verifies the trailing CRC-32 and ISIZE.
+Output is bounded: every literal, match and stored block checks a cap that defaults
+to 16 MiB and may only be lowered; exceeding it raises `ValueError`, so the 17 MiB
+bomb fixture fails in about a millisecond. Truncation, malformed codes, checksum
+mismatch and non-gzip data are all `ValueError`s. Fixtures: `cases/codec_deflate.spark`
+(round trips of gzip and raw streams including stored blocks and the empty stream,
+custom caps, corrupt/non-gzip/invalid input, the bomb, and a loop over every
+truncation of both a gzip and a raw stream) plus five `errors/` fixtures; binary
+assets live in `tests/codec/`. Beyond the suite, the decoder was cross-checked
+against zlib for 60 datasets (sizes 0..200 KiB, levels 0..9, random/text data, raw
+and gzip) and fuzzed under ASan with 600 random/mutated/truncated blobs. Suite
+296/296, sanitizers clean, `fib(27)` min 4.91 ms.
 
 ### T116 - `format` for printf-style text
 **Description:** `format(template, args...)` with `%s %d %i %f %g %x %X %o %b %c %%`

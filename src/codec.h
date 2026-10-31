@@ -1,7 +1,8 @@
-/* codec.h - base64 and hex codecs over `bytes`.
+/* codec.h - base64, hex and DEFLATE/gzip codecs over `bytes`.
  *
- * The cores are exported because other modules reuse them (the JSON encoder
- * emits base64 for a `bytes` value); the language natives live in codec.c and
+ * The base64/hex cores are exported because other modules reuse them (the JSON
+ * encoder emits base64 for a `bytes` value); the language natives (base64 and
+ * hex, plus the bounded `inflate`/`gunzip` decompressors) live in codec.c and
  * are registered with the VM through codec_init() from vm_init, the way
  * bytes_init() registers the `bytes` constructors. */
 #ifndef SPARK_CODEC_H
