@@ -1,45 +1,36 @@
 # AGENTS.md
 
-Guidance for AI agents working on the **Spark** project.
+Operating guide for AI agents (and automated collaborators) working on the
+**Spark** repository. Read it before making any change: it defines the project's
+ground rules, its definition of done and the conventions of the codebase.
 
-## Language policy
+## 1. What this project is
 
-- **Project artifacts are English-only.** Code comments, documentation, example
-  programs, user-facing messages (CLI, REPL, runtime errors, test output) and commit
-  messages must be written in English.
-- **Talking to the user may be in Spanish.** The user prefers Spanish for the
-  conversation, so replies can be in Spanish even though the artifacts stay English.
-- Whenever you touch a Spanish string or comment, translate it to English. Do not
-  introduce new Spanish text in the artifacts.
-- Code identifiers already in Spanish are part of the current API; prefer keeping them
-  and only translate prose (comments and messages) unless a rename is explicitly
-  requested.
-
-## What this project is
-
-Spark is an interpreted programming language written from scratch in C11. The
+Spark is an interpreted programming language implemented from scratch in C11. The
 pipeline is:
 
 ```
 source -> lexer.c -> parser.c (AST) -> compiler.c (bytecode) -> vm.c (stack VM + GC)
 ```
 
-Everything lives in `src/`.
+Everything lives in `src/`. Spark has **no external dependencies except OpenSSL**,
+which is linked only for the TLS transport (`tls_connect` and `https://`); the
+socket, HTTP and WebSocket layers stay dependency-free. This is the single
+approved exception (decision Q11); see [`docs/architecture.md`](docs/architecture.md)
+and [`CHANGELOG.md`](CHANGELOG.md).
 
-Spark has **no external dependencies except OpenSSL**, which is linked only for the
-TLS transport (`tls_connect` and `https://`). The socket, HTTP and WebSocket layers
-stay dependency-free. This is the single approved exception (decision Q11); see
-`docs/architecture.md` and `CHANGELOG.md`.
+Current status is tracked in [`tasks/todo.md`](tasks/todo.md) and
+[`tasks/plan.md`](tasks/plan.md). Consult them before starting work to see what is
+active, what is complete and which decisions are already made.
 
-read `tasks/todo.md` and `tasks/plan.md` for more context of the status
+## 2. Environment
 
-## Build and test
-
-On Windows there is no C compiler: build and test from WSL (Ubuntu).
-
-The build needs the OpenSSL development files (`libssl-dev` on Debian/Ubuntu), a C11
+On Windows there is no C compiler: build and test from WSL (Ubuntu). The build
+requires the OpenSSL development files (`libssl-dev` on Debian/Ubuntu), a C11
 compiler, `make`, `python3` and the math library. OpenSSL is the only third-party
 dependency.
+
+## 3. Build and test
 
 ```bash
 make                       # builds ./spark
@@ -47,7 +38,7 @@ make test                  # runs the test suite (needs python3)
 python3 benchmarks/run.py  # runs the fib(27) benchmark (reports min/median)
 ```
 
-Sanitizers:
+Sanitizer run:
 
 ```bash
 make clean
@@ -57,15 +48,28 @@ python3 tests/run_tests.py
 make clean && make
 ```
 
-## Conventions
+Run the whole suite (`python3 tests/run_tests.py`) before considering a change
+done. The sanitizer run is required for any change to the VM, the GC or the
+compiler.
+
+## 4. Definition of done
+
+Every task must satisfy all of the following:
+
+- The build is warning-free under `-O3 -Wall -Wextra -Wpedantic`.
+- `python3 tests/run_tests.py` passes, and new behavior has new fixtures.
+- The sanitizer run is clean when the change touches the VM, GC or compiler.
+- `python3 benchmarks/run.py` keeps the `fib(27)` minimum **below 5 ms** unless the
+  task is explicitly about performance (in which case the target is stated).
+- Documentation is updated where behavior changes: [`README.md`](README.md),
+  [`docs/language.md`](docs/language.md), [`docs/architecture.md`](docs/architecture.md).
+
+## 5. Conventions
 
 - C11 with `-O3 -Wall -Wextra -Wpedantic`. The build must be warning-free.
-- No external dependencies except OpenSSL for TLS; no parser/VM generators:
+- No external dependencies except OpenSSL for TLS; no parser or VM generators:
   everything else is handwritten.
-- The certificates under `tests/tls/` are throwaway fixtures. Their private keys are
-  public and must never be trusted outside the test suite; regenerate them with
-  `tests/tls/generate.sh`.
-- Match the existing structure, naming, and style of the surrounding code.
+- Match the existing structure, naming and style of the surrounding code.
 - Reuse the shared binary-operation helpers in `src/vm.c` (`compare_values`,
   `arithmetic_values`, `add_values`) instead of duplicating logic.
 - Adding an opcode means: add it to the enum in `src/chunk.h`, handle it in
@@ -74,13 +78,26 @@ make clean && make
 - Keep the stack balanced: every path must leave the operand stack exactly as the
   instruction contract requires.
 - Always measure VM changes with `python3 benchmarks/run.py`; never guess.
-- Tests: `tests/cases` holds valid programs compared against exact `.out` output;
-  `tests/errors` holds failing programs with `exit:`/`stderr:` specifications.
-- Run the whole suite (`python3 tests/run_tests.py`) before considering a change done.
+- Tests: [`tests/cases`](tests/cases) holds valid programs compared against exact
+  `.out` output; [`tests/errors`](tests/errors) holds failing programs with
+  `exit:`/`stderr:` specifications.
+- The certificates under [`tests/tls/`](tests/tls) are throwaway fixtures. Their
+  private keys are public and must never be trusted outside the test suite;
+  regenerate them with `tests/tls/generate.sh`.
+- Test fixtures must never touch the public internet: use local servers and
+  ephemeral ports.
 
-## Performance target
+## 6. Performance target
 
-`benchmarks/fib.spark` computes `fib(27)`. On the development machine the minimum
-is **~4.9 ms** and the median **~5.1 ms** (both vary a few percent with machine
-load); the gate set in `tasks/plan.md` is a minimum **below 5 ms**. The VM
-amortizes dispatch with fused superinstructions; avoid regressing that.
+`benchmarks/fib.spark` computes `fib(27)`. On an idle development machine the
+minimum is around 4.9 ms and the median around 5.1 ms, and the gate set in
+[`tasks/plan.md`](tasks/plan.md) is a minimum **below 5 ms**. The VM amortizes
+dispatch with fused superinstructions; avoid regressing that.
+
+## 7. Useful references
+
+- [`README.md`](README.md) - overview, features, build, usage and the native reference.
+- [`docs/language.md`](docs/language.md) - the language reference and error behavior.
+- [`docs/architecture.md`](docs/architecture.md) - internals, the GC model and the scheduler.
+- [`tasks/plan.md`](tasks/plan.md) / [`tasks/todo.md`](tasks/todo.md) - the roadmap and its status.
+- [`CHANGELOG.md`](CHANGELOG.md) - released and unreleased changes.

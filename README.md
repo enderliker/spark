@@ -1,10 +1,20 @@
 # Spark
 
-**Spark** is a programming language created from scratch in C11. Source code is
-parsed, compiled to its own **bytecode**, and executed on a **stack-based virtual
-machine** with a *mark & sweep* garbage collector. It uses no parser generators and,
-apart from OpenSSL for TLS, no third-party libraries: the whole pipeline lives in
-`src/`.
+**Spark** is an interpreted, dynamically typed programming language implemented
+from scratch in C11. Source code is parsed into an AST, compiled to a compact
+bytecode, and executed on a stack-based virtual machine with a mark-and-sweep
+garbage collector. The lexer, parser, compiler, VM, standard library and tooling
+are all handwritten; the only third-party dependency is OpenSSL, linked
+exclusively for the TLS transport.
+
+[![CI](https://github.com/enderliker/spark/actions/workflows/ci.yml/badge.svg)](https://github.com/enderliker/spark/actions/workflows/ci.yml)
+![C11](https://img.shields.io/badge/C-C11-555.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Version](https://img.shields.io/badge/version-0.1.0-informational.svg)
+
+> **Status:** 0.1.0 (pre-1.0). The language, standard library and toolchain are
+> usable and exercised by a full test suite. The roadmap and its current status
+> live in [`tasks/plan.md`](tasks/plan.md).
 
 ```spark
 fn fib(n) {
@@ -19,7 +29,25 @@ for (var i = 0; i < 10; i += 1) {
 }
 ```
 
+## Table of contents
+
+- [Features](#features)
+- [Requirements and build](#requirements-and-build)
+- [Usage](#usage)
+- [Quick language guide](#quick-language-guide)
+- [Native functions](#native-functions)
+- [Project layout](#project-layout)
+- [How it works](#how-it-works)
+- [Testing and continuous integration](#testing-and-continuous-integration)
+- [Benchmarking](#benchmarking)
+- [Known limits of this version](#known-limits-of-this-version)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Features
+
+### Language
 
 - Types: `nil`, `bool`, `int`, `number`, `string`, `array`, `map`, `function`,
   `class`/`instance`, `string_builder`, `coroutine` and `channel`.
@@ -48,26 +76,34 @@ for (var i = 0; i < 10; i += 1) {
   namespace.
 - Concurrency: cooperative **coroutines** (`spawn`, `yield`, `join`, `done`) and
   FIFO **channels** (`channel`, `send`, `receive`, `close`) on a single thread.
-- Standard library: text and collection helpers, math, time and randomness, file
-  and directory I/O, `exec`, environment variables, script arguments, JSON,
-  regular expressions and a string builder.
+
+### Standard library and runtime
+
+- Text and collection helpers, math, time and randomness, file and directory I/O,
+  `exec`, environment variables, script arguments, JSON, regular expressions and a
+  string builder.
 - Networking: TCP and UDP sockets as GC-managed resources with timeouts, name
   resolution over IPv4 and IPv6, and typed `NetworkError`/`TimeoutError` failures.
-  Blocking calls yield only their coroutine, so one process serves many connections.
-  URL helpers, an HTTP/1.1 client (chunked bodies, redirects, size and timeout
-  limits), TLS with certificate and host-name verification, HTTPS, and an HTTP server
-  library on the socket layer.
-- Tooling: REPL, bytecode disassembler (`--dump`), precompiled bytecode
+  Blocking calls yield only their coroutine, so one process serves many
+  connections. URL helpers, an HTTP/1.1 client (chunked bodies, redirects, size and
+  timeout limits), TLS with certificate and host-name verification, HTTPS, an HTTP
+  server library on the socket layer and an RFC 6455 WebSocket client
+  (`ws://`/`wss://`).
+- A virtual machine with fused superinstructions, hot/cold dispatch, a growable
+  value stack and an adaptive garbage collector.
+
+### Tooling
+
+- Interactive REPL, bytecode disassembler (`--dump`), precompiled bytecode
   (`--compile`), interactive debugger (`--debug`), formatter (`--format`) and
   linter (`--lint`).
-- Virtual machine with fused superinstructions, hot/cold dispatch, a growable
-  value stack and an adaptive garbage collector.
 
 ## Requirements and build
 
-All you need is a C11 compiler, `make`, `python3` for the tests, the C math library
-and the OpenSSL development files (`libssl-dev` on Debian/Ubuntu). OpenSSL is the
-only third-party dependency and is used only by `tls_connect` and `https://`.
+The build requires a C11 compiler, `make`, the C math library and the OpenSSL
+development files (`libssl-dev` on Debian/Ubuntu), which are used only by
+`tls_connect` and `https://`. OpenSSL is the sole third-party dependency;
+`python3` is needed to run the test suite and the benchmarks.
 
 ```bash
 make            # builds the ./spark binary
@@ -84,8 +120,8 @@ make CFLAGS="-std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointe
 python3 tests/run_tests.py
 ```
 
-On **Windows** the recommended path is WSL (Ubuntu): open a WSL terminal, enter the
-project directory and run `make` and `./spark`. The system natives (`exec`,
+On **Windows** the recommended path is WSL (Ubuntu): open a WSL terminal, enter
+the project directory and run `make` and `./spark`. The system natives (`exec`,
 `list_dir`, `mkdir`, `sleep`) use POSIX APIs, so Linux, macOS and WSL are the
 supported hosts.
 
@@ -106,8 +142,8 @@ supported hosts.
 ```
 
 The interpreter returns `0` on success, `64` for incorrect CLI usage, `65` for a
-syntax or compilation error, `70` for a runtime error and `74` if it cannot read the
-file. The linter returns `1` when it reports findings.
+syntax or compilation error, `70` for a runtime error and `74` if it cannot read
+the file. The linter returns `1` when it reports findings.
 
 In the REPL every standalone expression prints its value, global variables persist
 between lines and the last result is kept in `_`:
@@ -120,6 +156,10 @@ spark> greeting + ", world"
 hello, world
 spark> exit
 ```
+
+The examples under [`examples/`](examples) are small, runnable programs covering
+closures, collections, sorting and networking. The HTTP server example builds on
+the standard-library module [`lib/http.spark`](lib/http.spark).
 
 ## Quick language guide
 
@@ -201,10 +241,10 @@ var job = spawn(worker, "job");
 print(job.join());
 ```
 
-The full reference is in [docs/language.md](docs/language.md) and the internals are
-in [docs/architecture.md](docs/architecture.md).
+The full reference is in [`docs/language.md`](docs/language.md) and the internals
+are in [`docs/architecture.md`](docs/architecture.md).
 
-### Native functions
+## Native functions
 
 **Values, text and types**
 
@@ -300,14 +340,15 @@ in [docs/architecture.md](docs/architecture.md).
 
 The global constants `pi` and `nan` are predefined, and builders also accept the
 method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
-[docs/language.md](docs/language.md) documents the edge cases and error behavior.
+[`docs/language.md`](docs/language.md) documents the edge cases and error behavior.
 
-**Networking**
+### Networking
 
 | Function | Description |
 | --- | --- |
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
 | `tls_connect(host, port, timeout_ms?, ca_file?)` | Connects a TLS client; returns a `socket` with `read`/`write`. |
+| `ws_connect(url, timeout_ms?, ca_file?)` | Opens a WebSocket client; returns a `websocket`. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server`. |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket; returns a `socket`. |
 | `net_select(readables, timeout_ms?)` | Waits for any socket to be readable; returns the ready indexes. |
@@ -321,15 +362,20 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.wait`, `sock.send_to`,
 `sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. TLS sockets use
 `sock.read` and `sock.write` instead of the TCP methods. Server methods:
-`srv.accept`, `srv.port` and `srv.close`. Hosts may be names, IPv4 literals or
-bracketed IPv6 literals; `localhost` works over either family. A blocking call suspends
-its coroutine and the scheduler polls the descriptors, so a single process serves many
-connections with `spawn`. TLS verifies the certificate chain and the host name by
-default (system store or an explicit `ca_file`) and has no way to disable verification.
-The HTTP client follows redirects and handles chunked bodies within explicit header,
-body, redirect and timeout limits; `http_request` accepts a `ca_file` option for a
-private CA, and `lib/http.spark` builds an HTTP server on top of the socket layer with
-no extra native code.
+`srv.accept`, `srv.port` and `srv.close`. WebSocket methods: `ws.send_text`,
+`ws.send_binary`, `ws.receive`, `ws.ping` and `ws.close`; `receive` returns
+`{opcode, data}` or `nil` and reassembles fragmented messages.
+
+Hosts may be names, IPv4 literals or bracketed IPv6 literals; `localhost` works
+over either family. A blocking call suspends its coroutine and the scheduler polls
+the descriptors, so a single process serves many connections with `spawn`. TLS and
+`wss://` verify the certificate chain and the host name by default (system store or
+an explicit `ca_file`) and have no way to disable verification. The HTTP client
+follows redirects and handles chunked bodies within explicit header, body, redirect
+and timeout limits; `http_request` accepts a `ca_file` option for a private CA, and
+`lib/http.spark` builds an HTTP server on top of the socket layer with no extra
+native code. [`examples/discord_bot.spark`](examples/discord_bot.spark) shows a
+WebSocket client with heartbeats and a local mock gateway in the test suite.
 
 ## Project layout
 
@@ -342,7 +388,7 @@ src/
   compiler.c                  AST -> bytecode (slots, upvalues, folding, TCO)
   chunk.c                     bytecode blocks, constants and disassembler
   vm.c                        virtual machine, GC, natives, classes, coroutines
-  net.c                       sockets, TLS, URLs and the HTTP client
+  net.c                       sockets, TLS, URLs, HTTP and WebSocket clients
   object.c                    dynamic values, interned strings, arrays, maps
   bytecode.c                  .sparkc serialization
   json.c / regex.c            JSON and regular-expression engines
@@ -388,18 +434,30 @@ $ ./spark --dump hello.spark
 0010    | RETURN
 ```
 
-## Tests
+## Testing and continuous integration
 
 `tests/run_tests.py` runs valid programs comparing exact output (`tests/cases`),
 error cases checking the exit code and a `stderr` fragment (`tests/errors`), REPL
 sessions and the CLI options, including the debugger, formatter, linter and
-precompiled bytecode. There are 208 tests; the suite is also run under
-`-fsanitize=address,undefined` in CI, together with a coverage job.
+precompiled bytecode. The current suite contains 235 tests and all of them pass.
 
-## Benchmark
+CI (`.github/workflows/ci.yml`) runs four jobs on every push to `main` and on every
+pull request:
+
+- **Build and test** with `-Werror` and then the full suite.
+- **Sanitizers** (`-fsanitize=address,undefined`) and the full suite.
+- **Benchmark**: a coarse `fib(27)` regression guard (`--max-ms 100` on shared
+  runners).
+- **Coverage**: a `--coverage` build, the suite, and a `gcov` report.
+
+Test fixtures never touch the public internet: networking tests run local servers
+and TLS servers on ephemeral ports.
+
+## Benchmarking
 
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) several times and reports
-the minimum and median; the minimum is around 4.9 ms on the development machine.
+the minimum and median; the minimum is around 4.9 ms on an idle development
+machine, and the performance gate is a minimum below 5 ms.
 `benchmarks/run_all.py` runs the wider set (loops, closures, arrays, maps, sorting,
 strings, allocation) and prints min/median per benchmark.
 
@@ -426,14 +484,37 @@ large strings.
   literal, 1024 locals per function, 65,536 constants per function, 4096 call
   frames (tail calls reuse frames) and a value stack that grows from 2,048 to
   4,194,304 entries. Channels hold up to 16,777,216 values. See
-  [docs/language.md](docs/language.md) section 19.
+  [`docs/language.md`](docs/language.md) section 19.
 - Sockets are non-blocking under the hood: a call that would block suspends its
-  coroutine, and the scheduler sleeps in `poll(2)` until a descriptor is ready or the
-  nearest deadline fires.
+  coroutine, and the scheduler sleeps in `poll(2)` until a descriptor is ready or
+  the nearest deadline fires.
+- Spark is not a sandbox: `exec` and the network natives are available to any
+  program, so untrusted code should not be run directly.
 
-## Ideas for the future
+## Roadmap
 
 A native code generator (JIT) instead of the bytecode interpreter, OS threads on
-top of the existing coroutines, networking and a richer standard library, and
-namespaced modules. The ordered roadmap and its status live in
-[tasks/plan.md](tasks/plan.md).
+top of the existing coroutines, a richer standard library, and namespaced modules
+are candidates for future work. The ordered roadmap and its current status are
+tracked in [`tasks/plan.md`](tasks/plan.md); released and unreleased changes are in
+[`CHANGELOG.md`](CHANGELOG.md).
+
+## Contributing
+
+Contributions are welcome. Before opening a change:
+
+1. Build with `make` (the build must be warning-free) and run
+   `python3 tests/run_tests.py`.
+2. Add or update a fixture for any new behavior: `tests/cases` for valid programs
+   compared against exact `.out` output, `tests/errors` for failing programs with
+   `exit:`/`stderr:` specifications.
+3. Measure VM changes with `python3 benchmarks/run.py` instead of guessing.
+4. Read [`AGENTS.md`](AGENTS.md) for the full conventions and the definition of
+   done.
+
+All project artifacts (code, comments, documentation, user-facing messages and
+commit messages) are written in English.
+
+## License
+
+Released under the [MIT License](LICENSE).
