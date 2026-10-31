@@ -1,0 +1,2 @@
+// The template is validated even when the pattern matches nothing.
+print(regex_replace("(a)", "$2", "zzz"));

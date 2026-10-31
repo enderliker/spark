@@ -1,0 +1,1 @@
+print(regex_replace("(a)", "$${1", "a"));

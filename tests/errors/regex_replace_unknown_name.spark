@@ -1,0 +1,1 @@
+print(regex_replace("(?P<x>a)", "$${nope}", "a"));

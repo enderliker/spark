@@ -1240,6 +1240,33 @@ def test_examples() -> None:
         if server.poll() is None:
             server.kill()
 
+    tokenizer = ROOT / "examples" / "regex_tokenizer.spark"
+    tokenizer_source = tokenizer.read_text(encoding="utf-8")
+    language = (ROOT / "docs" / "language.md").read_text(encoding="utf-8")
+    completed = run([str(tokenizer)])
+    expected_tokens = (
+        " 0  name    let\n"
+        " 4  name    total\n"
+        "10  op      =\n"
+        "12  number  3\n"
+        "14  op      +\n"
+        "16  number  4\n"
+        "18  op      *\n"
+        "20  name    count\n"
+    )
+    detail = ""
+    if completed.returncode != 0:
+        detail += f"exit code {completed.returncode}\n"
+    if completed.stdout != expected_tokens:
+        detail += f"stdout was {completed.stdout!r}\n"
+    if tokenizer_source.strip() not in language:
+        detail += "docs/language.md does not contain the example verbatim\n"
+    report(
+        "the regex tokenizer example matches docs/language.md and runs",
+        detail == "",
+        detail + completed.stderr,
+    )
+
     server = subprocess.Popen(
         [str(BINARY), str(ROOT / "examples" / "echo_server.spark"), "0"],
         stdout=subprocess.PIPE,

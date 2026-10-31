@@ -126,6 +126,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quantifier keeps its last match, non-capturing groups take no slot, and offsets
   are character offsets. Names must be unique and well formed, and at most 32
   capturing groups are allowed; both are `ValueError`s.
+- `regex_split(pattern, text, limit?, flags?)` returns the fields between pattern
+  separators, with Perl-like `limit` semantics (maximum field count; `0` returns
+  `[]`; the last field keeps the remainder) and empty fields at leading,
+  trailing or doubled separators. Zero-width matches are skipped because they
+  cannot delimit anything. A string in the third position is read as flags.
+- `regex_replace` templates expand capture references: `$0` for the whole match,
+  `$1`…`$32`, `${name}` for named groups and `$$` for a literal `$`. A group
+  that did not participate expands to nothing, and an unknown, unterminated or
+  empty reference is a `ValueError` validated before matching.
+- `examples/regex_tokenizer.spark` splits a line, recovers character offsets and
+  classifies each field with capture groups; the suite runs it and checks that
+  `docs/language.md` carries the same program.
 - Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default

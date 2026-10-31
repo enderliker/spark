@@ -1,0 +1,26 @@
+// Tokenizer: split the fields, recover their offsets, then classify them with
+// capture groups. Run with ./spark examples/regex_tokenizer.spark
+var source = "let total = 3 + 4 * count";
+
+var fields = regex_split("\\s+", source);
+var spans = regex_find_index("\\S+", source);
+
+for (var i = 0; i < len(fields); i++) {
+    var word = fields[i];
+    var at = spans[i]["start"];
+    var m = regex_match_groups(
+        "^(?:(?P<number>\\d+)|(?P<name>[A-Za-z_]\\w*)|(?P<op>[-+*/=;]))$", word);
+
+    if (m == nil) {
+        print(format("%2d  error   %s", at, word));
+    } else {
+        var kind = "op";
+
+        if (m["named"]["number"] != nil) {
+            kind = "number";
+        } else if (m["named"]["name"] != nil) {
+            kind = "name";
+        }
+        print(format("%2d  %-7s %s", at, kind, word));
+    }
+}

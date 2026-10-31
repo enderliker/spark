@@ -1,0 +1,21 @@
+// regex_replace expands `$n`, `${n}`, `${name}` and `$$` in the template.
+print(regex_replace("(\\w+)@(\\w+)", "$2.$1", "user@host"));
+print(regex_replace("(?P<year>\\d{4})-(?P<rest>\\d{2})", "$${rest}/$${year}", "2026-10"));
+print(regex_replace("(\\d)", "$0$0", "a1b2"));
+print(regex_replace("a", "$$", "a-b-a"));
+print(regex_replace("a", "$", "a-b"));
+print(regex_replace("(a)(b)(c)", "$3$1", "abc"));
+print(regex_replace("(a)(b)", "$2$1", "ab"));
+
+// A group that did not participate expands to nothing.
+print(regex_replace("(a)|(b)", "[$1$2]", "a b"));
+print(regex_replace("(x)?y", "<$1>", "y"));
+
+// No match leaves the text alone, but the template is still validated.
+print(regex_replace("(a)", "$1!", "zzz"));
+print(regex_replace("\\d+", "NUM", "none here"));
+
+// Unicode text is untouched by the expansion.
+print(regex_replace("(?P<a>ñ)(?P<b>日)", "$${b}$${a}", "añ日b"));
+
+print("replace ok");

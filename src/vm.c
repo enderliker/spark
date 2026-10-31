@@ -3242,6 +3242,44 @@ static Value native_regex_match_groups(int arg_count, Value *args)
     return OBJ_VAL(result);
 }
 
+static Value native_regex_split(int arg_count, Value *args)
+{
+    RegexFlags flags;
+    char error[256] = {0};
+    int limit = -1;
+    int flags_index = 2;
+    ObjArray *parts;
+
+    if (arg_count < 2 || arg_count > 4) {
+        vm_runtime_error(ERROR_ARITY, "'regex_split' expects 2 to 4 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_split' expects two strings");
+        return NIL_VAL;
+    }
+    /* The third argument is the limit unless it is a string, which makes it the flags. */
+    if (arg_count == 4 || (arg_count == 3 && !is_obj_type(args[2], OBJ_STRING))) {
+        if (!integer_argument(args[2], "limit", "regex_split", &limit)) {
+            return NIL_VAL;
+        }
+        flags_index = 3;
+    }
+    if (!regex_flags_argument(arg_count, args, flags_index, "regex_split", &flags)) {
+        return NIL_VAL;
+    }
+    parts = regex_split(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, limit, flags, error,
+                        sizeof(error));
+    if (!parts) {
+        if (error[0] != '\0') {
+            vm_runtime_error(ERROR_VALUE, "%s", error);
+        }
+        return NIL_VAL;
+    }
+    return OBJ_VAL(parts);
+}
+
 static Value native_regex_replace(int arg_count, Value *args)
 {
     RegexFlags flags;
@@ -9514,6 +9552,7 @@ void vm_init(void)
     define_native("regex_match_at", native_regex_match_at, -1);
     define_native("regex_match_groups", native_regex_match_groups, -1);
     define_native("regex_replace", native_regex_replace, -1);
+    define_native("regex_split", native_regex_split, -1);
     define_native("time", native_time, 0);
     define_native("sleep", native_sleep, 1);
     define_native("chr", native_chr, 1);

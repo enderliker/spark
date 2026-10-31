@@ -352,7 +352,8 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `hmac_sha256(key, data)` | 32-byte HMAC-SHA256 of `data` under `key`. |
 | `rand_bytes(n)` | `n` bytes from the CSPRNG (up to 16 MiB); a failure is an error, never a fallback to `rand()`. |
 | `to_json(value)` / `from_json(text)` | JSON encoding and decoding. |
-| `regex_match(p, t, f?)` / `regex_find(p, t, f?)` / `regex_replace(p, r, t, f?)` | Regular expressions, optionally with `i`/`s`/`m` flags. |
+| `regex_match(p, t, f?)` / `regex_find(p, t, f?)` / `regex_replace(p, r, t, f?)` | Regular expressions with optional `i`/`s`/`m` flags; `regex_replace` expands `$1`/`${name}`. |
+| `regex_split(p, t, limit?, f?)` | Splits on the pattern, with an optional cap on the field count. |
 | `regex_find_index(p, t, f?)` / `regex_match_at(p, t, start, f?)` | Matches with character offsets. |
 | `regex_match_groups(p, t, f?)` | First match with its capture groups (`groups`, `named`) or `nil`. |
 | `string_builder(initial?)` / `sb_append(sb, v)` | Build a large string in amortized O(1) per append. |

@@ -1568,11 +1568,12 @@ ObjArray *regex_split(const char *pattern, const char *text, int limit, RegexFla
     int length;
     int pos = 0;
 
-    if (limit == 0) {
-        return object_array();
-    }
+    /* The pattern is validated even when the limit asks for no fields at all. */
     if (!re_compile(pattern, flags, &prog, error, error_size)) {
         return NULL;
+    }
+    if (limit == 0) {
+        return object_array();
     }
     searcher = searcher_new(false);
     if (!searcher) {

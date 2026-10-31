@@ -1,0 +1,29 @@
+// regex_split: the pattern delimits the fields.
+print(regex_split("\\s+", "one  two\tthree"));
+print(regex_split(",", ",a,,b,"));
+print(regex_split("[;|]", "a;b|c"));
+print(regex_split("x", "abc"));
+
+// A trailing limit caps the field count; the last field keeps the remainder.
+print(regex_split(",", "a,b,c", 2));
+print(regex_split(",", "a,b,c", 1));
+print(regex_split(",", "a,b,c", 0));
+print(regex_split(",", "a,b,c", -1));
+
+// Groups take no part: the pattern is a separator, not a match.
+print(regex_split("(?:ab)+", "1abab2"));
+print(regex_split("(a)(b)", "1ab2"));
+
+// A zero-width pattern cannot delimit anything.
+print(regex_split("", "ab"));
+print(regex_split("b*", "abc"));
+
+// Flags can be passed as the third argument, or after the limit.
+print(regex_split("ABC", "xabcx", "i"));
+print(regex_split(",", "a,b,c", 2, "m"));
+
+// Offsets stay on character boundaries.
+print(regex_split("\\d", "ñ2日3x"));
+print(regex_split("日", "x日y"));
+
+print("split ok");

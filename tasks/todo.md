@@ -702,16 +702,44 @@ the natives table, `README.md`, `docs/architecture.md`, `CHANGELOG.md` Added.
 `regex_replace` (with `$$` for a literal `$`), which today replaces with a literal
 replacement string.
 **Acceptance criteria:**
-- [ ] `regex_split` handles leading/trailing/empty fields and the limit argument the
+- [x] `regex_split` handles leading/trailing/empty fields and the limit argument the
       way `split` does; the docs state the difference between the two.
-- [ ] `regex_replace("(a)(b)", "$2$1", "ab")` is `"ba"`; `$$` yields `$`; an unknown
+- [x] `regex_replace("(a)(b)", "$2$1", "ab")` is `"ba"`; `$$` yields `$`; an unknown
       group reference raises `ValueError` instead of producing an empty string.
-- [ ] A small in-docs tokenizer example uses groups, offsets and split together and runs
+- [x] A small in-docs tokenizer example uses groups, offsets and split together and runs
       as written.
 **Verification:**
-- [ ] Fixtures; the example executed by the suite; suite green.
+- [x] Fixtures; the example executed by the suite; suite green.
 **Dependencies:** T120. **Files:** `src/regex.c`, `src/vm.c`, `tests/`,
 `docs/language.md`. **Scope:** S.
+
+**Done notes:** `regex_split(pattern, text, limit?, flags?)` wraps the engine's
+`regex_split` (already present from the T119 rewrite) in a native that treats the
+third argument as the limit unless it is a string, in which case it is the flags;
+a four-argument call requires a limit. Limit semantics are Perl's: the maximum
+number of fields, `0` returns `[]`, a negative value means no limit, and the last
+field keeps the remainder. The pattern is compiled before the `0` check, so an
+invalid pattern is a `ValueError` even when no fields are requested. Leading,
+trailing and doubled separators produce empty fields; zero-width matches are
+skipped because they cannot delimit (`regex_split("", "ab")` is `["ab"]`), and
+groups in the separator never become fields, unlike Python's `re.split` — the
+docs state the difference from the literal `split`. `regex_replace` already
+expanded `$0`/`$n`/`${name}`/`$$` from the T119 engine work; T121 documents it and
+adds the error coverage. The template is validated against the compiled program
+even when the pattern matches nothing, so a bad reference fails on any input, and
+a non-participating group expands to nothing. Fixtures: `cases/regex_split.spark`
+(empty fields, limit 0/1/2/-1, no match, non-capturing and capturing separators,
+zero-width patterns, flags in both positions, multibyte) and
+`cases/regex_replace_groups.spark` (`$2$1`, `$3$1`, `$0`, `${name}`, `$$`, a bare
+trailing `$`, unmatched groups, no-match validation, Unicode); errors:
+`regex_replace_unknown_group` (validated without a match), `regex_replace_unknown_name`,
+`regex_replace_unterminated`, `regex_split_bad_limit`, `regex_split_bad_pattern`.
+The tokenizer is `examples/regex_tokenizer.spark`: `test_examples` runs it, checks
+the exact token table and asserts its source appears verbatim in
+`docs/language.md`, so the in-docs program cannot drift. Suite 316/316, sanitizers
+clean. Docs: `docs/language.md` "Replacement templates", "Splitting on a pattern",
+"Tokenizing a line" and the natives table; `README.md`; `docs/architecture.md`;
+`CHANGELOG.md` Added.
 
 ### T122 - Math natives
 **Description:** Add the missing numeric surface: `tan`, `asin`, `acos`, `atan`,
@@ -754,7 +782,7 @@ compatibility.
 
 ## Checkpoint: Phase 23
 - [ ] Every native has a fixture and a reference-table row
-- [ ] The tokenizer example in `docs/language.md` uses capture groups and offsets
+- [x] The tokenizer example in `docs/language.md` uses capture groups and offsets
 - [ ] Suite + sanitizers green; `fib(27)` min unchanged
 
 ---

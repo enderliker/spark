@@ -871,7 +871,8 @@ names the argument type but never echoes the key or the data.
 | `regex_find_index(pattern, text, flags?)` | The same matches as maps `{start, end}` with character offsets. |
 | `regex_match_at(pattern, text, start, flags?)` | A match starting exactly at character offset `start`, as `{start, end}`, or `nil`. |
 | `regex_match_groups(pattern, text, flags?)` | The first match with `{start, end, groups, named}` captures, or `nil`. |
-| `regex_replace(pattern, repl, text, flags?)` | Replaces non-overlapping matches with `repl`. |
+| `regex_replace(pattern, repl, text, flags?)` | Replaces non-overlapping matches, expanding `$0`, `$1`, `${name}` and `$$` in `repl`. |
+| `regex_split(pattern, text, limit?, flags?)` | Fields between pattern separators; `limit` caps the field count. |
 | `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
 | `spawn(fn, a, b, ...)` | Starts a coroutine that calls `fn` with the given arguments; returns the coroutine object. |
 | `channel(n?)` | Creates a channel; without `n` it is unbuffered, with `n` it buffers `n` values. |
@@ -973,6 +974,110 @@ print(m["named"]["day"]["start"]);    // 16
 - All offsets are character offsets, including groups that come after multibyte
   text, and the thread state stays bounded: a fixture matches 20 groups against a
   1 MB haystack without excessive time or memory.
+
+#### Replacement templates
+
+`regex_replace(pattern, template, text, flags?)` replaces every non-overlapping
+match, left to right, and expands the same groups in `template`:
+
+| Template | Expands to |
+| --- | --- |
+| `$0` | The whole match. |
+| `$1` … `$32` | A numbered group. |
+| `${name}` | A named group. |
+| `$$` | A literal `$`. |
+
+```spark
+print(regex_replace("(\\w+)@(\\w+)", "$2.$1", "user@host"));   // host.user
+print(regex_replace("(?P<a>\\d)", "<$${a}>", "1-2"));          // <1>-<2>
+print(regex_replace("(a)", "$$", "a-b"));                      // $-b
+```
+
+- A group that did not participate in the match expands to nothing, so
+  `regex_replace("(a)|(b)", "[$1$2]", "a b")` is `"[a] [b]"`.
+- A `$` that is not followed by a digit, `{` or `$` is literal.
+- An unknown group number or name, a `${` without its `}`, and an empty `${}`
+  raise `ValueError`. The template is validated once, before matching, so a bad
+  reference is an error even when the pattern does not match.
+- In a Spark string literal, write `$${name}` for the template `${name}`,
+  because `${...}` is interpolation.
+
+#### Splitting on a pattern
+
+`regex_split(pattern, text, limit?, flags?)` returns the fields between
+separators:
+
+```spark
+print(regex_split("\\s+", "one  two\tthree"));   // ["one", "two", "three"]
+print(regex_split(",", ",a,,b,"));               // ["", "a", "", "b", ""]
+print(regex_split("[;|]", "a;b|c"));             // ["a", "b", "c"]
+print(regex_split(",", "a,b,c", 2));             // ["a", "b,c"]
+print(regex_split("ABC", "xabcx", "i"));         // ["x", "x"]
+```
+
+- The pattern is a separator, not a match: its groups do not add fields, unlike
+  Python's `re.split`.
+- Leading, trailing and doubled separators produce empty fields.
+- A pattern that matches the empty string cannot delimit anything; zero-width
+  matches are skipped, so `regex_split("", "ab")` is `["ab"]`.
+- `limit` is the maximum number of fields: `0` returns `[]`, a negative value
+  means no limit (the default), and the last field keeps the unsplit remainder.
+- The third argument is the limit unless it is a string, which makes it the
+  flags. The limit must be an integral value in 32-bit range (`ValueError`
+  otherwise), and a pattern that does not compile raises the same `ValueError`
+  as the other regex natives, even when the limit is `0`.
+- `regex_split` differs from `split`: the separator is a pattern rather than a
+  literal string, groups in it never appear in the result, and an empty-matching
+  pattern is skipped instead of producing a field per character. `split` remains
+  the faster choice for a fixed separator.
+
+#### Tokenizing a line
+
+`examples/regex_tokenizer.spark`, run by the test suite and printed below
+verbatim, splits the input on whitespace, recovers each field's character
+offset, and classifies it with capture groups:
+
+```spark
+// Tokenizer: split the fields, recover their offsets, then classify them with
+// capture groups. Run with ./spark examples/regex_tokenizer.spark
+var source = "let total = 3 + 4 * count";
+
+var fields = regex_split("\\s+", source);
+var spans = regex_find_index("\\S+", source);
+
+for (var i = 0; i < len(fields); i++) {
+    var word = fields[i];
+    var at = spans[i]["start"];
+    var m = regex_match_groups(
+        "^(?:(?P<number>\\d+)|(?P<name>[A-Za-z_]\\w*)|(?P<op>[-+*/=;]))$", word);
+
+    if (m == nil) {
+        print(format("%2d  error   %s", at, word));
+    } else {
+        var kind = "op";
+
+        if (m["named"]["number"] != nil) {
+            kind = "number";
+        } else if (m["named"]["name"] != nil) {
+            kind = "name";
+        }
+        print(format("%2d  %-7s %s", at, kind, word));
+    }
+}
+```
+
+Output:
+
+```
+ 0  name    let
+ 4  name    total
+10  op      =
+12  number  3
+14  op      +
+16  number  4
+18  op      *
+20  name    count
+```
 
 ### URLs and query strings
 

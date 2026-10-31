@@ -55,7 +55,10 @@ per-thread capture row, bounded at 32 groups, and a thread that never enters an
 optional group keeps `-1` there (reported as `nil`). Offsets are converted to
 UTF-8 character offsets before they reach Spark, so `regex_match_groups` can hand
 Spark the `{start, end, groups, named}` map with the same coordinates `len` and
-`index_of` use. The `i` flag folds ASCII only;
+`index_of` use. `regex_split` runs the same search without capture tracking,
+skipping zero-width separators, and the replacement expansion in
+`regex_replace` is validated once against the compiled program before any match
+is attempted. The `i` flag folds ASCII only;
 classes stay byte sets. A step budget (20,000,000 thread steps per operation)
 bounds pathological patterns and raises `ValueError` instead of hanging.
 
