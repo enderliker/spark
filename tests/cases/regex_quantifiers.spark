@@ -1,0 +1,15 @@
+// Bounded repetition, lazy quantifiers and leftmost-first semantics.
+print(regex_find("a{3}", "aaaa"));
+print(regex_find("a{0,3}", "aaaa"));
+print(regex_find("(ab){2,3}", "abababab"));
+print(regex_find("a{2,}", "a aa aaa"));
+print(regex_match("a{3}", "aaa"), regex_match("a{3}", "aa"));
+print(regex_match("a{2,3}", "aaaa"));
+print(regex_find("<.*>", "<a><b>"));
+print(regex_find("<.*?>", "<a><b>"));
+print(regex_find("a.*?b", "axxbxxb"));
+print(regex_match("a+?", "a"), regex_match("ab??", "a"), regex_match("ab??", "ab"));
+print(regex_match("abc{1}", "abccc"), regex_match("a{0}", ""));
+print(regex_find("a|ab", "ab"));
+print(regex_find("(a|ab)c", "abc"));
+print("quantifiers ok");

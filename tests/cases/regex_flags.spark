@@ -1,0 +1,15 @@
+// Case-insensitive, dot-all and multiline flags, as an argument and inline.
+print(regex_match("abc", "ABC"), regex_match("abc", "ABC", "i"));
+print(regex_find("[a-z]+", "ABC xyz", "i"));
+print(regex_match("(?i)abc", "ABC"));
+print(regex_match("a(?i)bc", "aBC"));
+// An inline flag is scoped to its group: the 'c' after the group is not folded.
+print(regex_match("(a(?i)b)c", "aBc"), regex_match("(a(?i)b)c", "aBC"));
+print(regex_match("(?i)(?-i)abc", "ABC"), regex_match("(?i)(?-i)abc", "abc"));
+print(regex_match("a.b", "a\nb"), regex_match("a.b", "a\nb", "s"));
+print(regex_match("(?s)a.b", "a\nb"));
+print(regex_match("^b", "a\nb"), regex_match("^b", "a\nb", "m"));
+print(regex_match("a$", "a\nb"), regex_match("a$", "a\nb", "m"));
+print(regex_match("foo", "FOO", "is"), regex_match("FOO", "foo", "mi"));
+print(regex_find("^.", "ab\ncd", "m"));
+print("flags ok");

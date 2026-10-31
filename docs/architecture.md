@@ -38,6 +38,25 @@ result / error
 | `value.h` | `Value` (tag + union) and the `Obj` header. |
 | `main.c` | CLI, file reading and REPL. |
 
+### Regular expressions
+
+`regex.c` parses a pattern into a small AST and lowers it to a Thompson NFA whose
+instructions are `CHAR`, `ANY`, `CLASS`, `BOL`, `EOL`, `SPLIT`, `JUMP`, `SAVE` and
+`MATCH`. The engine simulates all threads at once (a Pike VM), so the cost is
+proportional to the input times the program size rather than to a backtracking
+search. Threads are kept in priority order: `SPLIT` lists its preferred branch
+first, which gives Perl/JavaScript leftmost-first semantics (decision Q27) —
+greedy quantifiers prefer more input and lazy ones prefer less, and the first
+alternative wins. A match at thread priority *t* prunes every thread after it;
+higher-priority threads keep running and may replace the match later.
+
+Capture groups are carried by the threads: `SAVE` records a byte offset in a
+per-thread capture row, bounded at 32 groups, and a thread that never enters an
+optional group keeps `-1` there (reported as `nil`). Offsets are converted to
+UTF-8 character offsets before they reach Spark. The `i` flag folds ASCII only;
+classes stay byte sets. A step budget (20,000,000 thread steps per operation)
+bounds pathological patterns and raises `ValueError` instead of hanging.
+
 ### Decompression
 
 `inflate`/`gunzip` in `codec.c` follow the structure of Mark Adler's puff.c, the

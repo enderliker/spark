@@ -866,9 +866,11 @@ names the argument type but never echoes the key or the data.
 | `srand(seed)` | Seeds the PRNG with an integer or float. |
 | `to_json(value)` | Serializes a value to a JSON string; `bytes` becomes `{"$bytes": "<base64>"}`. |
 | `from_json(text)` | Deserializes a JSON string into Spark values; the `$bytes` marker is an ordinary map, decoded explicitly with `base64_decode`. |
-| `regex_match(pattern, text)` | Whether `pattern` matches `text`. |
-| `regex_find(pattern, text)` | Array of all non-overlapping matches of `pattern` in `text`. |
-| `regex_replace(pattern, repl, text)` | Replaces non-overlapping matches with `repl`. |
+| `regex_match(pattern, text, flags?)` | Whether `pattern` matches `text`. |
+| `regex_find(pattern, text, flags?)` | Array of all non-overlapping matches of `pattern` in `text`. |
+| `regex_find_index(pattern, text, flags?)` | The same matches as maps `{start, end}` with character offsets. |
+| `regex_match_at(pattern, text, start, flags?)` | A match starting exactly at character offset `start`, as `{start, end}`, or `nil`. |
+| `regex_replace(pattern, repl, text, flags?)` | Replaces non-overlapping matches with `repl`. |
 | `gc()` | Runs a garbage collection cycle immediately and updates adaptive thresholds. |
 | `spawn(fn, a, b, ...)` | Starts a coroutine that calls `fn` with the given arguments; returns the coroutine object. |
 | `channel(n?)` | Creates a channel; without `n` it is unbuffered, with `n` it buffers `n` values. |
@@ -886,6 +888,55 @@ names the argument type but never echoes the key or the data.
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`, and for bytes
 `bb.append(value)`, `bb.to_bytes()`, `bb.len()` and `bb.clear()`.
+
+### Regular expressions
+
+The `regex_*` natives share one engine with Perl/JavaScript **leftmost-first**
+semantics: the match that starts earliest wins, and among alternatives the first
+one written wins. Quantifiers are greedy unless suffixed with `?`; the laziest
+alternative is tried first.
+
+| Pattern syntax | Meaning |
+| --- | --- |
+| `abc` | Literal characters. |
+| `.` | Any character except `\n` (with the `s` flag, any character). |
+| `[abc]`, `[^abc]`, `[a-z]` | Character class; a leading `^` negates it. |
+| `\d \D \w \W \s \S` | Digit, non-digit, word, non-word, space, non-space (ASCII). Inside or outside a class. |
+| `\n \t \r`, `\.` | Escapes; any other escaped character is itself. |
+| `^`, `$` | Start and end of the text; with the `m` flag, also at a line boundary. |
+| `*`, `+`, `?` | Zero or more, one or more, zero or one. |
+| `{n}`, `{n,}`, `{n,m}` | Exactly `n`, at least `n`, or between `n` and `m` repetitions. |
+| `*? +? ?? {n,m}?` | Lazy variants: prefer the fewest repetitions. |
+| `a|b` | Alternation; the left branch has priority. |
+| `( )` | Capturing group (section for the group natives below). |
+| `(?: )` | Non-capturing group. |
+| `(?i)`, `(?s)`, `(?m)` | Inline flags from here to the end of the enclosing group; `(?-i)` clears one. |
+
+- The trailing flags argument of the natives is a string with any of `i`
+  (case-insensitive), `s` (`s` makes `.` match newlines) and `m` (`m` makes `^`
+  and `$` see line boundaries). Unknown flags are a `ValueError`.
+- Case-insensitive matching folds ASCII letters only, and classes are byte sets:
+  a class matches one byte, so it can split a multibyte character. Offsets, on
+  the other hand, are **character** offsets, consistent with `len` and
+  `index_of`; they are verified on multibyte text in the fixtures.
+- Without `m`, `^` matches only at the start of the text and `$` only at the end,
+  even when the text contains newlines.
+- There are no lookarounds, backreferences or `\b`; a backreference such as `\1`
+  is a literal escape, not a reference.
+- Limits: 1024 NFA instructions, 32 capture groups, a repetition count of at
+  most 10,000, and a budget of 20,000,000 engine steps per call. A pattern or an
+  input that exceeds one raises `ValueError` ("pattern too complex", "regex step
+  limit exceeded"), so a crafted pattern cannot hang the interpreter.
+
+```spark
+print(regex_match("^[a-z]+$", "spark"));          // true
+print(regex_find("a{2,3}", "aaaa"));              // ["aaa", "a", ""]
+print(regex_find("<.*?>", "<a><b>"));             // ["<a>", "<b>"]
+print(regex_match("ABC", "abc", "i"));            // true
+print(regex_find_index("\\d+", "ab12cd345"));     // [{start:2,end:4}, {start:6,end:9}]
+var m = regex_match_at("[a-z]+", "ñandú", 1);     // starts at character 1
+print(m["start"], m["end"]);                      // 1 4
+```
 
 ### URLs and query strings
 

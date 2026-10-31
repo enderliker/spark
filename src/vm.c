@@ -3062,17 +3062,48 @@ static Value native_from_json(int arg_count, Value *args)
     return val;
 }
 
+/* The optional trailing flags argument shared by the regex natives. */
+static bool regex_flags_argument(int arg_count, Value *args, int index, const char *function,
+                                 RegexFlags *flags)
+{
+    char error[128];
+
+    memset(flags, 0, sizeof(*flags));
+    if (arg_count <= index) {
+        return true;
+    }
+    if (!is_obj_type(args[index], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'%s' expects the flags as a string, received %s", function,
+                         value_type_name(args[index]));
+        return false;
+    }
+    if (!regex_parse_flags(AS_STRING(args[index])->chars, flags, error, sizeof(error))) {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return false;
+    }
+    return true;
+}
+
 static Value native_regex_match(int arg_count, Value *args)
 {
-    (void)arg_count;
+    RegexFlags flags;
+    char error[256] = {0};
+    bool matched;
+
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'regex_match' expects 2 or 3 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
         vm_runtime_error(ERROR_TYPE, "'regex_match' expects two strings");
         return NIL_VAL;
     }
-    ObjString *pat = AS_STRING(args[0]);
-    ObjString *text = AS_STRING(args[1]);
-    char error[256] = {0};
-    bool matched = regex_match(pat->chars, text->chars, error, sizeof(error));
+    if (!regex_flags_argument(arg_count, args, 2, "regex_match", &flags)) {
+        return NIL_VAL;
+    }
+    matched = regex_match(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, flags, error,
+                          sizeof(error));
     if (error[0] != '\0') {
         vm_runtime_error(ERROR_VALUE, "%s", error);
         return NIL_VAL;
@@ -3082,15 +3113,24 @@ static Value native_regex_match(int arg_count, Value *args)
 
 static Value native_regex_find(int arg_count, Value *args)
 {
-    (void)arg_count;
+    RegexFlags flags;
+    char error[256] = {0};
+    ObjArray *matches;
+
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'regex_find' expects 2 or 3 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
         vm_runtime_error(ERROR_TYPE, "'regex_find' expects two strings");
         return NIL_VAL;
     }
-    ObjString *pat = AS_STRING(args[0]);
-    ObjString *text = AS_STRING(args[1]);
-    char error[256] = {0};
-    ObjArray *matches = regex_find_all(pat->chars, text->chars, error, sizeof(error));
+    if (!regex_flags_argument(arg_count, args, 2, "regex_find", &flags)) {
+        return NIL_VAL;
+    }
+    matches = regex_find_all(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, flags, error,
+                             sizeof(error));
     if (error[0] != '\0') {
         vm_runtime_error(ERROR_VALUE, "%s", error);
         return NIL_VAL;
@@ -3098,19 +3138,102 @@ static Value native_regex_find(int arg_count, Value *args)
     return OBJ_VAL(matches);
 }
 
+static Value native_regex_find_index(int arg_count, Value *args)
+{
+    RegexFlags flags;
+    char error[256] = {0};
+    ObjArray *matches;
+
+    if (arg_count < 2 || arg_count > 3) {
+        vm_runtime_error(ERROR_ARITY, "'regex_find_index' expects 2 or 3 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_find_index' expects two strings");
+        return NIL_VAL;
+    }
+    if (!regex_flags_argument(arg_count, args, 2, "regex_find_index", &flags)) {
+        return NIL_VAL;
+    }
+    matches = regex_find_index(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, flags,
+                               error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    return OBJ_VAL(matches);
+}
+
+static Value native_regex_match_at(int arg_count, Value *args)
+{
+    RegexFlags flags;
+    char error[256] = {0};
+    int start;
+    int start_char = 0;
+    int end_char = 0;
+    bool matched;
+    ObjMap *map;
+
+    if (arg_count < 3 || arg_count > 4) {
+        vm_runtime_error(ERROR_ARITY, "'regex_match_at' expects 3 or 4 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'regex_match_at' expects two strings");
+        return NIL_VAL;
+    }
+    if (!integer_argument(args[2], "start", "regex_match_at", &start)) {
+        return NIL_VAL;
+    }
+    int total = utf8_length(AS_STRING(args[1])->chars, AS_STRING(args[1])->length);
+
+    if (start < 0 || start > total) {
+        vm_runtime_error(ERROR_VALUE, "'regex_match_at' start out of range (0..%d)", total);
+        return NIL_VAL;
+    }
+    if (!regex_flags_argument(arg_count, args, 3, "regex_match_at", &flags)) {
+        return NIL_VAL;
+    }
+    matched = regex_match_at(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars, start, flags,
+                             &start_char, &end_char, error, sizeof(error));
+    if (error[0] != '\0') {
+        vm_runtime_error(ERROR_VALUE, "%s", error);
+        return NIL_VAL;
+    }
+    if (!matched) {
+        return NIL_VAL;
+    }
+    map = object_map();
+    push(OBJ_VAL(map));
+    map_set(map, OBJ_VAL(object_string("start", 5)), INT_VAL(start_char));
+    map_set(map, OBJ_VAL(object_string("end", 3)), INT_VAL(end_char));
+    pop();
+    return OBJ_VAL(map);
+}
+
 static Value native_regex_replace(int arg_count, Value *args)
 {
-    (void)arg_count;
+    RegexFlags flags;
+    char error[256] = {0};
+    ObjString *res;
+
+    if (arg_count < 3 || arg_count > 4) {
+        vm_runtime_error(ERROR_ARITY, "'regex_replace' expects 3 or 4 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
     if (!is_obj_type(args[0], OBJ_STRING) || !is_obj_type(args[1], OBJ_STRING) ||
         !is_obj_type(args[2], OBJ_STRING)) {
         vm_runtime_error(ERROR_TYPE, "'regex_replace' expects three strings");
         return NIL_VAL;
     }
-    ObjString *pat = AS_STRING(args[0]);
-    ObjString *repl = AS_STRING(args[1]);
-    ObjString *text = AS_STRING(args[2]);
-    char error[256] = {0};
-    ObjString *res = regex_replace(pat->chars, repl->chars, text->chars, error, sizeof(error));
+    if (!regex_flags_argument(arg_count, args, 3, "regex_replace", &flags)) {
+        return NIL_VAL;
+    }
+    res = regex_replace(AS_STRING(args[0])->chars, AS_STRING(args[1])->chars,
+                        AS_STRING(args[2])->chars, flags, error, sizeof(error));
     if (error[0] != '\0') {
         vm_runtime_error(ERROR_VALUE, "%s", error);
         return NIL_VAL;
@@ -9356,9 +9479,11 @@ void vm_init(void)
     define_native("randint", native_randint, -1);
     define_native("to_json", native_to_json, 1);
     define_native("from_json", native_from_json, 1);
-    define_native("regex_match", native_regex_match, 2);
-    define_native("regex_find", native_regex_find, 2);
-    define_native("regex_replace", native_regex_replace, 3);
+    define_native("regex_match", native_regex_match, -1);
+    define_native("regex_find", native_regex_find, -1);
+    define_native("regex_find_index", native_regex_find_index, -1);
+    define_native("regex_match_at", native_regex_match_at, -1);
+    define_native("regex_replace", native_regex_replace, -1);
     define_native("time", native_time, 0);
     define_native("sleep", native_sleep, 1);
     define_native("chr", native_chr, 1);

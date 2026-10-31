@@ -110,6 +110,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `format(template, args...)`: printf-style text with `%s %d %i %f %g %x %X %o %b %c`
   and `%%`, plus the `-`, `0` and `+` flags, width and `.precision`, built in one
   linear pass.
+- Regular expressions: bounded repetition `{n}`, `{n,}` and `{n,m}`, lazy
+  quantifiers `*?`, `+?`, `??` and `{n,m}?`, non-capturing groups `(?:...)`, and
+  the `i`, `s` and `m` flags as an optional trailing argument or inline as
+  `(?i)`, `(?s)`, `(?m)` and `(?-i)`. `regex_match_at(pattern, text, start,
+  flags?)` and `regex_find_index(pattern, text, flags?)` expose matches as
+  `{start, end}` character offsets, consistent with `len` and `index_of`.
+  Matching now uses leftmost-first semantics, and a step budget rejects a
+  pathological pattern with `ValueError` instead of hanging the interpreter.
 - Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default
@@ -172,6 +180,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- Regular expressions use leftmost-first semantics (decision Q27). A pattern
+  such as `a|ab` now matches `"a"` in `"ab"` where the previous engine returned
+  the longest match `"ab"`, and `regex_find("<.*>", "<a><b>")` returns
+  `["<a><b>"]` while `<.*?>` returns `["<a>", "<b>"]`. The existing fixtures did
+  not encode the old longest-match tie-break, but any program that relied on it
+  should be reviewed.
+- `^` and `$` now anchor at the start and end of the text only. A pattern that
+  should also match at a line boundary needs the `m` flag (`regex_match(p, t,
+  "m")` or inline `(?m)`); previously both always saw `\n`.
 - `yield` is a reserved keyword, so programs using `yield` as an identifier must
   rename it.
 - Class names may no longer be `coroutine` or `channel`, which join the existing

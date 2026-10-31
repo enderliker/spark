@@ -1,0 +1,14 @@
+// Offsets are UTF-8 character offsets, like len and index_of.
+var text = "ñandú 日本 x";
+print(len(text));
+print(regex_find("[a-z]+", text));
+print(regex_find_index("[a-z]+", text));
+print(regex_find_index("\\d+", "ab12cd345"));
+print(regex_find_index("", "é"));
+var jp = "añ日";
+print(len(jp), regex_find_index("日", jp));
+var m = regex_match_at("[a-z]+", text, 1);
+print(m["start"], m["end"]);
+print(regex_match_at("[a-z]+", text, 0));
+print(regex_match_at("[a-z]+", text, 9));
+print(regex_match_at("[a-z]+", text, 10));

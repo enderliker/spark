@@ -1,0 +1,10 @@
+10
+["and", "x"]
+[{"end": 4, "start": 1}, {"end": 10, "start": 9}]
+[{"end": 4, "start": 2}, {"end": 9, "start": 6}]
+[{"end": 0, "start": 0}, {"end": 1, "start": 1}]
+3 [{"end": 3, "start": 2}]
+1 4
+nil
+{"end": 10, "start": 9}
+nil

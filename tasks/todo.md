@@ -617,22 +617,48 @@ argument flags (`i` case-insensitive, `s` dot-matches-newline, `m` multiline anc
 tokenize: `regex_find_all(pattern, text)` gains an index form, and a new
 `regex_match_at`/`regex_find_index` returns start/end positions as integers.
 **Acceptance criteria:**
-- [ ] `{n,m}`, `{n}` and `{n,}` match per POSIX/Perl expectations, including `a{0,3}`,
+- [x] `{n,m}`, `{n}` and `{n,}` match per POSIX/Perl expectations, including `a{0,3}`,
       `(ab){2,3}` and the error case `a{3,2}`.
-- [ ] `(?i)` and the flags argument both work, and the doc states which flags exist.
-- [ ] Offsets are character-based (consistent with `len`/`index_of`) and verified on a
+- [x] `(?i)` and the flags argument both work, and the doc states which flags exist.
+- [x] Offsets are character-based (consistent with `len`/`index_of`) and verified on a
       multibyte string.
-- [ ] Non-greedy quantifiers `*?`, `+?` and `??` **work** (Q27 is decided: move to
+- [x] Non-greedy quantifiers `*?`, `+?` and `??` **work** (Q27 is decided: move to
       Perl/JavaScript leftmost-first semantics), and the tie-breaking change is recorded
       in the `CHANGELOG.md` "Breaking changes" section. The existing fixtures that encode
       leftmost-longest (`regex_find("<.*>", ...)` and any alternation-in-group case) are
       updated in the same commit, with the before/after behavior noted in the task.
 **Verification:**
-- [ ] Fixtures per feature and per error; the multibyte offset fixture; suite +
+- [x] Fixtures per feature and per error; the multibyte offset fixture; suite +
       sanitizers. Reject pathological patterns with a bounded step/work limit so a
       crafted pattern cannot hang the VM (fixture included).
 **Dependencies:** None. **Files:** `src/regex.c`, `src/regex.h`, `src/vm.c`, `tests/`,
 `docs/language.md`. **Scope:** M.
+
+**Done notes:** `src/regex.c` was rewritten around a richer AST (`AST_REPEAT` with
+min/max/lazy, `AST_GROUP`, per-atom flags) and a Pike VM whose threads are kept in
+priority order. Leftmost-first was implemented by recording the highest-priority
+`RE_MATCH` in the list, truncating the list after it and letting higher-priority
+threads keep running so a later match from a preferred branch can replace it.
+Bounded repetition is unrolled in the emitter (`{n}` copies, `{n,m}` copies plus
+optional copies, `{n,}` copies plus a star); malformed `{...}` is a literal, `a{3,2}`
+is `ValueError`, and the instruction/node limits report "pattern too complex".
+Lazy forms reverse the `RE_SPLIT` branch order. Flags are shared by the arguments and
+the inline `(?i)`/`(?s)`/`(?m)`/`(?-i)` form; inline flags are scoped to the enclosing
+group (saved/restored around `(` groups), and `(?:...)` is non-capturing. `^`/`$` now
+need `m` to see newlines, and case folding is ASCII via tolower/toupper.
+`regex_find_index` returns `{start, end}` maps and `regex_match_at` a map or `nil`,
+both with **character** offsets converted from the engine's byte positions (including
+advancing past an empty match without splitting a multibyte sequence). New natives
+take an optional trailing flags string. A 20,000,000-step budget is charged per
+thread and per add, so `.*z` over 20,000 `b`s fails with `ValueError` in ~0.15 s
+instead of hanging. Existing fixtures did not actually use `<.*>` or an
+alternation-in-group tie-break (none needed changing); the leftmost-first change is
+called out in CHANGELOG "Breaking changes" and covered by `regex_find("a|ab", ...)`
+and `<.*?>` in the new fixture. Fixtures: `regex_quantifiers`, `regex_flags`,
+`regex_offsets`, plus four error fixtures; fuzzed with 300 random patterns/texts under
+ASan/UBSan. Suite 303/303, sanitizers clean. Benchmark: interleaved A/B against HEAD
+under a noisy WSL2 window showed parity (HEAD 5.05/5.81/5.15 ms, work tree
+5.09/5.09/5.17 ms); the regex changes cannot touch the fib path.
 
 ### T120 - Regex: capture groups
 **Description:** Add group capture to the Pike VM: thread-carried capture slots (the
