@@ -82,6 +82,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bytes_builder()` (with `bb_append`, `bb_to_bytes`, `bb_len`, `bb_clear` and the
   `append`/`to_bytes`/`len`/`clear` methods) is the mutable companion of `bytes`,
   mirroring `string_builder()`.
+- Codecs over `bytes`: `base64_encode`/`base64_decode` (RFC 4648, padding optional
+  on decode) and `hex_encode`/`hex_decode` (lowercase output, either case on
+  decode). Each accepts a string as its UTF-8 bytes and returns `bytes`; invalid
+  input is a `ValueError`.
 
 ### Security
 

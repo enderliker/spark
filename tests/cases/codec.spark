@@ -1,0 +1,37 @@
+// base64 and hex codecs (phase 23, T114).
+
+// RFC 4648 test vectors, including every padding edge.
+print("b64 empty:", base64_encode(""));
+print("b64:", base64_encode("f"), base64_encode("fo"), base64_encode("foo"));
+print("b64:", base64_encode("foob"), base64_encode("fooba"), base64_encode("foobar"));
+
+// Decoding accepts the vectors and the padding-free spellings.
+print("b64 decode:", base64_decode("Zg=="), base64_decode("Zm8="), base64_decode("Zm9v"));
+print("b64 unpadded:", base64_decode("Zg"), base64_decode("Zm8"), base64_decode(""));
+print("b64 round trip:", base64_decode(base64_encode("foobar")));
+
+// A string is used as its UTF-8 bytes; the result is always bytes.
+print("utf8:", hex_encode("é"), base64_encode("é"), type(base64_encode("é")));
+
+// Hex is lowercase on encode and case-insensitive on decode.
+print("hex:", hex_encode("f"), hex_encode("fo"), hex_encode("foobar"));
+print("hex decode:", hex_decode("66"), hex_decode("666f"), hex_decode("666F6F"));
+print("hex empty:", hex_encode(""), hex_decode(""));
+
+// Arbitrary byte values, including NUL and 0xFF, survive both codecs.
+var binary = bytes_from([0, 255, 1, 2, 3, 128]);
+print("binary:", hex_encode(binary), base64_encode(binary));
+print("binary round trip:", hex_decode(hex_encode(binary)) == binary,
+      base64_decode(base64_encode(binary)) == binary);
+
+// A 1 MB payload round-trips through both codecs byte for byte.
+var parts = [];
+for (var i = 0; i < 1048576; i = i + 1) {
+    push(parts, (i * 37 + 11) % 256);
+}
+var big = bytes_from(parts);
+var big_text = base64_encode(big);
+var big_hex = hex_encode(big);
+print("1 MB:", len(big), len(big_text), len(big_hex));
+print("1 MB round trip:", base64_decode(big_text) == big, hex_decode(big_hex) == big);
+print("1 MB edges:", big_text[0], big_text[len(big_text) - 1], big_hex[0], big_hex[len(big_hex) - 1]);

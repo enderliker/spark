@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'hex_decode' expects an even number of hexadecimal digits, received 3

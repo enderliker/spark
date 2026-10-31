@@ -21,6 +21,7 @@
 #include "buf.h"
 #include "bytecode.h"
 #include "bytes.h"
+#include "codec.h"
 #include "chunk.h"
 #include "compiler.h"
 #include "debugger.h"
@@ -8729,6 +8730,7 @@ void vm_init(void)
     define_native("sb_clear", native_sb_clear, 1);
     net_init();
     bytes_init();
+    codec_init();
     vm_set_args(0, NULL);
 
     int underscore_slot = vm_global_slot(object_string("_", 1));

@@ -393,14 +393,23 @@ route keeps the native surface small (Q13's reasoning).
 `string` as its UTF-8 bytes for convenience, returning `bytes`). Standard alphabets
 only, with and without padding on decode.
 **Acceptance criteria:**
-- [ ] RFC 4648 test vectors pass, including the padding edges (`""`, `"f"`, `"fo"`,
+- [x] RFC 4648 test vectors pass, including the padding edges (`""`, `"f"`, `"fo"`,
       `"foo"`, `"foob"`, `"fooba"`, `"foobar"`) and a 1 MB round trip.
-- [ ] Invalid input (bad alphabet character, truncated group, wrong padding) raises
+- [x] Invalid input (bad alphabet character, truncated group, wrong padding) raises
       `ValueError`; `hex_decode` rejects odd-length input.
 **Verification:**
-- [ ] Fixtures with the RFC vectors; suite + sanitizers.
+- [x] Fixtures with the RFC vectors; suite + sanitizers.
 **Dependencies:** T108. **Files:** `src/codec.c`, `src/codec.h`, `src/vm.c`, `tests/`,
 `docs/language.md`. **Scope:** S.
+
+**Done notes:** Done before T110 (not T110 after T114 as the phase order says), because
+T110's JSON marker is a base64 string: the public `base64_decode` it documents as the
+decoding helper has to exist first. Character validation runs before the group-length
+check so `"Zm9v$"` reports the bad character instead of a "truncated group" at the same
+length. Decoding is lenient about the padding bits of the final group (RFC 4648 allows
+either), strict about `=` placement and about a one-character group. Both cores write
+into a `buf_t` (`codec_base64_encode` is exported to `json.c`), so the natives and the
+JSON encoder cannot drift.
 
 ### T115 - Deflate/gzip decode (vendored inflate, Q17)
 **Description:** Add `gunzip(bytes)` / `inflate(bytes)` so the HTTP client can decode

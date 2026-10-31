@@ -264,6 +264,8 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `bytes(n)` | Sequence of `n` zero bytes; `n` must be a non-negative integer. |
 | `bytes_from(x)` | Bytes from an array of integers in `0..255` or from a string (its UTF-8 bytes as they are); there is no implicit conversion. |
 | `bytes_builder(initial?)` / `bb_append(bb, v)` | Build a large `bytes` in amortized O(1) per append; `bb_to_bytes(bb)`, `bb_len(bb)` and `bb_clear(bb)` mirror the string builder. |
+| `base64_encode(x)` / `base64_decode(x)` | Standard base64 over `bytes` or a string's UTF-8 bytes; decoding accepts missing padding. |
+| `hex_encode(x)` / `hex_decode(x)` | Hexadecimal over `bytes` or a string's UTF-8 bytes; decoding accepts either case. |
 | `assert(cond, message?)` | Stops the program with an error when `cond` is false. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `isinstance(x, Class)` / `is_a(x, Class)` | Whether `x` is an instance of the class or a subclass. |

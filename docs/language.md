@@ -611,6 +611,10 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `len(x)` | Length of an array, a map or a string (in characters), or of bytes (in bytes). |
 | `bytes(n)` | `n` zero bytes (`n` must be a non-negative integer); a `ValueError` otherwise. |
 | `bytes_from(x)` | New `bytes` from an array of integers in `0..255` or from a string (its UTF-8 bytes as they are); any other value is a `TypeError`. |
+| `base64_encode(x)` | Standard (RFC 4648) base64 of `bytes`, or of a string's UTF-8 bytes; returns `bytes` with padding. |
+| `base64_decode(x)` | Decodes standard base64 with or without padding; a bad character, a truncated group or misplaced padding is a `ValueError`. |
+| `hex_encode(x)` | Lowercase hexadecimal of `bytes`, or of a string's UTF-8 bytes; returns `bytes`. |
+| `hex_decode(x)` | Decodes hexadecimal, either case; odd length or a bad digit is a `ValueError`. |
 | `push(array, value)` | Appends to the end and returns the array. |
 | `pop(array)` | Removes and returns the last element; error if empty. |
 | `str(x)` | Text representing the value. |

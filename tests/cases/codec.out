@@ -1,0 +1,15 @@
+b64 empty: b""
+b64: b"Zg==" b"Zm8=" b"Zm9v"
+b64: b"Zm9vYg==" b"Zm9vYmE=" b"Zm9vYmFy"
+b64 decode: b"f" b"fo" b"foo"
+b64 unpadded: b"f" b"fo" b""
+b64 round trip: b"foobar"
+utf8: b"c3a9" b"w6k=" bytes
+hex: b"66" b"666f" b"666f6f626172"
+hex decode: b"f" b"fo" b"foo"
+hex empty: b"" b""
+binary: b"00ff01020380" b"AP8BAgOA"
+binary round trip: true true
+1 MB: 1048576 1398104 2097152
+1 MB round trip: true true
+1 MB edges: 67 61 48 54

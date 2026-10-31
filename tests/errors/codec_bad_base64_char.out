@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'base64_decode' received an invalid base64 character at index 4
