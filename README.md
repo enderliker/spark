@@ -4,8 +4,8 @@
 from scratch in C11. Source code is parsed into an AST, compiled to a compact
 bytecode, and executed on a stack-based virtual machine with a mark-and-sweep
 garbage collector. The lexer, parser, compiler, VM, standard library and tooling
-are all handwritten; the only third-party dependency is OpenSSL, linked
-exclusively for the TLS transport.
+are all handwritten; the only third-party dependency is OpenSSL, linked for the
+TLS transport and for the SHA-256, HMAC-SHA256 and CSPRNG natives.
 
 [![CI](https://github.com/enderliker/spark/actions/workflows/ci.yml/badge.svg)](https://github.com/enderliker/spark/actions/workflows/ci.yml)
 ![C11](https://img.shields.io/badge/C-C11-555.svg)
@@ -101,9 +101,9 @@ for (var i = 0; i < 10; i += 1) {
 ## Requirements and build
 
 The build requires a C11 compiler, `make`, the C math library and the OpenSSL
-development files (`libssl-dev` on Debian/Ubuntu), which are used only by
-`tls_connect` and `https://`. OpenSSL is the sole third-party dependency;
-`python3` is needed to run the test suite and the benchmarks.
+development files (`libssl-dev` on Debian/Ubuntu), used by `tls_connect`,
+`https://` and the `sha256`/`hmac_sha256`/`rand_bytes` natives. OpenSSL is the sole
+third-party dependency; `python3` is needed to run the test suite and the benchmarks.
 
 ```bash
 make            # builds the ./spark binary
@@ -345,7 +345,10 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
 | `env(name?)` / `exit(code?)` | Environment variables and process exit. |
 | `argv` | Global array with the script path and its arguments (empty in the REPL). |
-| `rand()` / `randint(min, max)` / `srand(seed)` | PRNG in `[0, 1)`, random integers and seeding. |
+| `rand()` / `randint(min, max)` / `srand(seed)` | Non-cryptographic PRNG in `[0, 1)`, random integers and seeding. |
+| `sha256(x)` / `sha256_hex(x)` | SHA-256 of `bytes` or a string's UTF-8 bytes, as 32 bytes or 64 lowercase hex characters. |
+| `hmac_sha256(key, data)` | 32-byte HMAC-SHA256 of `data` under `key`. |
+| `rand_bytes(n)` | `n` bytes from the CSPRNG (up to 16 MiB); a failure is an error, never a fallback to `rand()`. |
 | `to_json(value)` / `from_json(text)` | JSON encoding and decoding. |
 | `regex_match(p, t)` / `regex_find(p, t)` / `regex_replace(p, r, t)` | Regular expressions. |
 | `string_builder(initial?)` / `sb_append(sb, v)` | Build a large string in amortized O(1) per append. |

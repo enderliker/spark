@@ -552,18 +552,39 @@ clean.
 fails). Update `AGENTS.md`/`CHANGELOG.md` to say explicitly that the approved OpenSSL
 dependency is now used for TLS **and** these primitives.
 **Acceptance criteria:**
-- [ ] NIST/FIPS test vectors pass for SHA-256 (including the empty string and the
+- [x] NIST/FIPS test vectors pass for SHA-256 (including the empty string and the
       million-`a` vector at reduced size) and RFC 4231 vectors for HMAC-SHA256.
-- [ ] `rand_bytes` returns distinct values across calls and errors instead of falling
+- [x] `rand_bytes` returns distinct values across calls and errors instead of falling
       back to `rand()`; the language's `rand()` stays a non-cryptographic PRNG and the
       docs say which is which.
-- [ ] No secret (key, input) is echoed in an error message.
+- [x] No secret (key, input) is echoed in an error message.
 **Verification:**
-- [ ] Fixtures with the published vectors; suite + sanitizers; docs updated in both
+- [x] Fixtures with the published vectors; suite + sanitizers; docs updated in both
       `AGENTS.md` and the API table.
 **Dependencies:** T108 (for the `bytes` return type). **Files:** `src/crypto.c`,
 `src/crypto.h`, `src/vm.c`, `AGENTS.md`, `CHANGELOG.md`, `tests/`, `docs/language.md`.
 **Scope:** M.
+
+**Done notes:** `src/crypto.c`/`src/crypto.h` (A17 module, registered from `vm_init`
+after `codec_init`) wraps OpenSSL's `SHA256`, `HMAC(EVP_sha256(), ...)` and
+`RAND_bytes`; nothing is reimplemented, because a hand-written hash or PRNG would be a
+security liability (Q11 already approves OpenSSL). Inputs follow the codec rule: a
+`bytes` value or a string's UTF-8 bytes. `sha256` and `hmac_sha256` return 32-byte
+`bytes`; `sha256_hex` returns 64 lowercase characters; `rand_bytes(n)` returns `bytes`
+and is capped at 16 MiB with a `ValueError` outside `0..16,777,216`. The size argument
+uses the standard integer rule (int or integral number). `RAND_bytes` failure raises
+`RuntimeError` and never falls back to `rand()`; the docs now say explicitly that
+`rand()`/`randint()`/`srand()` are the non-cryptographic PRNG and `rand_bytes` is the
+CSPRNG. Error messages name the received type only and never echo key or data.
+Fixtures: `cases/crypto.spark` (FIPS SHA-256 empty/"abc"/448-bit/million-`a`,
+RFC 4231 HMAC vectors 1, 2, 6 and 7, string-vs-bytes inputs, result shape, and
+`rand_bytes` length/type/zero/distinctness without printing the bytes) plus five
+`errors/` fixtures; `test_crypto` in the harness asserts a caught `TypeError` contains
+neither the key nor the data in either argument position. Docs: `docs/language.md`
+"What is Spark" limits, a Cryptography subsection and the natives table; `README.md`;
+`docs/architecture.md` (module table and the dependency line); `AGENTS.md` and
+`CLAUDE.md` state the expanded OpenSSL exception; `CHANGELOG.md` Added/Security/
+Dependencies. Suite 290/290, sanitizers clean, `fib(27)` min 4.91 ms.
 
 ### T119 - Regex: `{n,m}`, flags and match offsets
 **Description:** The engine is a Pike VM (`src/regex.c`: `RE_SPLIT`/`RE_JUMP`,

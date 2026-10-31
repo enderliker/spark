@@ -1,7 +1,8 @@
 # Spark architecture
 
 Spark is a bytecode interpreter written in C11. Its only external dependency is
-OpenSSL, linked solely for TLS (decision Q11). The path of an execution is:
+OpenSSL, linked for TLS and for the crypto primitives in `src/crypto.c` (decision
+Q11). The path of an execution is:
 
 ```
 .spark source
@@ -29,6 +30,7 @@ result / error
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
 | `bytes.c` | The `bytes` constructors (`bytes`, `bytes_from`) and the `bytes_builder` natives plus their method dispatch. |
 | `codec.c` | base64/hex codecs over `bytes` (T114); inflate/gzip decoding lands here (T115). |
+| `crypto.c` | SHA-256, HMAC-SHA256 and the CSPRNG (`sha256`, `sha256_hex`, `hmac_sha256`, `rand_bytes`) through OpenSSL (T118). |
 | `datetime.c` | Date/time formatting and parsing. Named `datetime` because `src/time.h` would shadow the system `<time.h>` for every file compiled with `-Isrc`. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
 | `table.c` | Hash table used for the global `name -> slot` map (open addressing, tombstones). |
@@ -380,7 +382,8 @@ for strings. The same rule applies to a callback result that is stored after
 ## Networking
 
 The socket layer lives in `src/net.c`. The socket, URL and HTTP layers add no
-dependencies; TLS is the one exception and links OpenSSL (decision Q11).
+dependencies; TLS and the `src/crypto.c` primitives are the one exception and link
+OpenSSL (decision Q11).
 `net_init()` registers the global natives (`tcp_connect`, `tls_connect`,
 `ws_connect`, `tcp_listen`, `udp_bind`, `net_hostname`) from `vm_init`, and the VM
 routes method calls on socket, server and websocket receivers to

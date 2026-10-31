@@ -554,6 +554,44 @@ def test_time_zones() -> None:
             script.unlink()
 
 
+def test_crypto() -> None:
+    """A key handed to the crypto natives never appears in an error message,
+    and a caught failure carries only the type and the function name."""
+    print("\nCrypto")
+    script = ROOT / "tests" / "crypto_secret.spark"
+    secret = "super-secret-key-material"
+    script.write_text(
+        f'var secret = "{secret}";\n'
+        'try {\n'
+        '    hmac_sha256(secret, 42);\n'
+        '} catch (e) {\n'
+        '    print(e["type"]);\n'
+        '    print(index_of(e["message"], secret));\n'
+        '}\n'
+        'try {\n'
+        '    hmac_sha256(42, secret);\n'
+        '} catch (e) {\n'
+        '    print(e["type"]);\n'
+        '    print(index_of(e["message"], secret));\n'
+        '}\n',
+        encoding="utf-8",
+    )
+    try:
+        completed = run([str(script)])
+        report(
+            "crypto errors do not echo the key or the data",
+            completed.returncode == 0
+            and completed.stdout == "TypeError\n-1\nTypeError\n-1\n"
+            and secret not in completed.stdout
+            and secret not in completed.stderr
+            and not completed.stderr,
+            completed.stdout + completed.stderr,
+        )
+    finally:
+        if script.exists():
+            script.unlink()
+
+
 def test_network_limits() -> None:
     print("\nNetwork limits")
     script = ROOT / "tests" / "net_fd_exhausted.spark"
@@ -1241,6 +1279,7 @@ def main() -> int:
     test_repl()
     test_error_snippets()
     test_time_zones()
+    test_crypto()
     test_network_limits()
     test_http_client()
     test_http_server()

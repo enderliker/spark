@@ -698,6 +698,32 @@ Directives: `%Y` (0001..9999), `%m`, `%d`, `%H`, `%M`, `%S`, `%j` (day of year),
   an unknown directive and a trailing `%` are all `ValueError`s; a non-numeric
   timestamp or a non-boolean `local` flag is a `TypeError`.
 
+### Cryptography
+
+Hashes and randomness come from OpenSSL, the same library the TLS client uses;
+they are not reimplemented in the interpreter. Each accepts `bytes` or a string
+(whose UTF-8 bytes are hashed as they are).
+
+| Call | Result |
+| --- | --- |
+| `sha256(data)` | The 32-byte SHA-256 digest of the data, as `bytes`. |
+| `sha256_hex(data)` | The same digest as 64 lowercase hexadecimal characters, as a string. |
+| `hmac_sha256(key, data)` | The 32-byte HMAC-SHA256 of `data` under `key` (each may be `bytes` or a string), as `bytes`. |
+| `rand_bytes(n)` | `n` bytes from the operating system's cryptographically secure generator. |
+
+```spark
+print(sha256_hex("abc"));
+// ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+var mac = hmac_sha256("key", "message");
+print(len(mac));  // 32
+```
+
+`rand()`/`randint()`/`srand()` are a fast, seedable, **non-cryptographic** PRNG:
+never use them for tokens, keys or passwords. `rand_bytes` is the secure source.
+Its result cannot be seeded, and it never falls back to the predictable generator:
+it raises a `RuntimeError` if the CSPRNG fails. An error message from these natives
+names the argument type but never echoes the key or the data.
+
 ## 10. Natives
 
 | Call | Result |
@@ -805,6 +831,10 @@ Directives: `%Y` (0001..9999), `%m`, `%d`, `%H`, `%M`, `%S`, `%j` (day of year),
 | `list_dir(path)` | Array with the names of the entries in a directory. |
 | `mkdir(path)` | Creates a directory (succeeds when it already exists). |
 | `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
+| `sha256(data)` | 32-byte SHA-256 of `bytes` or a string's UTF-8 bytes. |
+| `sha256_hex(data)` | The SHA-256 digest as 64 lowercase hexadecimal characters. |
+| `hmac_sha256(key, data)` | 32-byte HMAC-SHA256 of `data` under `key`. |
+| `rand_bytes(n)` | `n` bytes from the CSPRNG (`0..16 MiB`; a failure is a `RuntimeError`, never a fallback to `rand()`). |
 | `rand()` | Float in `[0.0, 1.0)`. |
 | `randint(max)` / `randint(min, max)` | Random integer in `[min, max]` (inclusive). |
 | `srand(seed)` | Seeds the PRNG with an integer or float. |
@@ -1597,6 +1627,9 @@ Linter rules:
 - A TLS `read` returns at most 16 MiB and a `write` accepts at most `INT32_MAX`
   bytes. TLS 1.2 is the minimum accepted version; the handshake, reads and writes
   are bounded by the socket's `timeout_ms` (0 waits forever).
+- `rand_bytes(n)` accepts `0..16,777,216` and raises `ValueError` outside it. A
+  failure of the operating system's CSPRNG is a `RuntimeError`; there is no
+  fallback to the predictable `rand()` sequence.
 - Ports are 16-bit (`0..65535`); port `0` asks the kernel for an ephemeral port.
 - Blocking network calls yield only their coroutine; the scheduler sleeps in `poll(2)`
   until a descriptor is ready or the nearest deadline fires, so an idle wait uses no

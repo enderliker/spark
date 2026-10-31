@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'sha256' expects bytes or a string, received number

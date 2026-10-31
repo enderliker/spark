@@ -1,0 +1,44 @@
+// SHA-256 vectors from FIPS 180-4: the empty message, "abc", the 448-bit
+// message and the one-million-'a' vector.
+print(sha256_hex(""));
+print(sha256_hex("abc"));
+print(sha256_hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"));
+print(sha256_hex(bytes_from("abc")));
+print(len(sha256("abc")), type(sha256("abc")));
+
+var chunk = "";
+for (var i = 0; i < 1000; i = i + 1) {
+    chunk = chunk + "a";
+}
+var million = "";
+for (var j = 0; j < 1000; j = j + 1) {
+    million = million + chunk;
+}
+print(len(million));
+print(sha256_hex(million));
+
+// RFC 4231 HMAC-SHA256 vectors 1, 2, 6 and 7.
+var key1 = bytes_from([11, 11, 11, 11, 11, 11, 11, 11, 11, 11,
+                       11, 11, 11, 11, 11, 11, 11, 11, 11, 11]);
+print(hex_encode(hmac_sha256(key1, "Hi There")));
+print(hex_encode(hmac_sha256("Jefe", "what do ya want for nothing?")));
+var bb = bytes_builder();
+for (var k = 0; k < 131; k = k + 1) {
+    bb_append(bb, 170);
+}
+var long_key = bb_to_bytes(bb);
+print(hex_encode(hmac_sha256(long_key, "Test Using Larger Than Block-Size Key - Hash Key First")));
+print(hex_encode(hmac_sha256(long_key, "This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm.")));
+
+// A string key is used as its UTF-8 bytes, and the result is a 32-byte bytes.
+print(len(hmac_sha256("key", "data")), type(hmac_sha256("key", "data")));
+
+// rand_bytes: the CSPRNG, not rand(). Only shape and distinctness are printed,
+// never the bytes themselves.
+var a = rand_bytes(32);
+var b = rand_bytes(32);
+var c = rand_bytes(32);
+print(len(a), type(a));
+print(a != b, b != c, a != c);
+print(len(rand_bytes(0)), len(rand_bytes(1)));
+print("crypto ok");

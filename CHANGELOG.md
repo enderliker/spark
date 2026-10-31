@@ -107,6 +107,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default
   and the calendar arithmetic is locale-independent; local time is opt-in.
+- Cryptography (`src/crypto.c`, through OpenSSL): `sha256`/`sha256_hex` over `bytes`
+  or a string, `hmac_sha256(key, data)`, and `rand_bytes(n)` from the operating
+  system's CSPRNG (capped at 16 MiB). `rand()` stays the fast, seedable,
+  non-cryptographic PRNG. A CSPRNG failure raises instead of falling back.
 
 ### Security
 
@@ -117,13 +121,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docs/language.md` and `docs/architecture.md`.
 - New fixtures cover the HTTP header-count and chunked-body limits and assert that
   URL and header secrets stay out of error messages.
+- The crypto natives name the received type in a `TypeError` but never echo the key
+  or the data, so a secret cannot leak through an exception; a fixture checks both
+  argument positions.
 
 ### Dependencies
 
-- Spark now links **OpenSSL** (`libssl`/`libcrypto`) for the TLS transport only.
-  This is the single approved exception to the no-dependencies rule (decision Q11);
-  the socket, HTTP and WebSocket layers stay dependency-free. Building TLS requires
-  the OpenSSL development headers (`libssl-dev` on Debian/Ubuntu).
+- Spark now links **OpenSSL** (`libssl`/`libcrypto`) for the TLS transport and for
+  the SHA-256, HMAC-SHA256 and CSPRNG natives in `src/crypto.c`. This is the single
+  approved exception to the no-dependencies rule (decision Q11); the socket, HTTP
+  and WebSocket layers stay dependency-free. Building requires the OpenSSL
+  development headers (`libssl-dev` on Debian/Ubuntu).
 
 ### Fixed
 

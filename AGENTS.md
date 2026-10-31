@@ -14,10 +14,11 @@ source -> lexer.c -> parser.c (AST) -> compiler.c (bytecode) -> vm.c (stack VM +
 ```
 
 Everything lives in `src/`. Spark has **no external dependencies except OpenSSL**,
-which is linked only for the TLS transport (`tls_connect` and `https://`); the
-socket, HTTP and WebSocket layers stay dependency-free. This is the single
-approved exception (decision Q11); see [`docs/architecture.md`](docs/architecture.md)
-and [`CHANGELOG.md`](CHANGELOG.md).
+linked for the TLS transport (`tls_connect` and `https://`) and for the SHA-256,
+HMAC-SHA256 and CSPRNG natives in `src/crypto.c`; the socket, HTTP, WebSocket,
+codec and inflate layers stay dependency-free. This is the single approved exception
+(decision Q11); see [`docs/architecture.md`](docs/architecture.md) and
+[`CHANGELOG.md`](CHANGELOG.md).
 
 Current status is tracked in [`tasks/todo.md`](tasks/todo.md) and
 [`tasks/plan.md`](tasks/plan.md). Consult them before starting work to see what is
@@ -67,8 +68,8 @@ Every task must satisfy all of the following:
 ## 5. Conventions
 
 - C11 with `-O3 -Wall -Wextra -Wpedantic`. The build must be warning-free.
-- No external dependencies except OpenSSL for TLS; no parser or VM generators:
-  everything else is handwritten.
+- No external dependencies except OpenSSL (TLS and the crypto natives); no parser
+  or VM generators: everything else is handwritten.
 - Match the existing structure, naming and style of the surrounding code.
 - Reuse the shared binary-operation helpers in `src/vm.c` (`compare_values`,
   `arithmetic_values`, `add_values`) instead of duplicating logic.

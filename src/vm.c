@@ -24,6 +24,7 @@
 #include "codec.h"
 #include "chunk.h"
 #include "compiler.h"
+#include "crypto.h"
 #include "datetime.h"
 #include "debugger.h"
 #include "json.h"
@@ -9386,6 +9387,7 @@ void vm_init(void)
     net_init();
     bytes_init();
     codec_init();
+    crypto_init();
     datetime_init();
     vm_set_args(0, NULL);
 
