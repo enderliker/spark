@@ -3,6 +3,7 @@ sent: 4
 data: ping
 sender host: 127.0.0.1
 sender port ok: true
+recv-limit: ValueError
 fds back: true
 timeout: true
 udp ok

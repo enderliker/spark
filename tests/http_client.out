@@ -7,8 +7,14 @@ header: abc
 map: 200 yes
 loop: NetworkError too many redirects (maximum 5)
 big: NetworkError
+max-body-low: ValueError
+max-body-high: ValueError
 timeout: TimeoutError
 huge: NetworkError
+headers: NetworkError
+big-chunked: NetworkError
 bad: NetworkError
 eof: NetworkError
+url-secret: ValueError false true
+header-secret: false
 http client ok

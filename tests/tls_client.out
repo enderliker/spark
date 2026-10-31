@@ -7,6 +7,7 @@ type: socket
 write: 5
 read: echo:hello
 eof: nil
+read-limit: ValueError
 send: NetworkError
 recv: NetworkError
 recv_line: NetworkError

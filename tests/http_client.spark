@@ -37,6 +37,16 @@ try {
     print("big:", e.type);
 }
 try {
+    http_get(base + "/hello", nil, nil, 5000, true, 0);
+} catch (e) {
+    print("max-body-low:", e.type);
+}
+try {
+    http_get(base + "/hello", nil, nil, 5000, true, 16777217);
+} catch (e) {
+    print("max-body-high:", e.type);
+}
+try {
     http_get(base + "/slow", nil, nil, 150);
 } catch (e) {
     print("timeout:", e.type);
@@ -47,6 +57,16 @@ try {
     print("huge:", e.type);
 }
 try {
+    http_get(base + "/headers");
+} catch (e) {
+    print("headers:", e.type);
+}
+try {
+    http_get(base + "/big-chunked", nil, nil, 5000, true, 1024);
+} catch (e) {
+    print("big-chunked:", e.type);
+}
+try {
     http_get(base + "/bad");
 } catch (e) {
     print("bad:", e.type);
@@ -55,5 +75,18 @@ try {
     http_get(base + "/eof");
 } catch (e) {
     print("eof:", e.type);
+}
+
+// Secrets never reach an error message: userinfo is redacted and headers are
+// not echoed.
+try {
+    url_parse("http://user:secret@host:99999/");
+} catch (e) {
+    print("url-secret:", e.type, contains(e.message, "secret"), contains(e.message, "***"));
+}
+try {
+    http_get(base + "/eof", nil, {"Authorization": "Bearer topsecret"}, 2000);
+} catch (e) {
+    print("header-secret:", contains(e.message, "topsecret"));
 }
 print("http client ok");

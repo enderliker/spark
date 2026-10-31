@@ -1,0 +1,29 @@
+// TCP echo server: every line received is sent back unchanged.
+//
+//   spark examples/echo_server.spark [port]
+//
+// Port 0 asks the kernel for an ephemeral port; the chosen port is printed.
+// Try it with another terminal:
+//
+//   printf 'hello\n' | nc 127.0.0.1 <port>
+var port = 0;
+if (len(argv) > 1) {
+    port = int(argv[1]);
+}
+
+var server = tcp_listen("127.0.0.1", port);
+print("listening " + str(server.port()));
+
+while (true) {
+    var client = server.accept();
+    spawn(fn() {
+        while (true) {
+            var line = client.recv_line();
+            if (line == nil) {
+                break;
+            }
+            client.send(line + "\n");
+        }
+        client.close();
+    });
+}

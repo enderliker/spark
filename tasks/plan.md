@@ -119,14 +119,14 @@ small amount of VM plumbing.
 - [x] The mock-gateway fixture passes offline; the example is documented step by step
 
 ### Phase 20 - Hardening, docs and ecosystem
-- [ ] T99 Security hardening pass (limits, SSRF, secrets, sandboxing caveat)
-- [ ] T100 Documentation: language reference, architecture, README, limits, CHANGELOG
-- [ ] T101 Benchmarks: HTTP round-trip and echo throughput, plus the CI-safe test strategy
-- [ ] T102 Example programs: HTTP client CLI, echo server, Discord bot
+- [x] T99 Security hardening pass (limits, SSRF, secrets, sandboxing caveat)
+- [x] T100 Documentation: language reference, architecture, README, limits, CHANGELOG
+- [x] T101 Benchmarks: HTTP round-trip and echo throughput, plus the CI-safe test strategy
+- [x] T102 Example programs: HTTP client CLI, echo server, Discord bot
 
 ### Checkpoint: Complete
-- [ ] All acceptance criteria met; suite, sanitizers and benchmark gates green
-- [ ] Ready for review
+- [x] All acceptance criteria met; suite, sanitizers and benchmark gates green
+- [x] Ready for review
 
 ## Risks and Mitigations
 

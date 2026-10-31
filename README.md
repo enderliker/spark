@@ -158,8 +158,11 @@ spark> exit
 ```
 
 The examples under [`examples/`](examples) are small, runnable programs covering
-closures, collections, sorting and networking. The HTTP server example builds on
-the standard-library module [`lib/http.spark`](lib/http.spark).
+closures, collections, sorting and networking. [`http_client.spark`](examples/http_client.spark)
+fetches a URL, [`http_server.spark`](examples/http_server.spark) serves one with
+[`lib/http.spark`](lib/http.spark), [`echo_server.spark`](examples/echo_server.spark)
+echoes lines and [`discord_bot.spark`](examples/discord_bot.spark) speaks the
+Discord gateway protocol against a local mock gateway.
 
 ## Quick language guide
 
@@ -439,7 +442,7 @@ $ ./spark --dump hello.spark
 `tests/run_tests.py` runs valid programs comparing exact output (`tests/cases`),
 error cases checking the exit code and a `stderr` fragment (`tests/errors`), REPL
 sessions and the CLI options, including the debugger, formatter, linter and
-precompiled bytecode. The current suite contains 235 tests and all of them pass.
+precompiled bytecode. The current suite contains 238 tests and all of them pass.
 
 CI (`.github/workflows/ci.yml`) runs four jobs on every push to `main` and on every
 pull request:
@@ -459,7 +462,11 @@ and TLS servers on ephemeral ports.
 the minimum and median; the minimum is around 4.9 ms on an idle development
 machine, and the performance gate is a minimum below 5 ms.
 `benchmarks/run_all.py` runs the wider set (loops, closures, arrays, maps, sorting,
-strings, allocation) and prints min/median per benchmark.
+strings, allocation, TCP echo and HTTP round-trips) and prints min/median per
+benchmark. The network benchmarks stay offline: `echo.spark` uses an in-process
+coroutine server, while `http_roundtrip.spark` talks to a loopback server that
+`run_all.py` starts in another process (the HTTP client blocks the process rather
+than yielding its coroutine).
 
 `tests/cases/string_builder_scale.spark` guards the amortized behavior of
 `string_builder`: it measures the same loop at two sizes and fails when quadrupling

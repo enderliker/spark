@@ -59,6 +59,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   heartbeats and answers a message event. `tests/run_tests.py` runs it against a
   local mock gateway (HELLO, IDENTIFY, READY, MESSAGE_CREATE), so the example is
   covered offline and never contacts Discord.
+- `examples/http_client.spark` and `examples/echo_server.spark`, exercised by the
+  suite against local counterparts. The suite also lints every example.
+- Network benchmarks: `benchmarks/http_roundtrip.spark` joins the TCP echo
+  benchmark in `benchmarks/run_all.py`, which starts a loopback HTTP server in a
+  separate process. Both benchmarks run offline on ephemeral ports.
+
+### Security
+
+- Network error messages redact URL userinfo (`https://***@host/`) and never echo
+  header values or bodies, so a token passed through a URL or an `Authorization`
+  header cannot leak through an exception. The embedder trust model (Spark is not a
+  sandbox; cap descriptors, sandbox the process, filter egress) is documented in
+  `docs/language.md` and `docs/architecture.md`.
+- New fixtures cover the HTTP header-count and chunked-body limits and assert that
+  URL and header secrets stay out of error messages.
 
 ### Dependencies
 

@@ -4,6 +4,8 @@ sent: 6 6
 line: hello world
 local: 127.0.0.1 true
 peer host: 127.0.0.1
+recv-limit: ValueError
+line-limit: ValueError
 raw: raw!!
 eof: true
 closed type: socket

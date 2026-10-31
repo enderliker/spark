@@ -23,6 +23,7 @@ print("type:", type(socket));
 print("write:", socket.write("hello"));
 print("read:", socket.read(1024));
 print("eof:", socket.read(1024));
+try { socket.read(16 * 1024 * 1024 + 1); } catch (e) { print("read-limit:", e.type); }
 
 // TLS sockets expose read/write, not the plain TCP methods.
 try { socket.send("x"); } catch (e) { print("send:", e.type); }

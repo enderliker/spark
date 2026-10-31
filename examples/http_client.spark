@@ -1,0 +1,18 @@
+// HTTP client: fetches a URL and prints the status, headers and body.
+//
+//   spark examples/http_client.spark http://127.0.0.1:8080/
+//
+// The timeout is ten seconds. HTTPS uses the system trust store and verifies
+// the certificate and host name; there is no way to disable verification.
+if (len(argv) < 2) {
+    print("usage: spark examples/http_client.spark URL");
+    exit(2);
+}
+
+var response = http_get(argv[1], nil, nil, 10000);
+print("status: " + str(response.status));
+for (var name in response.headers) {
+    print(name + ": " + response.headers[name]);
+}
+print("");
+print(response.body);

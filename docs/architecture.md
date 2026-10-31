@@ -545,6 +545,23 @@ MESSAGE_CREATE and a heartbeat-driven reply), so the Discord example is exercise
 offline. A WebSocket server (T97) is deferred: Spark strings are UTF-8 text, so a
 server-side frame writer needs a byte-buffer type first.
 
+### Security and trust model (phase 20)
+
+Spark is not a sandbox: `exec` and the network natives are available to every
+program, and the networking layer imposes no destination allow-list. The trust
+model is documented for embedders in `docs/language.md`; the code enforces the
+mechanical parts:
+
+- **Error hygiene.** URL parsing and the HTTP client redact userinfo as `***@`
+  before formatting an error, and no error echoes a header value or a body. TLS
+  errors carry the verification reason only.
+- **Bounded resources.** Descriptor exhaustion is reported as `NetworkError`
+  instead of aborting; the HTTP client caps lines, headers, redirects and bodies;
+  WebSocket caps frames, control payloads and close reasons. Every limit has a
+  fixture.
+- **SSRF.** There is no address filter. Programs that accept URLs must validate
+  them, and embedders should enforce egress policy outside the language runtime.
+
 ## Modules and loading
 
 The VM manages modules through a canonical module table (`vm.modules`).
@@ -614,12 +631,22 @@ Spark provides native tools without external dependencies:
 - tests the REPL (expressions, persistence, blocks and error recovery);
 - tests `--version`, `--help`, `--dump`, `--compile`, `--debug`, `--format`, `--lint` and bytecode execution, and error cases.
 
-There are 208 tests. The suite is also run under `-fsanitize=address,undefined`
+There are 238 tests. The suite is also run under `-fsanitize=address,undefined`
 (both locally and in CI), and CI builds with `-Werror`, checks the benchmark and
 publishes coverage. Coverage can be measured locally with `make coverage`.
 
+The networking fixtures follow one rule: no public internet. Each one starts a
+local server on an ephemeral port and stops it in a `finally` block, with bounded
+timeouts. `tests/run_tests.py` includes a scripted HTTP server, an RFC 6455 server
+(plain and TLS), a Discord-shaped mock gateway and a low-`RLIMIT_NOFILE` run that
+trips descriptor exhaustion. The TLS fixtures are committed throwaway certificates.
+
 `benchmarks/run.py` runs `benchmarks/fib.spark` (fib(27)) seven times and reports the
-minimum and median.
+minimum and median. `benchmarks/run_all.py` adds the wider microbenchmark set plus
+two network benchmarks: `echo.spark` (TCP round-trips between coroutines) and
+`http_roundtrip.spark` (local HTTP GETs). Because the HTTP client blocks the
+process, `run_all.py` starts the HTTP server in another process; both benchmarks
+stay offline and use ephemeral loopback ports.
 
 ## How to extend the language
 

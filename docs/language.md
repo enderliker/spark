@@ -823,6 +823,19 @@ its own policy (for example, restrict schemes and reject loopback or private add
 ranges) before connecting. TLS does not change that: certificate verification
 authenticates the peer, it does not make an arbitrary destination safe to contact.
 
+- URL userinfo (`https://user:secret@host/`) is accepted for compatibility but is
+  not sent. Network error messages redact it (`https://***@host/`), and header
+  values, request bodies and response bodies are never echoed by an error.
+- Timeouts: socket, TLS and WebSocket operations accept `timeout_ms` and wait
+  forever when it is omitted, so a server can idle; the HTTP client defaults to a
+  30 s deadline. Pass an explicit timeout for any operation driven by untrusted
+  input.
+- **Embedders.** Treat Spark as a language runtime, not a security boundary. Run
+  untrusted programs inside an OS sandbox (container, seccomp, namespaces), cap
+  descriptors with `RLIMIT_NOFILE` (exhaustion raises `NetworkError`), and apply an
+  egress firewall or proxy when destinations must be restricted. Any in-language
+  policy can be bypassed with `exec`.
+
 ### HTTP server library
 
 `lib/http.spark` builds a server on the socket layer, with no native server code:
@@ -1294,6 +1307,11 @@ Linter rules:
   at most 1000 headers and five redirects are accepted, the body defaults to a 16 MiB
   cap (`max_body`) and the whole request defaults to a 30 s deadline (`timeout_ms`).
   It blocks the process rather than yielding the coroutine.
+- A WebSocket frame and an assembled message are capped at 16 MiB, a control payload
+  at 125 bytes and a close reason at 123 bytes. Text and close reasons are validated
+  as UTF-8; protocol violations close with `1002`, `1007` or `1009`.
+- Descriptors are capped by the process limit (`RLIMIT_NOFILE`); exhausting it raises
+  `NetworkError: too many open descriptors` instead of leaking or crashing.
 - The `lib/http.spark` server reads at most 8192 characters per line, 100 headers and
   the body up to `Content-Length`; it is a text server, so bodies with multibyte
   characters count differently from bytes.

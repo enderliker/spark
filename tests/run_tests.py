@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import select
+import socket
 import socketserver
 import ssl
 import struct
@@ -540,6 +541,18 @@ class ScriptedHandler(BaseHTTPRequestHandler):
             # A header line well past the 64 KiB response cap.
             self.wfile.write(b"HTTP/1.1 200 OK\r\nX-Huge: " + b"a" * 70000
                              + b"\r\nContent-Length: 0\r\n\r\n")
+        elif path == "/headers":
+            # One header past the 1000-header response cap.
+            self.wfile.write(b"HTTP/1.1 200 OK\r\n" + b"X-Filler: a\r\n" * 1001
+                             + b"Content-Length: 0\r\n\r\n")
+        elif path == "/big-chunked":
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            for _ in range(2):
+                chunk = b"x" * 800
+                self.wfile.write(b"%x\r\n" % len(chunk) + chunk + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
         elif path == "/bad":
             self.wfile.write(b"not an http response\r\n\r\n")
         elif path == "/eof":
@@ -1058,6 +1071,91 @@ def test_http_server() -> None:
             server.kill()
 
 
+def test_examples() -> None:
+    print("\nExamples")
+    examples = sorted((ROOT / "examples").glob("*.spark"))
+    lint_ok = True
+    lint_detail = ""
+    for program in examples:
+        completed = run(["--lint", str(program)])
+        if completed.returncode != 0 or completed.stdout or completed.stderr:
+            lint_ok = False
+            lint_detail += f"{program.name}: {completed.stdout}{completed.stderr}"
+    report("the examples are lint-clean", lint_ok, lint_detail)
+
+    server = subprocess.Popen(
+        [str(BINARY), str(ROOT / "examples" / "http_server.spark"), "0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        ready, _, _ = select.select([server.stdout], [], [], 20)
+        line = server.stdout.readline().strip() if ready else ""
+        port = None
+        if line.startswith("Serving http://127.0.0.1:"):
+            port = int(line.split(":", 2)[2].split("/", 1)[0])
+        if port is None:
+            report(
+                "http_client example talks to the http_server example",
+                False,
+                f"the server said {line!r}",
+            )
+        else:
+            completed = run(
+                [str(ROOT / "examples" / "http_client.spark"), f"http://127.0.0.1:{port}/"],
+                timeout=30,
+            )
+            detail = ""
+            ok = (
+                completed.returncode == 0
+                and "status: 200" in completed.stdout
+                and "Hello from Spark!" in completed.stdout
+                and not completed.stderr
+            )
+            if completed.returncode != 0:
+                detail += f"exit code {completed.returncode}\n"
+            if "status: 200" not in completed.stdout:
+                detail += "missing 'status: 200'\n"
+            if "Hello from Spark!" not in completed.stdout:
+                detail += "missing the response body\n"
+            if completed.stderr:
+                detail += "unexpected stderr:\n" + completed.stderr
+            report("http_client example talks to the http_server example", ok, detail)
+    finally:
+        if server.poll() is None:
+            server.kill()
+
+    server = subprocess.Popen(
+        [str(BINARY), str(ROOT / "examples" / "echo_server.spark"), "0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        ready, _, _ = select.select([server.stdout], [], [], 20)
+        line = server.stdout.readline().strip() if ready else ""
+        port = None
+        if line.startswith("listening "):
+            port = int(line.split(" ", 1)[1])
+        if port is None:
+            report("echo_server example echoes a line", False, f"the server said {line!r}")
+        else:
+            with socket.create_connection(("127.0.0.1", port), timeout=10) as client:
+                client.sendall(b"hello\n")
+                echoed = client.recv(1024)
+            report(
+                "echo_server example echoes a line",
+                echoed == b"hello\n",
+                f"received {echoed!r}",
+            )
+    finally:
+        if server.poll() is None:
+            server.kill()
+
+
 def main() -> int:
     if not BINARY.exists():
         print("missing binary; run 'make' first", file=sys.stderr)
@@ -1070,6 +1168,7 @@ def main() -> int:
     test_network_limits()
     test_http_client()
     test_http_server()
+    test_examples()
     test_tls_client()
     test_https_client()
     test_ws_client()

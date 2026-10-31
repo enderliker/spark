@@ -1,0 +1,20 @@
+// HTTP round-trips: N GET requests against a local server. The server runs in
+// another process because the HTTP client blocks the process instead of
+// yielding its coroutine. benchmarks/run_all.py starts the server and passes
+// its ephemeral port as argv[1].
+var port = int(argv[1]);
+var rounds = 200;
+if (len(argv) > 2) {
+    rounds = int(argv[2]);
+}
+
+var url = "http://127.0.0.1:" + str(port) + "/";
+var start = clock();
+for (var i = 0; i < rounds; i += 1) {
+    var response = http_get(url, nil, nil, 5000);
+    if (response.status != 200) {
+        throw "unexpected HTTP status " + str(response.status);
+    }
+}
+var elapsed = (clock() - start) * 1000;
+print(elapsed);

@@ -16,6 +16,7 @@ print("data:", message.data);
 print("sender host:", message.host);
 print("sender port ok:", message.port > 0 and message.port != receiver_port);
 
+try { sender.recv_from(16 * 1024 * 1024 + 1); } catch (e) { print("recv-limit:", e.type); }
 sender.close();
 receiver.close();
 print("fds back:", fd_count() == baseline);

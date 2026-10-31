@@ -324,11 +324,11 @@ redirect limits, secret hygiene (tokens through `env`, never logged), the SSRF s
 of outbound connections, and a plain statement that `exec` already grants network
 access so Spark is not a sandbox.
 **Acceptance criteria:**
-- [ ] Every limit has a fixture that trips it, and every failure is a categorized error.
-- [ ] No secret can be echoed by a network error message or a traceback.
-- [ ] The trust model is documented for embedders.
+- [x] Every limit has a fixture that trips it, and every failure is a categorized error.
+- [x] No secret can be echoed by a network error message or a traceback.
+- [x] The trust model is documented for embedders.
 **Verification:**
-- [ ] Error fixtures; suite; sanitizers.
+- [x] Error fixtures; suite; sanitizers.
 **Dependencies:** T86-T98.
 **Files:** `src/net.c`, `docs/`, `tests/errors`.
 **Scope:** M.
@@ -338,10 +338,10 @@ access so Spark is not a sandbox.
 methods, examples, limits), an architecture section (descriptor/GC model, scheduler
 integration, poll loop), README features and native tables, and the limits section.
 **Acceptance criteria:**
-- [ ] Every native and method is documented with its signature and error behavior, and the examples run as written.
-- [ ] `AGENTS.md` records any dependency decision; `CHANGELOG.md` gets the new entries.
+- [x] Every native and method is documented with its signature and error behavior, and the examples run as written.
+- [x] `AGENTS.md` records any dependency decision; `CHANGELOG.md` gets the new entries.
 **Verification:**
-- [ ] Examples executed; native list cross-checked against the docs table; suite.
+- [x] Examples executed; native list cross-checked against the docs table; suite.
 **Dependencies:** T82-T99.
 **Files:** `docs/language.md`, `docs/architecture.md`, `README.md`, `CHANGELOG.md`, `AGENTS.md`.
 **Scope:** M.
@@ -351,9 +351,9 @@ integration, poll loop), README features and native tables, and the limits secti
 `benchmarks/run_all.py`, plus the documented CI-safe testing strategy (local servers,
 ephemeral ports, no public network).
 **Acceptance criteria:**
-- [ ] Both benchmarks report min/median and run offline in CI within the existing budget.
+- [x] Both benchmarks report min/median and run offline in CI within the existing budget.
 **Verification:**
-- [ ] `python3 benchmarks/run_all.py`; CI green.
+- [x] `python3 benchmarks/run_all.py`; CI green.
 **Dependencies:** T92, T90.
 **Files:** `benchmarks/`, `docs/architecture.md`.
 **Scope:** S.
@@ -362,13 +362,13 @@ ephemeral ports, no public network).
 **Description:** `examples/http_client.spark`, `examples/echo_server.spark` and the
 Discord bot from T98, plus README pointers.
 **Acceptance criteria:**
-- [ ] Each example runs against a local counterpart and is listed in the README.
+- [x] Each example runs against a local counterpart and is listed in the README.
 **Verification:**
-- [ ] Manual run of each example; suite (the examples stay lint-clean).
+- [x] Manual run of each example; suite (the examples stay lint-clean).
 **Dependencies:** T93, T98.
 **Files:** `examples/`, `README.md`.
 **Scope:** S.
 
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met; suite, sanitizers and benchmark gates green
-- [ ] Ready for review
+- [x] All acceptance criteria met; suite, sanitizers and benchmark gates green
+- [x] Ready for review

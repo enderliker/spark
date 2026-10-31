@@ -27,6 +27,8 @@ print("peer host:", client.peer().host);
 
 // Raw reads return the bytes available; EOF is nil once the peer closes.
 client.send("raw!!");
+try { peer.recv(16 * 1024 * 1024 + 1); } catch (e) { print("recv-limit:", e.type); }
+try { peer.recv_line(0); } catch (e) { print("line-limit:", e.type); }
 print("raw:", peer.recv(5));
 client.close();
 print("eof:", peer.recv(5) == nil);

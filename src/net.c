@@ -980,28 +980,57 @@ static bool net_scheme_char(int c)
     return isalnum(c) || c == '+' || c == '-' || c == '.';
 }
 
+/* Returns `text` with any userinfo redacted, so an error message never echoes
+ * a credential embedded in a URL. The caller supplies a scratch buffer; long
+ * URLs are truncated at the buffer boundary. */
+static const char *net_url_for_error(const char *text, char *buffer, size_t capacity)
+{
+    const char *scheme_sep = strstr(text, "://");
+    const char *authority;
+    const char *authority_end;
+    const char *at = NULL;
+
+    if (!scheme_sep) {
+        return text;
+    }
+    authority = scheme_sep + 3;
+    authority_end = authority + strcspn(authority, "/?#");
+    for (const char *p = authority; p < authority_end; p++) {
+        if (*p == '@') {
+            at = p;
+        }
+    }
+    if (!at) {
+        return text;
+    }
+    snprintf(buffer, capacity, "%.*s://***@%s", (int)(scheme_sep - text), text, at + 1);
+    return buffer;
+}
+
 /* Parses "scheme://[userinfo@]host[:port][/path][?query][#fragment]". A missing
  * path becomes "/"; a missing query or fragment becomes "". Malformed input
  * fails with a value error instead of a half-built URL. */
 static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
 {
     const char *scheme_sep = strstr(text, "://");
+    char shown_buffer[256];
+    const char *shown = net_url_for_error(text, shown_buffer, sizeof(shown_buffer));
 
     memset(out, 0, sizeof(*out));
 
     if (!scheme_sep || scheme_sep == text) {
-        net_fail(err, ERROR_VALUE, "invalid URL '%s': expected scheme://host", text);
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': expected scheme://host", shown);
         return false;
     }
     size_t scheme_length = (size_t)(scheme_sep - text);
 
     if (!isalpha((unsigned char)text[0])) {
-        net_fail(err, ERROR_VALUE, "invalid URL '%s': the scheme must start with a letter", text);
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': the scheme must start with a letter", shown);
         return false;
     }
     for (size_t i = 0; i < scheme_length; i++) {
         if (!net_scheme_char((unsigned char)text[i])) {
-            net_fail(err, ERROR_VALUE, "invalid URL '%s': bad character in the scheme", text);
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': bad character in the scheme", shown);
             return false;
         }
     }
@@ -1011,7 +1040,7 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
     const char *authority_end = authority + strcspn(authority, "/?#");
 
     if (authority_end == authority) {
-        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", shown);
         goto fail;
     }
 
@@ -1024,7 +1053,7 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
         }
     }
     if (host_start == authority_end) {
-        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", shown);
         goto fail;
     }
 
@@ -1035,13 +1064,13 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
         const char *close = memchr(host_start, ']', (size_t)(authority_end - host_start));
 
         if (!close) {
-            net_fail(err, ERROR_VALUE, "invalid URL '%s': unterminated IPv6 literal", text);
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': unterminated IPv6 literal", shown);
             goto fail;
         }
         host_end = close + 1; /* keep the brackets */
         if (host_end < authority_end) {
             if (*host_end != ':') {
-                net_fail(err, ERROR_VALUE, "invalid URL '%s': unexpected text after the host", text);
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': unexpected text after the host", shown);
                 goto fail;
             }
             port_start = host_end + 1;
@@ -1055,7 +1084,7 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
         }
     }
     if (host_end == host_start) {
-        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", text);
+        net_fail(err, ERROR_VALUE, "invalid URL '%s': missing host", shown);
         goto fail;
     }
     out->host = net_strndup_owned(host_start, (size_t)(host_end - host_start));
@@ -1064,17 +1093,17 @@ static bool net_url_parse(const char *text, NetUrl *out, NetError *err)
         int64_t port = 0;
 
         if (port_start >= authority_end) {
-            net_fail(err, ERROR_VALUE, "invalid URL '%s': missing port", text);
+            net_fail(err, ERROR_VALUE, "invalid URL '%s': missing port", shown);
             goto fail;
         }
         for (const char *p = port_start; p < authority_end; p++) {
             if (!isdigit((unsigned char)*p)) {
-                net_fail(err, ERROR_VALUE, "invalid URL '%s': the port must be numeric", text);
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': the port must be numeric", shown);
                 goto fail;
             }
             port = port * 10 + (*p - '0');
             if (port > 65535) {
-                net_fail(err, ERROR_VALUE, "invalid URL '%s': port out of range", text);
+                net_fail(err, ERROR_VALUE, "invalid URL '%s': port out of range", shown);
                 goto fail;
             }
         }
@@ -2194,7 +2223,10 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
         return false;
     }
     if (!url.port_known) {
-        net_fail(err, ERROR_NETWORK, "invalid URL '%s': missing port", url_text);
+        char shown_buffer[256];
+        const char *shown = net_url_for_error(url_text, shown_buffer, sizeof(shown_buffer));
+
+        net_fail(err, ERROR_NETWORK, "invalid URL '%s': missing port", shown);
         net_url_free(&url);
         return false;
     }
