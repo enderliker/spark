@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'lcm' result is out of the 64-bit integer range

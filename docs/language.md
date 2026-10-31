@@ -94,6 +94,9 @@ print(9223372036854775807 + 1);    //  9.22337203685478e+18  (promoted to a floa
   a separator must sit between two digits.
 - The global constant `nan` represents IEEE 754 NaN (Not a Number). Following IEEE 754,
   `nan == nan` is `false`. Use the native `is_nan(x)` to test if a numeric value is NaN.
+- The global constants `inf` and `-inf` are the IEEE 754 infinities. `is_nan(inf)` is
+  `false`, `inf == inf` is `true`, `inf > x` holds for every finite `x`, and
+  `inf + 1 == inf`.
 
 Arrays and maps can hold any value, including other arrays and functions. Functions,
 arrays and maps are compared by identity; strings and bytes by content. Integers use the
@@ -822,11 +825,18 @@ names the argument type but never echoes the key or the data.
 | `sort(array)` | Sorts numbers or strings in place; mixing types is an error. |
 | `sort_by(array, fn)` | Sorts in place with `fn(x, y)` returning whether `x` goes before `y`. |
 | `abs(x)` | Absolute value; an integer stays an integer. |
-| `floor(x)` / `ceil(x)` / `round(x)` | Rounding; an integer input is returned unchanged. |
+| `floor(x)` / `ceil(x)` / `trunc(x)` | Rounding toward ±infinity or zero; an integer input is returned unchanged. |
+| `round(x, digits?)` | Rounds half away from zero, optionally to `digits` decimal places by binary scaling; an integer input is returned unchanged. |
 | `sqrt(x)` | Square root (error on negative input). |
 | `pow(x, y)` | `x` raised to `y`. |
-| `sin(x)` / `cos(x)` | Sine and cosine (radians). |
-| `log(x)` / `exp(x)` | Natural logarithm and exponential. |
+| `sin(x)` / `cos(x)` / `tan(x)` | Trigonometric functions (radians); always return a float. |
+| `asin(x)` / `acos(x)` | Inverse sine/cosine; always return a float, and input outside `[-1, 1]` is an error. |
+| `atan(x)` / `atan2(y, x)` | Inverse tangent of one value, or of `y/x` with the correct quadrant; always return a float. |
+| `log(x)` / `log2(x)` / `log10(x)` / `exp(x)` | Logarithms and exponential; a non-positive logarithm argument is an error. |
+| `cbrt(x)` / `hypot(x, y)` | Cube root (negative input allowed) and `sqrt(x*x + y*y)` without intermediate overflow. |
+| `sign(x)` | `-1`, `0` or `1` as an integer; `nan` is an error. |
+| `clamp(x, low, high)` | `x` limited to `[low, high]`, returning whichever of the three values wins; `low > high` or `nan` is an error. |
+| `gcd(a, b)` / `lcm(a, b)` | Greatest common divisor and least common multiple of two 64-bit integers (magnitudes are used); a non-integer argument or an `lcm` result outside 64 bits is an error. |
 | `min(a, b, ...)` / `max(a, b, ...)` | Smallest/largest of the arguments, or of an array when given a single array. |
 | `exit(code?)` | Flushes stdout/stderr and terminates the program with the given exit code (default 0). |
 | `env(name?)` | Value of an environment variable as string or `nil`; without arguments, returns a map of all variables. |
@@ -890,6 +900,45 @@ names the argument type but never echoes the key or the data.
 Builders also accept the method form, which reads better when chaining:
 `sb.append(value)`, `sb.to_string()`, `sb.len()` and `sb.clear()`, and for bytes
 `bb.append(value)`, `bb.to_bytes()`, `bb.len()` and `bb.clear()`.
+
+### Math
+
+The numeric natives follow two rules:
+
+- **Exact operations keep an integer.** `abs`, `floor`, `ceil`, `trunc`, `round`,
+  `sign`, `min`, `max`, `sum`, `gcd` and `lcm` return an integer when their
+  inputs are integers, so `is_int(round(7))` is `true` and `round(7, 2)` returns
+  `7` unchanged. `clamp` returns whichever of `x`, `low` and `high` wins, keeping
+  its type: `clamp(1, 0.0, 2.0)` is the integer `1`, `clamp(5, 0, 3.5)` is the
+  float `3.5`.
+- **Transcendental operations always return a float**, matching `sin`, `cos`,
+  `log`, `sqrt` and `pow`: `tan`, `asin`, `acos`, `atan`, `atan2`, `log2`,
+  `log10`, `cbrt` and `hypot`. `is_int(log2(8))` is `false` even though the
+  value prints as `3`.
+
+Domain errors are `ValueError`: `sqrt` of a negative, `asin`/`acos` outside
+`[-1, 1]`, `log`/`log2`/`log10` of a non-positive value, a `nan` passed to
+`sign` or `clamp`, `clamp` with `low > high`, `gcd`/`lcm` given a non-integer,
+and an `lcm` result that does not fit in 64 bits. A non-numeric argument is a
+`TypeError`. `gcd` and `lcm` work on the magnitudes (`gcd(-12, 18)` is `6`,
+`lcm(-4, 6)` is `12`) and handle the full 64-bit range; `gcd` of two
+`INT64_MIN` values is the float `9223372036854775808`, the same convention
+`abs` uses for that one input.
+
+`round(x, digits?)` rounds with the C `round` rule (half away from zero) and,
+with `digits`, scales by `10^digits`, rounds and scales back **in binary
+floating point**. It is not decimal rounding of the shortest representation:
+
+```spark
+print(round(2.5), round(-2.5));       // 3 -3
+print(round(2.675, 2));               // 2.68: 2.675 * 100 is exactly 267.5
+print(round(1.005, 2));               // 1: 1.005 * 100 is 100.49999999999999
+print(round(1.23456, 3));             // 1.235
+```
+
+`digits` must be an integer in `0..15` (`ValueError` otherwise). A non-finite
+value, or a finite one whose scaling would overflow to infinity, is returned
+unchanged.
 
 ### Regular expressions
 
@@ -1400,7 +1449,7 @@ failure answers `500`. The request line and each header are capped at 8192
 characters, at most 100 headers are read, and the body is read up to
 `Content-Length`. See `examples/http_server.spark`.
 
-The global constants `pi` and `nan` are predefined, and the REPL keeps the result of
+The global constants `pi`, `nan` and `inf` are predefined, and the REPL keeps the result of
 the last expression in `_`.
 
 The script arguments are accessible through the global array `argv`, where `argv[0]`

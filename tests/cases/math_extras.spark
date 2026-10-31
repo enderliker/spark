@@ -1,0 +1,41 @@
+// Trigonometry and logarithms always return floats, like sin/cos/log.
+print(tan(0));
+print(asin(1));
+print(acos(0));
+print(atan(1));
+print(atan2(1, 1));
+print(log2(8));
+print(log2(1));
+print(log10(1000));
+print(cbrt(-27));
+print(hypot(3, 4));
+print(is_int(atan(1)), is_int(log2(4)));
+
+// trunc, sign and clamp keep integers integer.
+print(trunc(3.7), trunc(-3.7), trunc(5));
+print(is_int(trunc(5)), is_int(trunc(3.7)));
+print(sign(-4.2), sign(0), sign(7));
+print(clamp(5, 0, 3), clamp(-1, 0, 3), clamp(2.5, 0, 10));
+print(clamp(1, 0.0, 2.0));
+print(is_int(clamp(5, 0, 3)), is_int(clamp(1, 0.0, 2.0)));
+
+// gcd and lcm use magnitudes and stay in 64-bit integers.
+print(gcd(12, 18), gcd(-12, 18), gcd(0, 5), gcd(0, 0));
+print(lcm(4, 6), lcm(0, 5), lcm(-4, 6));
+print(gcd(9007199254740993, 1));
+
+// round takes optional digits and scales in binary floating point: 2.675 * 100
+// lands exactly on 267.5 and rounds up, while 1.005 * 100 is just below 100.5.
+print(round(2.5), round(-2.5), round(7));
+print(round(2.675, 2), round(1.005, 2), round(1.23456, 3));
+print(round(2.5, 0), round(7, 2), is_int(round(7, 2)));
+
+// inf is a predefined constant and is not NaN.
+print(inf);
+print(-inf);
+print(is_nan(inf), inf == inf, inf != nan);
+print(inf > 1000000, -inf < -1000000);
+print(inf + 1 == inf);
+print(str(inf), type(inf));
+
+print("math extras ok");

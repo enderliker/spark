@@ -138,6 +138,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/regex_tokenizer.spark` splits a line, recovers character offsets and
   classifies each field with capture groups; the suite runs it and checks that
   `docs/language.md` carries the same program.
+- Math natives: `tan`, `asin`, `acos`, `atan`, `atan2`, `log2`, `log10`, `cbrt`,
+  `hypot`, `trunc`, `sign`, `clamp`, `gcd` and `lcm`, plus the `inf` constant.
+  Exact operations keep an integer (including `round(x, digits?)`, which returns
+  an integer input unchanged); transcendental ones always return a float. Domain
+  errors (`asin`/`acos` outside `[-1, 1]`, logs of non-positive values, `nan` in
+  `sign`/`clamp`, inverted `clamp` bounds, non-integer `gcd`/`lcm` arguments and
+  an `lcm` result past 64 bits) are `ValueError`s. `round(x, digits)` scales in
+  binary floating point rather than decimal, which the reference states with
+  examples.
 - Date and time (`src/datetime.c`): `time_format(timestamp?, format, local?)` and
   `time_parse(text, format, local?)` with `%Y %m %d %H %M %S %j %w %a %A %b %B %z %Z`
   and `%%`, plus `time_utc`/`time_local` offsets and `time_ms()`. UTC is the default

@@ -287,10 +287,13 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | Function | Description |
 | --- | --- |
 | `abs(x)` | Absolute value; an integer stays an integer. |
-| `floor(x)` / `ceil(x)` / `round(x)` | Rounding (integers are returned unchanged). |
+| `floor(x)` / `ceil(x)` / `trunc(x)` / `round(x, digits?)` | Rounding (integers are returned unchanged; `round` scales in binary floating point). |
 | `sqrt(x)` | Square root (error on negative input). |
 | `pow(x, y)` | `x` raised to `y`. |
-| `sin(x)` / `cos(x)` / `log(x)` / `exp(x)` | Trigonometry (radians), natural logarithm and exponential. |
+| `sin(x)` / `cos(x)` / `tan(x)` / `log(x)` / `log2(x)` / `log10(x)` / `exp(x)` | Trigonometry (radians), logarithms and exponential. |
+| `asin(x)` / `acos(x)` / `atan(x)` / `atan2(y, x)` / `cbrt(x)` / `hypot(x, y)` | Inverse trigonometry, cube root and hypotenuse. |
+| `sign(x)` / `clamp(x, low, high)` | Sign as `-1`/`0`/`1`, and limiting a value to an interval. |
+| `gcd(a, b)` / `lcm(a, b)` | Greatest common divisor and least common multiple of 64-bit integers. |
 | `min(a, b, ...)` / `max(a, b, ...)` | Smallest/largest of the arguments, or of an array when given one array. |
 | `sum(array)` | Sum of the numeric elements (integer when all are integers). |
 
@@ -361,7 +364,7 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `spawn(fn, args...)` | Starts a coroutine; returns the coroutine object. |
 | `channel(n?)` | Creates a channel: unbuffered without `n`, buffered with it. |
 
-The global constants `pi` and `nan` are predefined, and builders also accept the
+The global constants `pi`, `nan` and `inf` are predefined, and builders also accept the
 method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 [`docs/language.md`](docs/language.md) documents the edge cases and error behavior.
 

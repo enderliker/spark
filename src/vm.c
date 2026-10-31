@@ -1131,7 +1131,44 @@ static Value native_ceil(int arg_count, Value *args)
 
 static Value native_round(int arg_count, Value *args)
 {
-    return rounding_native(arg_count, args, "round", round);
+    int digits = 0;
+    double value;
+    double scale;
+    double scaled;
+
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'round' expects 1 or 2 arguments, received %d", arg_count);
+        return NIL_VAL;
+    }
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'round' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (arg_count == 2) {
+        if (!integer_argument(args[1], "digits", "round", &digits)) {
+            return NIL_VAL;
+        }
+        if (digits < 0 || digits > 15) {
+            vm_runtime_error(ERROR_VALUE, "'round' expects digits between 0 and 15, received %d",
+                             digits);
+            return NIL_VAL;
+        }
+    }
+    if (is_int(args[0])) {
+        return args[0];
+    }
+    value = AS_NUMBER(args[0]);
+    if (arg_count == 1 || digits == 0) {
+        return NUMBER_VAL(round(value));
+    }
+    /* Binary-float rounding: scale, round half away from zero, and unscale. */
+    scale = pow(10.0, digits);
+    scaled = value * scale;
+    if (!isfinite(value) || !isfinite(scaled)) {
+        return NUMBER_VAL(value);
+    }
+    return NUMBER_VAL(round(scaled) / scale);
 }
 
 static Value native_sqrt(int arg_count, Value *args)
@@ -1201,6 +1238,265 @@ static Value native_exp(int arg_count, Value *args)
         return NIL_VAL;
     }
     return NUMBER_VAL(exp(value_as_double(args[0])));
+}
+
+/* Transcendental functions always return a float, like sin/cos/log. */
+static Value unary_double_native(Value *values, const char *name, double (*fn)(double))
+{
+    if (!value_is_numeric(values[0])) {
+        vm_runtime_error(ERROR_TYPE, "'%s' expects a number, received %s", name,
+                         value_type_name(values[0]));
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(fn(value_as_double(values[0])));
+}
+
+static Value native_tan(int arg_count, Value *args)
+{
+    (void)arg_count;
+    return unary_double_native(args, "tan", tan);
+}
+
+static Value native_asin(int arg_count, Value *args)
+{
+    double value;
+
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'asin' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    value = value_as_double(args[0]);
+    if (value < -1.0 || value > 1.0) {
+        vm_runtime_error(ERROR_VALUE, "'asin' expects a number in [-1, 1], received %g", value);
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(asin(value));
+}
+
+static Value native_acos(int arg_count, Value *args)
+{
+    double value;
+
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'acos' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    value = value_as_double(args[0]);
+    if (value < -1.0 || value > 1.0) {
+        vm_runtime_error(ERROR_VALUE, "'acos' expects a number in [-1, 1], received %g", value);
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(acos(value));
+}
+
+static Value native_atan(int arg_count, Value *args)
+{
+    (void)arg_count;
+    return unary_double_native(args, "atan", atan);
+}
+
+static Value native_atan2(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
+        vm_runtime_error(ERROR_TYPE, "'atan2' expects two numbers");
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(atan2(value_as_double(args[0]), value_as_double(args[1])));
+}
+
+static Value native_log2(int arg_count, Value *args)
+{
+    double value;
+
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'log2' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    value = value_as_double(args[0]);
+    if (value <= 0.0) {
+        vm_runtime_error(ERROR_VALUE, "'log2' expects a positive number, received %g", value);
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(log2(value));
+}
+
+static Value native_log10(int arg_count, Value *args)
+{
+    double value;
+
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'log10' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    value = value_as_double(args[0]);
+    if (value <= 0.0) {
+        vm_runtime_error(ERROR_VALUE, "'log10' expects a positive number, received %g", value);
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(log10(value));
+}
+
+static Value native_cbrt(int arg_count, Value *args)
+{
+    (void)arg_count;
+    return unary_double_native(args, "cbrt", cbrt);
+}
+
+static Value native_hypot(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1])) {
+        vm_runtime_error(ERROR_TYPE, "'hypot' expects two numbers");
+        return NIL_VAL;
+    }
+    return NUMBER_VAL(hypot(value_as_double(args[0]), value_as_double(args[1])));
+}
+
+static Value native_trunc(int arg_count, Value *args)
+{
+    return rounding_native(arg_count, args, "trunc", trunc);
+}
+
+static Value native_sign(int arg_count, Value *args)
+{
+    double value;
+
+    (void)arg_count;
+    if (!value_is_numeric(args[0])) {
+        vm_runtime_error(ERROR_TYPE, "'sign' expects a number, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    value = value_as_double(args[0]);
+    if (isnan(value)) {
+        vm_runtime_error(ERROR_VALUE, "'sign' does not accept nan");
+        return NIL_VAL;
+    }
+    if (value > 0.0) {
+        return INT_VAL(1);
+    }
+    if (value < 0.0) {
+        return INT_VAL(-1);
+    }
+    return INT_VAL(0);
+}
+
+static Value native_clamp(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!value_is_numeric(args[0]) || !value_is_numeric(args[1]) ||
+        !value_is_numeric(args[2])) {
+        vm_runtime_error(ERROR_TYPE, "'clamp' expects three numbers");
+        return NIL_VAL;
+    }
+    if (isnan(value_as_double(args[0])) || isnan(value_as_double(args[1])) ||
+        isnan(value_as_double(args[2]))) {
+        vm_runtime_error(ERROR_VALUE, "'clamp' does not accept nan");
+        return NIL_VAL;
+    }
+    if (numeric_less(args[2], args[1])) {
+        vm_runtime_error(ERROR_VALUE, "'clamp' expects the low bound not to exceed the high bound");
+        return NIL_VAL;
+    }
+    if (numeric_less(args[0], args[1])) {
+        return args[1];
+    }
+    if (numeric_less(args[2], args[0])) {
+        return args[2];
+    }
+    return args[0];
+}
+
+/* 64-bit integer argument, for the natives whose results are exact. */
+static bool int64_argument(Value value, const char *name, const char *function, int64_t *out)
+{
+    double raw;
+
+    if (is_int(value)) {
+        *out = AS_INT(value);
+        return true;
+    }
+    if (!is_number(value)) {
+        vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %s", function, name,
+                         value_type_name(value));
+        return false;
+    }
+    raw = AS_NUMBER(value);
+    if (raw != floor(raw) || raw < -9223372036854775808.0 || raw >= 9223372036854775808.0) {
+        vm_runtime_error(ERROR_VALUE, "'%s' expects an integer as %s, received %g", function, name,
+                         raw);
+        return false;
+    }
+    *out = (int64_t)raw;
+    return true;
+}
+
+static uint64_t integer_magnitude(int64_t value)
+{
+    return value < 0 ? (uint64_t)(-(value + 1)) + 1 : (uint64_t)value;
+}
+
+static uint64_t gcd_magnitudes(uint64_t a, uint64_t b)
+{
+    while (b != 0) {
+        uint64_t remainder = a % b;
+
+        a = b;
+        b = remainder;
+    }
+    return a;
+}
+
+static Value native_gcd(int arg_count, Value *args)
+{
+    int64_t left;
+    int64_t right;
+    uint64_t result;
+
+    (void)arg_count;
+    if (!int64_argument(args[0], "a", "gcd", &left) ||
+        !int64_argument(args[1], "b", "gcd", &right)) {
+        return NIL_VAL;
+    }
+    result = gcd_magnitudes(integer_magnitude(left), integer_magnitude(right));
+    if (result > (uint64_t)INT64_MAX) {
+        return NUMBER_VAL((double)result);
+    }
+    return INT_VAL((int64_t)result);
+}
+
+static Value native_lcm(int arg_count, Value *args)
+{
+    int64_t left;
+    int64_t right;
+    uint64_t factor;
+    uint64_t scaled;
+
+    (void)arg_count;
+    if (!int64_argument(args[0], "a", "lcm", &left) ||
+        !int64_argument(args[1], "b", "lcm", &right)) {
+        return NIL_VAL;
+    }
+    factor = gcd_magnitudes(integer_magnitude(left), integer_magnitude(right));
+    if (factor == 0) {
+        return INT_VAL(0);
+    }
+    scaled = integer_magnitude(left) / factor;
+    if (integer_magnitude(right) != 0 &&
+        scaled > (uint64_t)INT64_MAX / integer_magnitude(right)) {
+        vm_runtime_error(ERROR_VALUE, "'lcm' result is out of the 64-bit integer range");
+        return NIL_VAL;
+    }
+    return INT_VAL((int64_t)(scaled * integer_magnitude(right)));
 }
 
 static Value native_min(int arg_count, Value *args)
@@ -9491,9 +9787,23 @@ void vm_init(void)
     define_native("abs", native_abs, 1);
     define_native("floor", native_floor, 1);
     define_native("ceil", native_ceil, 1);
-    define_native("round", native_round, 1);
+    define_native("round", native_round, -1);
     define_native("sqrt", native_sqrt, 1);
     define_native("pow", native_pow, 2);
+    define_native("tan", native_tan, 1);
+    define_native("asin", native_asin, 1);
+    define_native("acos", native_acos, 1);
+    define_native("atan", native_atan, 1);
+    define_native("atan2", native_atan2, 2);
+    define_native("log2", native_log2, 1);
+    define_native("log10", native_log10, 1);
+    define_native("cbrt", native_cbrt, 1);
+    define_native("hypot", native_hypot, 2);
+    define_native("trunc", native_trunc, 1);
+    define_native("sign", native_sign, 1);
+    define_native("clamp", native_clamp, 3);
+    define_native("gcd", native_gcd, 2);
+    define_native("lcm", native_lcm, 2);
     define_native("sin", native_sin, 1);
     define_native("cos", native_cos, 1);
     define_native("log", native_log, 1);
@@ -9601,6 +9911,12 @@ void vm_init(void)
         vm.global_slots[pi_slot].value = NUMBER_VAL(3.14159265358979323846);
         vm.global_slots[pi_slot].defined = true;
         vm.global_slots[pi_slot].is_const = true;
+    }
+    int inf_slot = vm_global_slot(object_string("inf", 3));
+    if (inf_slot >= 0) {
+        vm.global_slots[inf_slot].value = NUMBER_VAL(INFINITY);
+        vm.global_slots[inf_slot].defined = true;
+        vm.global_slots[inf_slot].is_const = true;
     }
 }
 

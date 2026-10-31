@@ -749,17 +749,38 @@ Match the existing convention: an integer input stays an integer where the opera
 allows it (`abs`/`floor`/`ceil`/`round` already do this), and domain errors are
 `ValueError` (`sqrt(-1)` is the existing precedent).
 **Acceptance criteria:**
-- [ ] Each native has a fixture with the documented type behavior (int stays int where
+- [x] Each native has a fixture with the documented type behavior (int stays int where
       stated) and its domain error.
-- [ ] `round(x, digits)` is exact for the documented cases and documented as
+- [x] `round(x, digits)` is exact for the documented cases and documented as
       binary-float rounding (not decimal).
-- [ ] `inf` behaves with `is_nan`/comparisons as documented (and `is_nan(inf)` is
+- [x] `inf` behaves with `is_nan`/comparisons as documented (and `is_nan(inf)` is
       false).
 **Verification:**
-- [ ] Fixtures; suite green; the native list in the docs cross-checked against
+- [x] Fixtures; suite green; the native list in the docs cross-checked against
       `vm_init`'s registration list.
 **Dependencies:** None. **Files:** `src/vm.c`, `tests/`, `docs/language.md`, `README.md`.
 **Scope:** S.
+
+**Done notes:** Added `tan`, `asin`, `acos`, `atan`, `atan2`, `log2`, `log10`, `cbrt`,
+`hypot`, `trunc`, `sign`, `clamp`, `gcd` and `lcm`, an optional `digits` for `round`
+(now registered as variadic with its own 1-2 check), and the `inf` constant. Shared
+helpers keep the file small: `unary_double_native` for the always-float functions,
+`rounding_native` for `trunc`, and a new `int64_argument` (the existing
+`integer_argument` is `int`-sized) for `gcd`/`lcm`. `sign` and `clamp` reject `nan`
+and `clamp` rejects `low > high`; `gcd`/`lcm` work on magnitudes with `uint64_t`
+math so `INT64_MIN` cannot overflow, and an `lcm` past `INT64_MAX` is a `ValueError`
+instead of wrapping (the one gcd that lands on `2^63` returns the float, matching
+the `abs`/`INT64_MIN` precedent). `round` is documented as binary scaling: `round(2.675,
+2)` is `2.68` because `2.675 * 100` is exactly `267.5`, while `round(1.005, 2)` is `1`;
+digits must be `0..15`, integers pass through unchanged, and a value whose scaling
+would overflow to infinity is returned unchanged. Fixture `cases/math_extras.spark`
+covers every native, both type rules and the `inf` comparisons; six error fixtures
+cover the `asin`, `log2`, `gcd`, `round`, `clamp` and `lcm` domain failures. The
+registered native list (165 names, including module-registered ones) was
+cross-checked against `docs/language.md` and `README.md`: no name is missing.
+Suite 323/323, sanitizers clean, `fib(27)` min 5.11 ms against the same noise floor.
+Docs: `docs/language.md` "Math" subsection, the constants bullet and the natives
+table; `README.md`; `CHANGELOG.md` Added.
 
 ### T123 - String and collection conveniences
 **Description:** Close the everyday gaps found in the audit: `count(container, value)`

@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'clamp' expects the low bound not to exceed the high bound

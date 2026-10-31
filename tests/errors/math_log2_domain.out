@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'log2' expects a positive number, received 0
