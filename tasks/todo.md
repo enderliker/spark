@@ -447,10 +447,19 @@ upgrade is performed directly on the accepted socket rather than through
 `http_serve`.
 
 ## Checkpoint: Phase 22
-- [ ] `bytes` round-trips a valid UTF-8 string unchanged
-- [ ] A Spark program writes and reads a real binary file byte-exactly
-- [ ] Suite + sanitizers green, `fib(27)` min unaffected (T109/T111 touch the VM)
-- [ ] Review with the user before phase 23
+- [x] `bytes` round-trips a valid UTF-8 string unchanged
+- [x] A Spark program writes and reads a real binary file byte-exactly
+- [x] Suite + sanitizers green, `fib(27)` min unaffected (T109/T111 touch the VM)
+- [x] Review with the user before phase 23
+
+**Done notes:** closed with T113. The two behavioural criteria are covered by the
+T110-T112 fixtures: `tests/cases/bytes_basics.spark` and
+`tests/cases/bytes_convert.spark` round-trip UTF-8 through `bytes`, and
+`tests/cases/bytes_io.spark` writes and reads a real binary (`/bin/ls`) back
+byte-identically. The phase gate was reviewed when the user asked for T110-T123
+as one stream, before the phase 23 tasks (T114) started; the boxes sat unchecked
+only because phase 22 ended mid-stream. The suite and sanitizers were re-run for
+T113 and are green.
 
 ---
 
