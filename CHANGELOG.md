@@ -92,6 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `text.to_bytes()`. `str()` and `print` keep the preview form.
 - `to_json` encodes `bytes` as `{"$bytes": "<base64>"}`, a marked object that
   `from_json` returns as a map; `base64_decode(m["$bytes"])` recovers the payload.
+- Binary file and socket I/O: `read_bytes(path, max?)` (whole file as bytes, 16 MiB
+  cap enforced with a `ValueError`, no NUL truncation), `write_bytes` and
+  `append_bytes`, a handle opened with a `b` mode makes `read` return `bytes` and
+  `write` accepts bytes as well as text, `send` takes a string or bytes, and
+  `recv_bytes(max)` returns bytes. The text forms are unchanged.
 
 ### Security
 

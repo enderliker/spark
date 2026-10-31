@@ -1,0 +1,1 @@
+write_bytes("/tmp/spark_never_written", "text");

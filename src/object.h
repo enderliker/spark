@@ -157,6 +157,7 @@ typedef enum {
 typedef enum {
     NET_OP_WAIT = 0, /* explicit sock.wait: result is `true` on readiness */
     NET_OP_RECV,
+    NET_OP_RECV_BYTES,
     NET_OP_RECV_LINE,
     NET_OP_SEND,
     NET_OP_ACCEPT,
@@ -245,6 +246,8 @@ typedef struct ObjFile {
     Obj obj;
     FILE *stream;
     bool is_closed;
+    /* Opened with a 'b' in the mode: `read` returns bytes instead of text. */
+    bool binary;
     ObjString *path;
 } ObjFile;
 
@@ -387,7 +390,7 @@ ObjNative *object_native(NativeFn fn, int arity, const char *name);
 ObjUpvalue *object_upvalue(Value *slot);
 ObjCoroutine *object_coroutine(void);
 ObjChannel *object_channel(int capacity);
-ObjFile *object_file(FILE *stream, ObjString *path);
+ObjFile *object_file(FILE *stream, ObjString *path, bool binary);
 ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms);
 ObjServer *object_server(int fd);
 ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms);

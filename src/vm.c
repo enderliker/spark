@@ -2571,6 +2571,163 @@ static Value native_append_file(int arg_count, Value *args)
     return NIL_VAL;
 }
 
+/* The cap shared with the socket layer: one more than this file is refused
+ * rather than truncated, so a binary read never loses bytes silently. */
+#define FILE_BYTES_MAX (16 * 1024 * 1024)
+
+/* read_bytes(path, max?): the whole file as bytes, up to max (16 MiB by
+ * default and as a ceiling). Text is refused: it has read_file, and the
+ * conversions are explicit (A16). */
+static Value native_read_bytes(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'read_bytes' expects 1 or 2 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'read_bytes' expects a string path, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "read_bytes")) {
+        return NIL_VAL;
+    }
+    int max = FILE_BYTES_MAX;
+    if (arg_count == 2 && !integer_argument(args[1], "size", "read_bytes", &max)) {
+        return NIL_VAL;
+    }
+    if (max < 0 || max > FILE_BYTES_MAX) {
+        vm_runtime_error(ERROR_VALUE, "'read_bytes' size out of valid range (0..%d)",
+                         FILE_BYTES_MAX);
+        return NIL_VAL;
+    }
+
+    const char *path = path_str->chars;
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for reading", path);
+        return NIL_VAL;
+    }
+
+    buf_t contents;
+    buf_init(&contents);
+    char chunk[8192];
+    size_t read_bytes;
+
+    while ((read_bytes = fread(chunk, 1, sizeof(chunk), file)) > 0) {
+        if (contents.len + read_bytes > (size_t)max) {
+            buf_free(&contents);
+            fclose(file);
+            vm_runtime_error(ERROR_VALUE, "'read_bytes' file exceeds the %d-byte limit", max);
+            return NIL_VAL;
+        }
+        if (buf_append(&contents, chunk, read_bytes) != 0) {
+            buf_free(&contents);
+            fclose(file);
+            vm_runtime_error(ERROR_RUNTIME, "file too large '%s'", path);
+            return NIL_VAL;
+        }
+    }
+    if (ferror(file)) {
+        buf_free(&contents);
+        fclose(file);
+        vm_runtime_error(ERROR_RUNTIME, "error reading '%s'", path);
+        return NIL_VAL;
+    }
+    fclose(file);
+
+    ObjBytes *result = object_bytes((int)contents.len);
+    if (contents.len > 0) {
+        memcpy(result->data, contents.data, contents.len);
+    }
+    buf_free(&contents);
+    return OBJ_VAL(result);
+}
+
+static Value native_write_bytes(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'write_bytes' expects a string path as first argument, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[1], OBJ_BYTES)) {
+        if (is_obj_type(args[1], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE,
+                             "'write_bytes' expects bytes as second argument, received a string; "
+                             "use to_bytes(text) for its UTF-8 bytes");
+        } else {
+            vm_runtime_error(ERROR_TYPE,
+                             "'write_bytes' expects bytes as second argument, received %s",
+                             value_type_name(args[1]));
+        }
+        return NIL_VAL;
+    }
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "write_bytes")) {
+        return NIL_VAL;
+    }
+    ObjBytes *data = AS_BYTES(args[1]);
+    FILE *file = fopen(path_str->chars, "wb");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for writing", path_str->chars);
+        return NIL_VAL;
+    }
+    if (data->length > 0 && fwrite(data->data, 1, (size_t)data->length, file) <
+                                (size_t)data->length) {
+        fclose(file);
+        vm_runtime_error(ERROR_RUNTIME, "could not write all data to '%s'", path_str->chars);
+        return NIL_VAL;
+    }
+    fclose(file);
+    return NIL_VAL;
+}
+
+static Value native_append_bytes(int arg_count, Value *args)
+{
+    (void)arg_count;
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'append_bytes' expects a string path as first argument, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[1], OBJ_BYTES)) {
+        if (is_obj_type(args[1], OBJ_STRING)) {
+            vm_runtime_error(ERROR_TYPE,
+                             "'append_bytes' expects bytes as second argument, received a string; "
+                             "use to_bytes(text) for its UTF-8 bytes");
+        } else {
+            vm_runtime_error(ERROR_TYPE,
+                             "'append_bytes' expects bytes as second argument, received %s",
+                             value_type_name(args[1]));
+        }
+        return NIL_VAL;
+    }
+    ObjString *path_str = AS_STRING(args[0]);
+    if (string_has_null(path_str, "append_bytes")) {
+        return NIL_VAL;
+    }
+    ObjBytes *data = AS_BYTES(args[1]);
+    FILE *file = fopen(path_str->chars, "ab");
+    if (!file) {
+        vm_runtime_error(ERROR_RUNTIME, "could not open '%s' for appending", path_str->chars);
+        return NIL_VAL;
+    }
+    if (data->length > 0 && fwrite(data->data, 1, (size_t)data->length, file) <
+                                (size_t)data->length) {
+        fclose(file);
+        vm_runtime_error(ERROR_RUNTIME, "could not append all data to '%s'", path_str->chars);
+        return NIL_VAL;
+    }
+    fclose(file);
+    return NIL_VAL;
+}
+
 static Value native_open(int arg_count, Value *args)
 {
     if (arg_count < 1 || arg_count > 2) {
@@ -2607,7 +2764,7 @@ static Value native_open(int arg_count, Value *args)
         return NIL_VAL;
     }
 
-    ObjFile *obj_file = object_file(file, path_str);
+    ObjFile *obj_file = object_file(file, path_str, strchr(mode, 'b') != NULL);
     return OBJ_VAL(obj_file);
 }
 
@@ -2684,6 +2841,17 @@ static Value native_read(int arg_count, Value *args)
             vm_runtime_error(ERROR_RUNTIME, "error reading from file");
             return NIL_VAL;
         }
+        if (file->binary) {
+            /* Binary mode never interprets the payload: every byte, embedded
+             * NULs included, reaches the caller as bytes. */
+            ObjBytes *bytes_result = object_bytes((int)read_bytes);
+
+            if (read_bytes > 0) {
+                memcpy(bytes_result->data, buf, read_bytes);
+            }
+            free(buf);
+            return OBJ_VAL(bytes_result);
+        }
         buf[read_bytes] = '\0';
         ObjString *res = object_string(buf, (int)read_bytes);
         free(buf);
@@ -2707,6 +2875,15 @@ static Value native_read(int arg_count, Value *args)
         vm_runtime_error(ERROR_RUNTIME, "error reading from file");
         return NIL_VAL;
     }
+    if (file->binary) {
+        ObjBytes *bytes_result = object_bytes((int)contents.len);
+
+        if (contents.len > 0) {
+            memcpy(bytes_result->data, contents.data, contents.len);
+        }
+        buf_free(&contents);
+        return OBJ_VAL(bytes_result);
+    }
     ObjString *res = object_string(contents.data ? contents.data : "", (int)contents.len);
     buf_free(&contents);
     return OBJ_VAL(res);
@@ -2720,8 +2897,9 @@ static Value native_write(int arg_count, Value *args)
                          value_type_name(args[0]));
         return NIL_VAL;
     }
-    if (!is_obj_type(args[1], OBJ_STRING)) {
-        vm_runtime_error(ERROR_TYPE, "'write' expects a string as second argument, received %s",
+    if (!is_obj_type(args[1], OBJ_STRING) && !is_obj_type(args[1], OBJ_BYTES)) {
+        vm_runtime_error(ERROR_TYPE,
+                         "'write' expects a string or bytes as second argument, received %s",
                          value_type_name(args[1]));
         return NIL_VAL;
     }
@@ -2730,10 +2908,13 @@ static Value native_write(int arg_count, Value *args)
         vm_runtime_error(ERROR_RUNTIME, "cannot write to a closed file");
         return NIL_VAL;
     }
-    ObjString *data = AS_STRING(args[1]);
+    const char *data = is_obj_type(args[1], OBJ_BYTES) ? (const char *)AS_BYTES(args[1])->data
+                                                      : AS_STRING(args[1])->chars;
+    int length = is_obj_type(args[1], OBJ_BYTES) ? AS_BYTES(args[1])->length
+                                                : AS_STRING(args[1])->length;
     size_t written = 0;
-    if (data->length > 0) {
-        written = fwrite(data->chars, 1, (size_t)data->length, file->stream);
+    if (length > 0) {
+        written = fwrite(data, 1, (size_t)length, file->stream);
     }
     return INT_VAL((int64_t)written);
 }
@@ -8697,6 +8878,9 @@ void vm_init(void)
     define_native("read_file", native_read_file, 1);
     define_native("write_file", native_write_file, 2);
     define_native("append_file", native_append_file, 2);
+    define_native("read_bytes", native_read_bytes, -1);
+    define_native("write_bytes", native_write_bytes, 2);
+    define_native("append_bytes", native_append_bytes, 2);
     define_native("open", native_open, -1);
     define_native("read_line", native_read_line, 1);
     define_native("read", native_read, -1);

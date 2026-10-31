@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'write_bytes' expects bytes as second argument, received a string; use to_bytes(text) for its UTF-8 bytes

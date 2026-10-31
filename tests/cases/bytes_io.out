@@ -1,0 +1,17 @@
+file: bytes 256 true
+append: 259 0 255 65
+handle write: 4
+handle read: bytes [0, 3]
+handle all: [1, 2, 0, 3]
+text handle: string true
+cap: ValueError 'read_bytes' file exceeds the 16-byte limit
+range: ValueError
+exact: 32
+ls: true true
+tiny send: 5
+tiny recv: true
+payload: 1048576
+1 MiB send: 1048576
+1 MiB recv: true true
+socket cap: ValueError
+bytes io ok

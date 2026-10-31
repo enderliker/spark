@@ -787,12 +787,13 @@ ObjChannel *object_channel(int capacity)
     return channel;
 }
 
-ObjFile *object_file(FILE *stream, ObjString *path)
+ObjFile *object_file(FILE *stream, ObjString *path, bool binary)
 {
     ObjFile *file = allocate_obj(sizeof(ObjFile), OBJ_FILE);
 
     file->stream = stream;
     file->is_closed = false;
+    file->binary = binary;
     file->path = path;
     return file;
 }

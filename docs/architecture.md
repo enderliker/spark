@@ -98,7 +98,7 @@ Concrete types:
 - `ObjClosure`: reference to the function plus the array of captured upvalues.
 - `ObjUpvalue`: points to a stack variable or to its closed copy.
 - `ObjNative`: C function pointer, arity (`-1` = variadic) and name.
-- `ObjFile`: GC-managed file stream handle (`FILE *stream`, `is_closed`, `path`), automatically closed upon garbage collection if not closed explicitly.
+- `ObjFile`: GC-managed file stream handle (`FILE *stream`, `is_closed`, `binary`, `path`), automatically closed upon garbage collection if not closed explicitly. The `binary` flag is set when the mode contains `b`, and makes `read` return `bytes` instead of decoding the payload into a string.
 - `ObjSocket`: GC-managed socket descriptor (`fd`, `is_closed`, `NET_TCP`/`NET_UDP`, a stored `timeout_ms` and a small read buffer used by `recv_line`), closed by `close()`, the finalizer or shutdown.
 - `ObjServer`: GC-managed listening descriptor for TCP servers, released the same way.
 - `ObjCoroutine`: a green thread: private value stack, snapshot of its frames and try handlers, scheduler links, wait state and result.
@@ -376,6 +376,12 @@ routes method calls on socket, server and websocket receivers to
   they own (or borrow) a file descriptor, are closed by `close()`, by `object_free`
   when the collector finalizes them, and on `vm_free`. `type()` reports
   `"socket"`/`"server"`/`"websocket"` and using a closed handle is a runtime error.
+- **Binary payloads.** `send` takes a string or `bytes` (`net_payload` yields a
+  pointer and length, and the value stays rooted on the waiter across a suspension).
+  A blocked send stores the payload value, so the resumed write continues from the
+  recorded offset without copying. `recv_bytes` is `recv` with a bytes result: the
+  socket has no open-mode flag, so the method name selects the result type, and the
+  blocked operation is distinguished by `NET_OP_RECV_BYTES`.
 - **Timeouts.** Each operation turns its millisecond timeout into an absolute deadline
   on a monotonic clock and waits with `poll(2)` before the blocking syscall (a timeout
   of `0` waits forever). The handshake runs on a temporarily non-blocking descriptor so

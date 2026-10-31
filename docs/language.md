@@ -147,6 +147,11 @@ print(len(abc), type(abc));            // 3 bytes
 - `to_json(b)` writes `{"$bytes": "<base64>"}` — a marked object rather than a bare
   string, so a decoder can tell binary from text. `from_json` returns that map as
   written; `base64_decode(m["$bytes"])` recovers the payload (section 10).
+- Binary I/O never takes the text detour: `read_bytes(path, max?)`,
+  `write_bytes(path, bytes)` and `append_bytes(path, bytes)` move whole files, a handle
+  opened with a `b` in its mode makes `read` return `bytes`, `write` accepts either
+  type, and a socket sends either type and returns `bytes` from `recv_bytes(max)`
+  (section 10).
 - `bytes` is immutable, and no native changes one in place; ordering comparisons
   (`<`, `>`) and arithmetic other than `+` are not defined for it.
   Bytes are ordinary values everywhere else: an array can hold them,
@@ -692,10 +697,13 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `read_file(path)` | Reads entire file contents as a string. |
 | `write_file(path, data)` | Writes string data to file (truncating existing contents). |
 | `append_file(path, data)` | Appends string data to file. |
-| `open(path, mode?)` | Opens file and returns a file handle object (default mode `"r"`). |
+| `read_bytes(path, max?)` | Reads the whole file as `bytes`; a file larger than `max` (16 MiB by default and as a ceiling) is a `ValueError` rather than a truncation. |
+| `write_bytes(path, data)` | Writes `bytes` to a file (truncating existing contents). |
+| `append_bytes(path, data)` | Appends `bytes` to a file. |
+| `open(path, mode?)` | Opens file and returns a file handle object (default mode `"r"`); a mode containing `b` makes `read` return `bytes`. |
 | `read_line(file)` | Reads next line from file handle; returns `nil` on EOF. |
-| `read(file, bytes?)` | Reads up to `bytes` from file handle, or until EOF if omitted. |
-| `write(file, data)` | Writes string data to file handle; returns count of bytes written. |
+| `read(file, bytes?)` | Reads up to `bytes` from file handle, or until EOF if omitted; returns `bytes` for a handle opened in binary mode, a string otherwise. |
+| `write(file, data)` | Writes string or `bytes` data to file handle; returns count of bytes written. |
 | `close(file)` | Closes file handle; using a closed handle is an error. |
 | `eof(file)` | Whether file handle has reached end of file. |
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
@@ -794,8 +802,9 @@ Socket and server methods:
 
 | Call | Result |
 | --- | --- |
-| `sock.send(data)` | Writes all of `data`; returns the byte count. TCP only. |
-| `sock.recv(max)` | Up to `max` bytes, or `nil` at end of stream. |
+| `sock.send(data)` | Writes all of `data` (a string or `bytes`); returns the byte count. TCP only. |
+| `sock.recv(max)` | Up to `max` bytes as a string, or `nil` at end of stream. |
+| `sock.recv_bytes(max)` | Up to `max` bytes as `bytes`, or `nil` at end of stream. TCP only. |
 | `sock.recv_line(max?)` | Up to the next newline (the newline, and a preceding `\r`, are dropped); `nil` at end of stream. Default bound 64 KiB. |
 | `sock.wait(read?, write?, timeout_ms?)` | Suspends until the socket is readable/writable; `true` when ready, `TimeoutError` on the deadline. |
 | `sock.send_to(data, host, port)` | Sends one datagram; returns the byte count. UDP only. |
@@ -817,8 +826,11 @@ Socket and server methods:
 - Failure categories: `NetworkError` for an unknown host, a refused connection, an
   invalid port, a reset connection or descriptor exhaustion; `TimeoutError` when an
   operation exceeds its deadline. `accept` returns `nil` on timeout instead of raising.
-- Payload bounds: `recv`/`recv_from` accept at most 16 MiB and `recv_line` at most
-  16 MiB (default 64 KiB); larger values raise `ValueError`.
+- Payload bounds: `recv`, `recv_bytes` and `recv_from` accept at most 16 MiB and
+  `recv_line` at most 16 MiB (default 64 KiB); larger values raise `ValueError`.
+- A socket has no open mode, so `recv` always returns text and `recv_bytes` always
+  returns `bytes`; `send` accepts either. Use `to_string(b)` (after checking the
+  payload is valid UTF-8) or `to_bytes(text)` to switch between the two.
 
 Blocking socket operations **yield the coroutine** instead of stalling the process: a
 call that would block registers a wait on its descriptor, the scheduler polls the
@@ -1489,8 +1501,11 @@ Linter rules:
 - 16,777,216 values of channel capacity.
 - Coroutines are cooperative and single-threaded; each keeps its own operand
   stack (up to 4,194,304 items) and up to 4096 call frames.
-- A `recv`/`recv_from` returns at most 16 MiB; `recv_line` is bounded to 16 MiB
-  (default 64 KiB) and raises `ValueError` past that.
+- A `recv`/`recv_bytes`/`recv_from` returns at most 16 MiB; `recv_line` is bounded
+  to 16 MiB (default 64 KiB) and raises `ValueError` past that.
+- `read_bytes` reads at most 16 MiB by default and never more; a file above the
+  limit (or above an explicit smaller `max`) raises `ValueError`. `read(file, n)` on
+  a binary handle accepts up to 1 GiB, like the text form.
 - A TLS `read` returns at most 16 MiB and a `write` accepts at most `INT32_MAX`
   bytes. TLS 1.2 is the minimum accepted version; the handshake, reads and writes
   are bounded by the socket's `timeout_ms` (0 waits forever).

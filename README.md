@@ -331,11 +331,12 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | Function | Description |
 | --- | --- |
 | `input(prompt?)` | Reads a line from standard input; returns `nil` on EOF. |
-| `read_file(path)` / `write_file(path, data)` / `append_file(path, data)` | Whole-file helpers. |
+| `read_file(path)` / `write_file(path, data)` / `append_file(path, data)` | Whole-file text helpers. |
+| `read_bytes(path, max?)` / `write_bytes(path, data)` / `append_bytes(path, data)` | Whole-file binary helpers; `read_bytes` caps at 16 MiB. |
 | `file_exists(path)` | Whether the path exists. |
-| `open(path, mode?)` | Opens a file handle (default mode `"r"`). |
-| `read_line(file)` / `read(file, bytes?)` | Reads a line / up to `bytes` from a handle. |
-| `write(file, data)` / `close(file)` / `eof(file)` | Writes, closes and tests a handle. |
+| `open(path, mode?)` | Opens a file handle (default mode `"r"`; a `b` makes `read` return bytes). |
+| `read_line(file)` / `read(file, bytes?)` | Reads a line / up to `bytes` from a handle (bytes in binary mode). |
+| `write(file, data)` / `close(file)` / `eof(file)` | Writes string or bytes, closes and tests a handle. |
 | `list_dir(path)` / `mkdir(path)` | Directory listing and creation. |
 | `exec(command)` | Runs a shell command; returns a map with `exit_code`, `stdout` and `stderr`. |
 | `env(name?)` / `exit(code?)` | Environment variables and process exit. |
@@ -369,8 +370,9 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | `http_get` / `http_post` / `http_put` / `http_delete` | Sends an HTTP/1.1 request; returns `{status, headers, body}`. |
 | `http_request(options)` | The map-driven form of the HTTP client. |
 
-Socket methods: `sock.send`, `sock.recv`, `sock.recv_line`, `sock.wait`, `sock.send_to`,
-`sock.recv_from`, `sock.peer`, `sock.local` and `sock.close`. TLS sockets use
+Socket methods: `sock.send` (text or bytes), `sock.recv`, `sock.recv_bytes`,
+`sock.recv_line`, `sock.wait`, `sock.send_to`, `sock.recv_from`, `sock.peer`,
+`sock.local` and `sock.close`. TLS sockets use
 `sock.read` and `sock.write` instead of the TCP methods. Server methods:
 `srv.accept`, `srv.port` and `srv.close`. WebSocket methods: `ws.send_text`,
 `ws.send_binary`, `ws.receive`, `ws.ping` and `ws.close`; `receive` returns
@@ -491,9 +493,11 @@ large strings.
 - Assignments are statements (`x = 1;`), not expressions.
 - Strings are immutable, so `s += x` in a loop is O(n²); use `string_builder`.
 - `bytes` supports indexing, slicing, iteration, `contains`/`index_of`, `+`, a
-  `bytes_builder()` and `to_json` (as a marked `{"$bytes": base64}` object), but not
-  ordering comparisons. Text and bytes never convert implicitly: `bytes_from(x)`,
-  `to_bytes(text)` and `to_string(bytes)` are the explicit bridges.
+  `bytes_builder()`, `to_json` (as a marked `{"$bytes": base64}` object) and binary
+  file/socket I/O (`read_bytes`/`write_bytes`/`append_bytes`, `"rb"` handles and
+  `recv_bytes`), but not ordering comparisons. Text and bytes never convert
+  implicitly: `bytes_from(x)`, `to_bytes(text)` and `to_string(bytes)` are the explicit
+  bridges.
 - Closures capture the *variable*, not a copy. Variables declared in a loop body
   are fresh per iteration, but the loop variable itself is shared across
   iterations.

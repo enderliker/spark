@@ -1,0 +1,89 @@
+// Binary file and socket I/O (phase 22, T111).
+var path = "/tmp/spark_test_bytes_io.bin";
+var ls_path = "/tmp/spark_test_bytes_ls.bin";
+
+// Every byte value survives a file round trip, embedded NULs included.
+var all = bytes_from(range(256));
+write_bytes(path, all);
+var back = read_bytes(path);
+print("file:", type(back), len(back), back == all);
+
+// append_bytes appends without decoding.
+append_bytes(path, bytes_from([0, 255, 65]));
+var grown = read_bytes(path);
+print("append:", len(grown), grown[256], grown[257], grown[258]);
+
+// Binary handles: read returns bytes and write accepts them.
+var out = open(path, "wb");
+print("handle write:", write(out, bytes_from([1, 2, 0, 3])));
+close(out);
+var input = open(path, "rb");
+print("handle read:", type(read(input, 2)), bytes_to_array(read(input, 2)));
+close(input);
+input = open(path, "rb");
+print("handle all:", bytes_to_array(read(input)));
+close(input);
+
+// Text handles keep returning strings.
+write_file(path, "text\n");
+var text = open(path, "r");
+var body = read(text);
+print("text handle:", type(body), body == "text\n");
+close(text);
+
+// The cap errors instead of truncating; an explicit max lowers it.
+write_bytes(path, bytes(32));
+try { read_bytes(path, 16); } catch (e) { print("cap:", e.type, e.message); }
+try { read_bytes(path, 16 * 1024 * 1024 + 1); } catch (e) { print("range:", e.type); }
+print("exact:", len(read_bytes(path, 32)));
+
+// A real binary from the file system round-trips byte for byte.
+if (file_exists("/bin/ls")) {
+    var binary = read_bytes("/bin/ls");
+    write_bytes(ls_path, binary);
+    print("ls:", len(binary) > 10000, read_bytes(ls_path) == binary);
+}
+
+// Sockets carry arbitrary bytes; 1 MiB exercises the partial-read loop.
+var server = tcp_listen("127.0.0.1", 0);
+var client = tcp_connect("127.0.0.1", server.port(), 2000);
+var peer = server.accept(2000);
+
+fn recv_exact(sock, wanted) {
+    var parts = bytes_builder(wanted);
+    var got = 0;
+    while (got < wanted) {
+        var part = sock.recv_bytes(65536);
+        if (part == nil or len(part) == 0) { break; }
+        parts.append(part);
+        got += len(part);
+    }
+    return parts.to_bytes();
+}
+
+var tiny = bytes_from([0, 255, 65, 0, 66]);
+print("tiny send:", client.send(tiny));
+print("tiny recv:", recv_exact(peer, len(tiny)) == tiny);
+
+var pattern = bytes_from(range(256));
+var builder = bytes_builder(1024 * 1024);
+var i = 0;
+while (i < 4096) {
+    builder.append(pattern);
+    i += 1;
+}
+var payload = builder.to_bytes();
+print("payload:", len(payload));
+
+// The reader runs in its own coroutine so a send that fills the kernel
+// buffer suspends instead of deadlocking the process.
+var job = spawn(recv_exact, peer, len(payload));
+print("1 MiB send:", client.send(payload));
+var received = job.join();
+print("1 MiB recv:", len(received) == len(payload), received == payload);
+
+try { peer.recv_bytes(16 * 1024 * 1024 + 1); } catch (e) { print("socket cap:", e.type); }
+client.close();
+peer.close();
+server.close();
+print("bytes io ok");

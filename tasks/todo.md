@@ -337,17 +337,33 @@ returning `bytes` in binary mode (`open(path, "rb"/"wb")`), and `send`/`recv` ac
 and returning `bytes` on a socket opened for binary use. Keep the existing string forms
 unchanged for compatibility.
 **Acceptance criteria:**
-- [ ] A real binary file (for example `/bin/ls`, 9.6 MB) read with `read_bytes` and
+- [x] A real binary file (for example `/bin/ls`, 9.6 MB) read with `read_bytes` and
       written back with `write_bytes` is byte-identical (`cmp`), with no NUL truncation
       and no `len()` character reinterpretation.
-- [ ] Binary `recv`/`send` round-trips arbitrary bytes over a local socket, including
+- [x] Binary `recv`/`send` round-trips arbitrary bytes over a local socket, including
       `0x00`, `0xFF` and a 1 MB payload.
-- [ ] Size caps are enforced with a categorized error (`read` accepts at most 16 MiB,
+- [x] Size caps are enforced with a categorized error (`read` accepts at most 16 MiB,
       matching the existing limit table).
 **Verification:**
-- [ ] Fixtures with a local server; suite + ASan/UBSan; fd-count assertion kept.
+- [x] Fixtures with a local server; suite + ASan/UBSan; fd-count assertion kept.
 **Dependencies:** T108-T110. **Files:** `src/bytes.c`, `src/vm.c` (file natives),
 `src/net.c`, `tests/`, `docs/language.md`. **Scope:** M.
+
+**Done notes:** `ObjFile` gained a `binary` flag set when `open`'s mode contains `b`;
+`read` then returns `bytes` for both the counted and the whole-file form, and `write`
+accepts either type on any handle (the type is checked, the mode only selects what
+`read` produces). Whole-file helpers are `read_bytes(path, max?)`, `write_bytes` and
+`append_bytes`; `read_bytes` reads incrementally and raises `ValueError` as soon as the
+file would exceed `max` instead of truncating, with `max` defaulting to and capped at
+16 MiB (the socket layer's `NET_READ_MAX`). The socket deviation: Spark sockets have no
+open mode, so `recv` keeps returning text and a new `recv_bytes(max)` returns bytes,
+while `send` takes either type. `net_do_send` and `NetWaitOp` were generalized
+(`NET_OP_RECV_BYTES`, payload pointer plus length via `net_payload`), so a suspended
+send resumes from its offset with the payload still rooted on the waiter. Fixtures:
+`cases/bytes_io.spark` (all 256 byte values through a file, `append_bytes`, binary and
+text handles, the cap and range errors, `/bin/ls` round trip, sockets with `0x00`/`0xFF`
+and a 1 MiB payload read by a spawned coroutine so the blocking send interleaves) and
+three `errors/` fixtures. The fd hygiene assertion remains in `net_sockets.spark`.
 
 ### T112 - Serialization, docs and limits for `bytes`
 **Description:** Record and document the A30 rule — a `bytes` value is never a

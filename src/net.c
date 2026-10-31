@@ -4253,16 +4253,32 @@ static Value net_socket_close(ObjSocket *socket)
     return NIL_VAL;
 }
 
+/* A send payload is text or bytes. Both are immutable, so the pointer stays
+ * valid across a suspension while the value is rooted on the waiter. */
+static bool net_payload(Value value, const unsigned char **data, size_t *length)
+{
+    if (is_obj_type(value, OBJ_BYTES)) {
+        *data = AS_BYTES(value)->data;
+        *length = (size_t)AS_BYTES(value)->length;
+        return true;
+    }
+    if (is_obj_type(value, OBJ_STRING)) {
+        *data = (const unsigned char *)AS_STRING(value)->chars;
+        *length = (size_t)AS_STRING(value)->length;
+        return true;
+    }
+    return false;
+}
+
 /* Writes the payload from `offset`, continuing where a previous attempt stopped.
  * On NET_AGAIN, `*progress` gets the bytes written so far. */
-static int net_do_send(ObjSocket *socket, ObjString *payload, size_t offset, size_t *progress,
-                       Value *out, NetError *err)
+static int net_do_send(ObjSocket *socket, const unsigned char *payload, size_t length,
+                       size_t offset, size_t *progress, Value *out, NetError *err)
 {
     size_t sent = offset;
 
-    while (sent < (size_t)payload->length) {
-        ssize_t n = send(socket->fd, payload->chars + sent, (size_t)payload->length - sent,
-                         MSG_NOSIGNAL);
+    while (sent < length) {
+        ssize_t n = send(socket->fd, payload + sent, length - sent, MSG_NOSIGNAL);
 
         if (n > 0) {
             sent += (size_t)n;
@@ -4282,7 +4298,10 @@ static int net_do_send(ObjSocket *socket, ObjString *payload, size_t offset, siz
     return NET_DONE;
 }
 
-static int net_do_recv(ObjSocket *socket, int max, Value *out, NetError *err)
+/* `binary` selects the result type: bytes when true, text otherwise. The
+ * socket layer has no open-mode flag, so the caller picks with the method
+ * name (`recv` versus `recv_bytes`). */
+static int net_do_recv(ObjSocket *socket, int max, bool binary, Value *out, NetError *err)
 {
     char *buffer;
 
@@ -4300,6 +4319,14 @@ static int net_do_recv(ObjSocket *socket, int max, Value *out, NetError *err)
         if (socket->rbuf_pos >= socket->rbuf_len) {
             net_socket_reset_buffer(socket);
         }
+        if (binary) {
+            ObjBytes *buffered = object_bytes(take);
+
+            memcpy(buffered->data, buffer, (size_t)take);
+            free(buffer);
+            *out = OBJ_VAL(buffered);
+            return NET_DONE;
+        }
         ObjString *buffered = object_string(buffer, take);
 
         free(buffer);
@@ -4308,7 +4335,7 @@ static int net_do_recv(ObjSocket *socket, int max, Value *out, NetError *err)
     }
 
     if (max == 0) {
-        *out = OBJ_VAL(object_string("", 0));
+        *out = binary ? OBJ_VAL(object_bytes(0)) : OBJ_VAL(object_string("", 0));
         return NET_DONE;
     }
 
@@ -4322,6 +4349,14 @@ static int net_do_recv(ObjSocket *socket, int max, Value *out, NetError *err)
         ssize_t received = recv(socket->fd, buffer, (size_t)max, 0);
 
         if (received > 0) {
+            if (binary) {
+                ObjBytes *result = object_bytes((int)received);
+
+                memcpy(result->data, buffer, (size_t)received);
+                free(buffer);
+                *out = OBJ_VAL(result);
+                return NET_DONE;
+            }
             ObjString *result = object_string(buffer, (int)received);
 
             free(buffer);
@@ -4685,6 +4720,7 @@ static const char *net_op_name(NetWaitOp op)
     switch (op) {
     case NET_OP_WAIT: return "wait";
     case NET_OP_RECV: return "recv";
+    case NET_OP_RECV_BYTES: return "recv_bytes";
     case NET_OP_RECV_LINE: return "recv_line";
     case NET_OP_SEND: return "send";
     case NET_OP_ACCEPT: return "accept";
@@ -4825,8 +4861,10 @@ static bool net_complete_waiter(ObjCoroutine *waiter, struct pollfd *fds, int ba
         }
         break;
     case NET_OP_RECV:
+    case NET_OP_RECV_BYTES:
         if (candidate) {
-            int status = net_do_recv(waiter->wait_socket, waiter->wait_arg, &result, &err);
+            int status = net_do_recv(waiter->wait_socket, waiter->wait_arg,
+                                     waiter->wait_op == NET_OP_RECV_BYTES, &result, &err);
 
             if (status == NET_DONE) {
                 vm_wake_coroutine(waiter, result, NULL);
@@ -4856,10 +4894,16 @@ static bool net_complete_waiter(ObjCoroutine *waiter, struct pollfd *fds, int ba
         break;
     case NET_OP_SEND:
         if (candidate) {
-            ObjString *payload = AS_STRING(waiter->wait_value);
+            const unsigned char *payload;
+            size_t length;
             size_t progress = (size_t)waiter->wait_arg;
-            int status = net_do_send(waiter->wait_socket, payload, progress, &progress, &result,
-                                     &err);
+
+            if (!net_payload(waiter->wait_value, &payload, &length)) {
+                net_deferred_error(waiter, ERROR_RUNTIME, "invalid 'send' payload");
+                return true;
+            }
+            int status = net_do_send(waiter->wait_socket, payload, length, progress, &progress,
+                                     &result, &err);
 
             if (status == NET_DONE) {
                 vm_wake_coroutine(waiter, result, NULL);
@@ -5400,8 +5444,12 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
             if (!net_socket_open(socket)) {
                 return -1;
             }
-            if (!is_obj_type(args[0], OBJ_STRING)) {
-                vm_runtime_error(ERROR_TYPE, "'send' expects a string, received %s",
+            const unsigned char *payload;
+            size_t length;
+
+            if (!net_payload(args[0], &payload, &length)) {
+                vm_runtime_error(ERROR_TYPE,
+                                 "'send' expects a string or bytes, received %s",
                                  net_value_type(args[0]));
                 return -1;
             }
@@ -5414,15 +5462,13 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
                 }
                 return -1;
             }
-            ObjString *payload = AS_STRING(args[0]);
-
-            if (payload->length > INT32_MAX) {
+            if (length > INT32_MAX) {
                 vm_runtime_error(ERROR_VALUE, "'send' payload is too large");
                 return -1;
             }
 
             size_t progress = 0;
-            int status = net_do_send(socket, payload, 0, &progress, out, &err);
+            int status = net_do_send(socket, payload, length, 0, &progress, out, &err);
 
             if (status == NET_DONE) {
                 return 0;
@@ -5456,7 +5502,7 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
                 return -1;
             }
 
-            int status = net_do_recv(socket, (int)max, out, &err);
+            int status = net_do_recv(socket, (int)max, false, out, &err);
 
             if (status == NET_DONE) {
                 return 0;
@@ -5466,6 +5512,42 @@ int net_dispatch_method(Value receiver, ObjString *method, int arg_count, Value 
                 return -1;
             }
             return net_block(self, "recv", NET_OP_RECV, socket, NULL, NET_EVENT_READ,
+                             socket->timeout_ms, (int)max, NIL_VAL, out);
+        }
+        if (strcmp(name, "recv_bytes") == 0 && arg_count == 1) {
+            int64_t max = 0;
+
+            if (socket->kind != NET_TCP) {
+                if (socket->kind == NET_TLS) {
+                    vm_runtime_error(ERROR_NETWORK,
+                                     "'recv_bytes' requires a TCP socket; use 'read' for TLS");
+                } else {
+                    vm_runtime_error(ERROR_NETWORK, "'recv_bytes' requires a TCP socket");
+                }
+                return -1;
+            }
+            if (!net_int_argument(args[0], "recv_bytes", "size", &max)) {
+                return -1;
+            }
+            if (max < 0 || max > NET_READ_MAX) {
+                vm_runtime_error(ERROR_VALUE, "'recv_bytes' size out of valid range (0..%d)",
+                                 NET_READ_MAX);
+                return -1;
+            }
+            if (!net_socket_open(socket)) {
+                return -1;
+            }
+
+            int status = net_do_recv(socket, (int)max, true, out, &err);
+
+            if (status == NET_DONE) {
+                return 0;
+            }
+            if (status == NET_FAILED) {
+                net_raise(&err);
+                return -1;
+            }
+            return net_block(self, "recv_bytes", NET_OP_RECV_BYTES, socket, NULL, NET_EVENT_READ,
                              socket->timeout_ms, (int)max, NIL_VAL, out);
         }
         if (strcmp(name, "recv_line") == 0 && (arg_count == 0 || arg_count == 1)) {
