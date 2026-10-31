@@ -848,9 +848,17 @@ def ws_frame(opcode: int, payload: bytes = b"", fin: bool = True) -> bytes:
 
 
 def ws_masked_frame(opcode: int, payload: bytes) -> bytes:
+    """Builds a masked client frame, using the extended length forms when needed."""
     mask = b"\x01\x02\x03\x04"
     body = bytes(value ^ mask[i % 4] for i, value in enumerate(payload))
-    return bytes([0x80 | opcode, 0x80 | len(payload)]) + mask + body
+    length = len(payload)
+    if length <= 125:
+        header = bytes([0x80 | opcode, 0x80 | length])
+    elif length <= 0xFFFF:
+        header = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack(">H", length)
+    else:
+        header = bytes([0x80 | opcode, 0x80 | 127]) + struct.pack(">Q", length)
+    return header + mask + body
 
 
 def ws_recv_exact(sock, count: int, buffered: bytes) -> tuple[bytes, bytes]:
@@ -891,6 +899,50 @@ def ws_read_until_close(sock, buffered: bytes) -> None:
             return
         if opcode == 9:
             sock.sendall(ws_frame(10, payload))
+
+
+def ws_handshake(sock, path: str = "/") -> bytes:
+    """Sends an RFC 6455 upgrade request and verifies the 101 response."""
+    key = base64.b64encode(os.urandom(16)).decode()
+    request = (
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    sock.sendall(request.encode())
+    response = b""
+    while b"\r\n\r\n" not in response:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("the handshake closed early")
+        response += chunk
+    head, buffered = response.split(b"\r\n\r\n", 1)
+    lines = head.decode("latin-1").split("\r\n")
+    if not lines[0].startswith("HTTP/1.1 101"):
+        raise AssertionError(f"the server answered {lines[0]!r}")
+    headers: dict[str, str] = {}
+    for line in lines[1:]:
+        name, value = line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+    expected = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+    if headers.get("sec-websocket-accept") != expected:
+        raise AssertionError("the server sent a bad Sec-WebSocket-Accept")
+    if headers.get("upgrade", "").lower() != "websocket":
+        raise AssertionError("the server did not upgrade the connection")
+    return buffered
+
+
+def ws_raw_client(port: int, path: str = "/") -> tuple[socket.socket, bytes]:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
+    sock.settimeout(10)
+    return sock, ws_handshake(sock, path)
+
+
+def ws_close_code(sock, buffered: bytes) -> int:
+    opcode, payload, _ = ws_read_frame(sock, buffered)
+    if opcode != 8:
+        raise AssertionError(f"expected a close frame, received opcode {opcode}")
+    return struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else 1005
 
 
 class WebSocketHandler(socketserver.BaseRequestHandler):
@@ -1027,6 +1079,121 @@ def test_ws_client() -> None:
         for server in servers:
             server.shutdown()
             server.server_close()
+
+
+def test_ws_server() -> None:
+    print("\nWebSocket server")
+    connections = 7
+    server = subprocess.Popen(
+        [str(BINARY), str(ROOT / "tests" / "ws_server.spark"), str(connections)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        ready, _, _ = select.select([server.stdout], [], [], 20)
+        line = server.stdout.readline().strip() if ready else ""
+        port = int(line.split(" ", 1)[1]) if line.startswith("listening ") else None
+        if port is None:
+            report("spark ws server starts", False, f"the server said {line!r}")
+            return
+        run_fixture(
+            "ws_server_client.spark",
+            "ws_server_client.out",
+            [str(port)],
+            "spark ws server answers spark's ws client",
+            timeout=30,
+        )
+
+        ok = True
+        detail = ""
+        try:
+            # Masked client frames are accepted; text, binary and ping/pong cross.
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(ws_masked_frame(1, b"hello"))
+                opcode, payload, buffered = ws_read_frame(sock, buffered)
+                if (opcode, payload) != (1, b"echo:hello"):
+                    raise AssertionError(f"text echo was {opcode}/{payload!r}")
+                sock.sendall(ws_masked_frame(2, b"\x00\x01A"))
+                opcode, payload, buffered = ws_read_frame(sock, buffered)
+                if (opcode, payload) != (2, b"\x00\x01A"):
+                    raise AssertionError(f"binary echo was {opcode}/{payload!r}")
+                sock.sendall(ws_masked_frame(9, b"ka"))
+                opcode, payload, buffered = ws_read_frame(sock, buffered)
+                if (opcode, payload) != (10, b"ka"):
+                    raise AssertionError(f"the pong was {opcode}/{payload!r}")
+                sock.sendall(ws_masked_frame(8, struct.pack(">H", 1000) + b"bye"))
+                if ws_close_code(sock, buffered) != 1000:
+                    raise AssertionError("the close echo did not carry 1000")
+            finally:
+                sock.close()
+
+            # An unmasked client frame is a protocol error.
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(bytes([0x81, 5]) + b"hello")
+                if ws_close_code(sock, buffered) != 1002:
+                    raise AssertionError("the unmasked frame was not rejected with 1002")
+            finally:
+                sock.close()
+
+            # A frame above 16 MiB is rejected from its header alone.
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(bytes([0x81, 0x80 | 127]) + struct.pack(">Q", 16 * 1024 * 1024 + 1))
+                if ws_close_code(sock, buffered) != 1009:
+                    raise AssertionError("the oversized frame was not rejected with 1009")
+            finally:
+                sock.close()
+
+            # A control payload above 125 bytes is rejected.
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(
+                    bytes([0x89, 0x80 | 126]) + struct.pack(">H", 200) + b"\x00\x00\x00\x00"
+                )
+                if ws_close_code(sock, buffered) != 1002:
+                    raise AssertionError("the oversized control payload was not rejected")
+            finally:
+                sock.close()
+
+            # A 123-byte close reason fits the 125-byte control payload...
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(ws_masked_frame(8, struct.pack(">H", 1000) + b"x" * 123))
+                if ws_close_code(sock, buffered) != 1000:
+                    raise AssertionError("the 123-byte close reason was rejected")
+            finally:
+                sock.close()
+
+            # ...and one byte more does not.
+            sock, buffered = ws_raw_client(port)
+            try:
+                sock.sendall(ws_masked_frame(8, struct.pack(">H", 1000) + b"x" * 124))
+                if ws_close_code(sock, buffered) != 1002:
+                    raise AssertionError("the 124-byte close reason was not rejected")
+            finally:
+                sock.close()
+        except (AssertionError, OSError, ConnectionError) as error:
+            ok = False
+            detail = f"{error}\n"
+        report("masked frames, masking rejection and the WebSocket limits", ok, detail)
+
+        try:
+            rest, errors = server.communicate(timeout=20)
+            ok = server.returncode == 0 and f"served {connections}" in rest
+            tail = f"exit code {server.returncode}, stdout {rest!r}\n{errors}"
+        except subprocess.TimeoutExpired:
+            server.kill()
+            rest, errors = server.communicate()
+            ok = False
+            tail = f"the server did not finish; stdout {rest!r}\n{errors}"
+        report("the spark ws server serves every connection", ok, tail)
+    finally:
+        if server.poll() is None:
+            server.kill()
 
 
 class MockGatewayHandler(socketserver.BaseRequestHandler):
@@ -1308,6 +1475,41 @@ def test_examples() -> None:
         if server.poll() is None:
             server.kill()
 
+    server = subprocess.Popen(
+        [str(BINARY), str(ROOT / "examples" / "ws_echo_server.spark"), "0"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        ready, _, _ = select.select([server.stdout], [], [], 20)
+        line = server.stdout.readline().strip() if ready else ""
+        port = None
+        if line.startswith("Serving ws://127.0.0.1:"):
+            port = int(line.rsplit(":", 1)[1].split("/", 1)[0])
+        if port is None:
+            report("ws_echo_client example talks to the ws_echo_server example", False,
+                   f"the server said {line!r}")
+        else:
+            completed = run(
+                [str(ROOT / "examples" / "ws_echo_client.spark"), f"ws://127.0.0.1:{port}/"],
+                timeout=30,
+            )
+            expected = "echo: text hello from spark\nclosed: nil\n"
+            detail = ""
+            ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+            if completed.returncode != 0:
+                detail += f"exit code {completed.returncode}\n"
+            if completed.stdout != expected:
+                detail += unified(expected, completed.stdout)
+            if completed.stderr:
+                detail += "unexpected stderr:\n" + completed.stderr
+            report("ws_echo_client example talks to the ws_echo_server example", ok, detail)
+    finally:
+        if server.poll() is None:
+            server.kill()
+
 
 def main() -> int:
     if not BINARY.exists():
@@ -1327,6 +1529,7 @@ def main() -> int:
     test_tls_client()
     test_https_client()
     test_ws_client()
+    test_ws_server()
     test_discord_example()
     test_cli()
 

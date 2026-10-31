@@ -3012,10 +3012,11 @@ static bool net_ws_write_all(ObjSocket *socket, const char *data, size_t length,
     return true;
 }
 
-/* Builds one masked client frame. The caller owns the returned buffer and
+/* Builds one frame. Clients mask every frame with fresh bytes; servers must
+ * not mask (RFC 6455 section 5.1). The caller owns the returned buffer and
  * releases it with mem_realloc(...,0). */
-static char *net_ws_build_frame(int opcode, const char *payload, size_t length, size_t *out_length,
-                                NetError *err)
+static char *net_ws_build_frame(int opcode, const char *payload, size_t length, bool masked,
+                                size_t *out_length, NetError *err)
 {
     unsigned char header[14];
     unsigned char mask[4];
@@ -3028,28 +3029,30 @@ static char *net_ws_build_frame(int opcode, const char *payload, size_t length, 
                  NET_WS_MAX_MESSAGE);
         return NULL;
     }
-    if (!net_random_bytes(mask, sizeof(mask))) {
+    if (masked && !net_random_bytes(mask, sizeof(mask))) {
         net_fail(err, ERROR_NETWORK, "cannot generate a websocket mask");
         return NULL;
     }
 
     header[0] = (unsigned char)(0x80 | (opcode & 0x0F)); /* FIN + opcode */
     if (length <= 125) {
-        header[1] = (unsigned char)(0x80 | (int)length);
+        header[1] = (unsigned char)((masked ? 0x80 : 0) | (int)length);
     } else if (length <= 0xFFFF) {
-        header[1] = (unsigned char)(0x80 | 126);
+        header[1] = (unsigned char)((masked ? 0x80 : 0) | 126);
         header[2] = (unsigned char)((length >> 8) & 0xFF);
         header[3] = (unsigned char)(length & 0xFF);
         header_length = 4;
     } else {
-        header[1] = (unsigned char)(0x80 | 127);
+        header[1] = (unsigned char)((masked ? 0x80 : 0) | 127);
         for (int i = 0; i < 8; i++) {
             header[2 + i] = (unsigned char)(((uint64_t)length >> (56 - 8 * i)) & 0xFF);
         }
         header_length = 10;
     }
-    memcpy(header + header_length, mask, sizeof(mask));
-    header_length += (int)sizeof(mask);
+    if (masked) {
+        memcpy(header + header_length, mask, sizeof(mask));
+        header_length += (int)sizeof(mask);
+    }
 
     total = (size_t)header_length + length;
     frame = mem_realloc(NULL, 0, total);
@@ -3059,7 +3062,8 @@ static char *net_ws_build_frame(int opcode, const char *payload, size_t length, 
     }
     memcpy(frame, header, (size_t)header_length);
     for (size_t i = 0; i < length; i++) {
-        frame[header_length + i] = (char)((unsigned char)payload[i] ^ mask[i % 4]);
+        frame[header_length + i] =
+            masked ? (char)((unsigned char)payload[i] ^ mask[i % 4]) : payload[i];
     }
     *out_length = total;
     return frame;
@@ -3071,7 +3075,7 @@ static bool net_ws_send_frame_deadline(ObjWebSocket *ws, int opcode, const char 
                                        size_t length, int64_t deadline, NetError *err)
 {
     size_t total = 0;
-    char *frame = net_ws_build_frame(opcode, payload, length, &total, err);
+    char *frame = net_ws_build_frame(opcode, payload, length, !ws->server_side, &total, err);
     bool ok;
 
     if (!frame) {
@@ -3217,7 +3221,9 @@ static int net_ws_parse_frame(ObjWebSocket *ws, Value *out, NetError *err)
     uint64_t length;
     int header_length = 2;
     bool control;
-    const unsigned char *payload;
+    bool masked;
+    const unsigned char *mask = NULL;
+    unsigned char *payload;
     size_t payload_length;
 
     if (ws->rbuf_pos == ws->rbuf_len) {
@@ -3233,11 +3239,16 @@ static int net_ws_parse_frame(ObjWebSocket *ws, Value *out, NetError *err)
     b1 = data[1];
     fin = (b0 & 0x80) != 0;
     opcode = b0 & 0x0F;
+    masked = (b1 & 0x80) != 0;
 
     if ((b0 & 0x70) != 0) {
         return net_ws_fail_close(ws, 1002, "reserved bits must be zero", err);
     }
-    if ((b1 & 0x80) != 0) {
+    if (ws->server_side) {
+        if (!masked) {
+            return net_ws_fail_close(ws, 1002, "client frames must be masked", err);
+        }
+    } else if (masked) {
         return net_ws_fail_close(ws, 1002, "server frames must not be masked", err);
     }
     if (opcode != WS_OP_CONTINUATION && opcode != WS_OP_TEXT && opcode != WS_OP_BINARY &&
@@ -3278,12 +3289,22 @@ static int net_ws_parse_frame(ObjWebSocket *ws, Value *out, NetError *err)
     if (length > (uint64_t)NET_WS_MAX_MESSAGE) {
         return net_ws_fail_close(ws, 1009, "the frame exceeds the maximum message size", err);
     }
-    if ((uint64_t)available < (uint64_t)header_length + length) {
+    if ((uint64_t)available < (uint64_t)header_length + length + (masked ? 4u : 0u)) {
         return WS_PARSE_NEED_MORE;
     }
+    if (masked) {
+        mask = data + header_length;
+        header_length += 4;
+    }
 
-    payload = data + header_length;
+    payload = (unsigned char *)data + header_length;
     payload_length = (size_t)length;
+    if (masked) {
+        /* The frame is consumed, so the payload can be unmasked in place. */
+        for (size_t i = 0; i < payload_length; i++) {
+            payload[i] ^= mask[i % 4];
+        }
+    }
     ws->rbuf_pos += header_length + (int)payload_length;
 
     switch (opcode) {
@@ -3908,7 +3929,7 @@ static Value native_ws_connect(int arg_count, Value *args)
             socket->ssl_ctx = context;
             transport.ssl = NULL;
             transport.ssl_ctx = NULL;
-            websocket = object_websocket(socket, timeout);
+            websocket = object_websocket(socket, timeout, false);
 
             size_t leftover = reader.length - reader.position;
 
@@ -3940,6 +3961,239 @@ static Value native_ws_connect(int arg_count, Value *args)
         return NIL_VAL;
     }
     net_url_free(&url);
+    return OBJ_VAL(websocket);
+}
+
+/* ------------------------------------------------------------------ */
+/* WebSocket server (phase 23)                                         */
+/* ------------------------------------------------------------------ */
+
+/* Sends a plain HTTP rejection after a failed upgrade. Best effort: a peer
+ * that already went away must not turn the handshake error into a write
+ * error of its own. */
+static void net_ws_reject_upgrade(ObjSocket *socket, int status, const char *reason)
+{
+    char response[128];
+    NetError ignored;
+    int length = snprintf(response, sizeof(response),
+                          "HTTP/1.1 %d %s\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+                          status, reason);
+
+    if (length > 0) {
+        net_ws_write_all(socket, response, (size_t)length, net_now_ms() + 1000, &ignored);
+    }
+}
+
+/* Describes why `line` is not the RFC 6455 opening request line, or returns
+ * NULL when it is a GET for an origin-form target over HTTP/1.1. */
+static const char *net_ws_request_line_error(const char *line)
+{
+    const char *method_end = strchr(line, ' ');
+    const char *target;
+    const char *protocol;
+
+    if (!method_end || (size_t)(method_end - line) != 3 || memcmp(line, "GET", 3) != 0) {
+        return "expected an HTTP GET request";
+    }
+    target = method_end + 1;
+    protocol = strchr(target, ' ');
+    if (!protocol || protocol == target || strcmp(protocol + 1, "HTTP/1.1") != 0) {
+        return "expected an HTTP/1.1 request line";
+    }
+    if (target[0] != '/') {
+        return "expected an origin-form request target";
+    }
+    return NULL;
+}
+
+/* The opening key is base64 of 16 random bytes, so it is exactly 24
+ * characters and always ends in "==" (RFC 6455 section 4.2.1). */
+static bool net_ws_key_valid(const char *key)
+{
+    size_t length = strlen(key);
+
+    if (length != 24 || key[22] != '=' || key[23] != '=') {
+        return false;
+    }
+    for (size_t i = 0; i < 22; i++) {
+        char c = key[i];
+
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+              c == '+' || c == '/')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Reads and answers the client's opening handshake on an accepted socket and
+ * returns the server-side WebSocket. The handshake is synchronous and bounded
+ * by `timeout_ms`, like the HTTP client; bytes the reader buffered past the
+ * headers are moved into the WebSocket receive buffer. */
+static ObjWebSocket *net_ws_accept_handshake(ObjSocket *socket, int64_t timeout_ms, NetError *err)
+{
+    NetHttpReader reader;
+    NetHttpResponse request;
+    int64_t deadline = net_deadline(timeout_ms);
+    char *line = NULL;
+    size_t line_length = 0;
+    char detail[512];
+    ErrorType error_type = ERROR_NETWORK;
+    const char *upgrade;
+    const char *connection;
+    const char *version;
+    const char *key;
+    char combined[128];
+    unsigned char digest[20];
+    char accept[64];
+    char response[256];
+    int response_length;
+    ObjWebSocket *websocket = NULL;
+    int status;
+
+    memset(&request, 0, sizeof(request));
+    net_http_reader_init(&reader, socket->fd, NULL, deadline);
+
+    status = net_http_read_line(&reader, NET_HTTP_HEADER_MAX, &line, &line_length, err);
+    if (status != 0) {
+        if (status < 0) {
+            error_type = err->type;
+        }
+        snprintf(detail, sizeof(detail), "%s",
+                 status > 0 ? "the request ended before the request line"
+                            : (err->message[0] ? err->message : "the request line is unreadable"));
+        goto rejected;
+    }
+    const char *problem = net_ws_request_line_error(line);
+
+    if (problem) {
+        snprintf(detail, sizeof(detail), "%s", problem);
+        goto rejected;
+    }
+    if (!net_http_read_headers(&reader, &request, err)) {
+        snprintf(detail, sizeof(detail), "%s", err->message);
+        goto rejected;
+    }
+
+    upgrade = net_http_response_header(&request, "upgrade");
+    connection = net_http_response_header(&request, "connection");
+    version = net_http_response_header(&request, "sec-websocket-version");
+    key = net_http_response_header(&request, "sec-websocket-key");
+
+    if (!upgrade || !net_ws_header_has_token(upgrade, "websocket")) {
+        snprintf(detail, sizeof(detail), "missing 'Upgrade: websocket'");
+        goto rejected;
+    }
+    if (!connection || !net_ws_header_has_token(connection, "upgrade")) {
+        snprintf(detail, sizeof(detail), "missing 'Connection: Upgrade'");
+        goto rejected;
+    }
+    if (!version || strcmp(version, "13") != 0) {
+        snprintf(detail, sizeof(detail), "unsupported 'Sec-WebSocket-Version' (expected 13)");
+        goto rejected;
+    }
+    if (!key || !net_ws_key_valid(key)) {
+        snprintf(detail, sizeof(detail), "missing or invalid 'Sec-WebSocket-Key'");
+        goto rejected;
+    }
+
+    snprintf(combined, sizeof(combined), "%s%s", key, NET_WS_GUID);
+    net_sha1((const unsigned char *)combined, strlen(combined), digest);
+    if (net_base64_encode(digest, sizeof(digest), accept, sizeof(accept)) != 28) {
+        snprintf(detail, sizeof(detail), "cannot encode 'Sec-WebSocket-Accept'");
+        goto rejected;
+    }
+    response_length = snprintf(response, sizeof(response),
+                               "HTTP/1.1 101 Switching Protocols\r\n"
+                               "Upgrade: websocket\r\n"
+                               "Connection: Upgrade\r\n"
+                               "Sec-WebSocket-Accept: %s\r\n\r\n",
+                               accept);
+    if (response_length < 0 || (size_t)response_length >= sizeof(response)) {
+        snprintf(detail, sizeof(detail), "cannot build the handshake response");
+        goto rejected;
+    }
+    if (!net_ws_write_all(socket, response, (size_t)response_length, deadline, err)) {
+        /* The peer is gone; the write error is already descriptive. */
+        net_socket_dispose(socket);
+        goto done;
+    }
+
+    /* Neither the socket nor the WebSocket is reachable from a new root here;
+     * the socket is an argument, and the collector stays paused until the
+     * WebSocket's buffers exist. */
+    mem_pause_gc();
+    websocket = object_websocket(socket, timeout_ms, true);
+    size_t leftover = reader.length - reader.position;
+
+    if (leftover > 0) {
+        if ((int)leftover > websocket->rbuf_cap) {
+            int capacity = websocket->rbuf_cap;
+
+            while (capacity < (int)leftover) {
+                capacity *= 2;
+            }
+            websocket->rbuf =
+                mem_realloc(websocket->rbuf, (size_t)websocket->rbuf_cap, (size_t)capacity);
+            websocket->rbuf_cap = capacity;
+        }
+        memcpy(websocket->rbuf, reader.data + reader.position, leftover);
+        websocket->rbuf_len = (int)leftover;
+    }
+    mem_resume_gc();
+    goto done;
+
+rejected:
+    net_ws_reject_upgrade(socket, 400, "Bad Request");
+    net_socket_dispose(socket);
+    net_fail(err, error_type, "the websocket handshake failed: %s", detail);
+done:
+    if (line) {
+        mem_realloc(line, line_length + 1, 0);
+    }
+    net_http_response_free(&request);
+    net_http_reader_free(&reader);
+    return websocket;
+}
+
+/* ws_accept(socket, timeout_ms?) */
+static Value native_ws_accept(int arg_count, Value *args)
+{
+    if (arg_count < 1 || arg_count > 2) {
+        vm_runtime_error(ERROR_ARITY, "'ws_accept' expects between 1 and 2 arguments, received %d",
+                         arg_count);
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_SOCKET)) {
+        vm_runtime_error(ERROR_TYPE, "'ws_accept' expects a socket, received %s",
+                         net_value_type(args[0]));
+        return NIL_VAL;
+    }
+    ObjSocket *socket = AS_SOCKET(args[0]);
+
+    if (socket->is_closed || socket->fd < 0) {
+        vm_runtime_error(ERROR_RUNTIME, "cannot upgrade a closed socket");
+        return NIL_VAL;
+    }
+    if (socket->kind != NET_TCP) {
+        vm_runtime_error(ERROR_RUNTIME, "ws_accept requires a plain TCP socket");
+        return NIL_VAL;
+    }
+
+    int64_t timeout = 0;
+
+    if (!net_optional_timeout(arg_count > 1 ? args[1] : NIL_VAL, arg_count, 1, "ws_accept",
+                              &timeout)) {
+        return NIL_VAL;
+    }
+
+    NetError err;
+    ObjWebSocket *websocket = net_ws_accept_handshake(socket, timeout, &err);
+
+    if (!websocket) {
+        net_raise(&err);
+        return NIL_VAL;
+    }
     return OBJ_VAL(websocket);
 }
 
@@ -4200,6 +4454,7 @@ void net_init(void)
     vm_define_native("tcp_connect", native_tcp_connect, -1);
     vm_define_native("tls_connect", native_tls_connect, -1);
     vm_define_native("ws_connect", native_ws_connect, -1);
+    vm_define_native("ws_accept", native_ws_accept, -1);
     vm_define_native("tcp_listen", native_tcp_listen, -1);
     vm_define_native("udp_bind", native_udp_bind, -1);
     vm_define_native("net_hostname", native_net_hostname, 0);

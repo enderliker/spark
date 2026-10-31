@@ -1,0 +1,12 @@
+// WebSocket echo client: sends one message and prints the echoed frame.
+//
+//   spark examples/ws_echo_client.spark ws://127.0.0.1:PORT/
+var url = argv[1];
+var ws = ws_connect(url, 5000);
+
+ws.send_text("hello from spark");
+var frame = ws.receive();
+print("echo:", frame.opcode, frame.data);
+
+ws.close(1000, "done");
+print("closed:", ws.receive());

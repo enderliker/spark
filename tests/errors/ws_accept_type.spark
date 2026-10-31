@@ -1,0 +1,3 @@
+var server = tcp_listen("127.0.0.1", 0);
+ws_accept(server);
+server.close();

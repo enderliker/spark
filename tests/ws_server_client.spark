@@ -1,0 +1,25 @@
+// Phase 23: the WebSocket client against Spark's own server.
+var port = int(argv[1]);
+var ws = ws_connect("ws://127.0.0.1:" + str(port) + "/chat", 5000);
+
+print("type:", type(ws));
+print("text:", ws.send_text("hello"));
+var text = ws.receive();
+print("text-recv:", text.opcode, text.data);
+
+// Binary payloads keep their exact bytes.
+var payload = chr(0) + chr(1) + "A";
+print("binary:", ws.send_binary(payload));
+var binary = ws.receive();
+print("binary-recv:", binary.opcode, binary.data == payload);
+
+// The server answers the client ping automatically.
+print("ping:", ws.ping("ka"));
+var pong = ws.receive();
+print("pong:", pong.opcode, pong.data);
+
+// The client starts the close handshake and the peer echoes it.
+ws.close(1000, "done");
+print("closed:", ws.receive());
+
+print("ws server client ok");

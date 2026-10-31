@@ -1,0 +1,36 @@
+// Phase 23: a WebSocket echo server on the socket layer.
+// It serves exactly argv[1] connections and prints its ephemeral port first.
+var server = tcp_listen("127.0.0.1", 0);
+print("listening " + str(server.port()));
+
+var target = int(argv[1]);
+var served = 0;
+
+while (served < target) {
+    var transport = server.accept(5000);
+
+    if (transport == nil) {
+        continue;
+    }
+    served += 1;
+    try {
+        var ws = ws_accept(transport, 5000);
+
+        while (true) {
+            var frame = ws.receive(5000);
+            if (frame == nil) {
+                break;
+            }
+            if (frame.opcode == "text") {
+                ws.send_text("echo:" + frame.data);
+            } else if (frame.opcode == "binary") {
+                ws.send_binary(frame.data);
+            }
+        }
+        print("connection " + str(served) + " closed");
+    } catch (e) {
+        print("connection " + str(served) + " closed");
+    }
+}
+server.close();
+print("served " + str(served));

@@ -1,0 +1,3 @@
+var socket = udp_bind("127.0.0.1", 0);
+ws_accept(socket);
+socket.close();

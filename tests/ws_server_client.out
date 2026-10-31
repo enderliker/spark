@@ -1,0 +1,9 @@
+type: websocket
+text: 5
+text-recv: text echo:hello
+binary: 3
+binary-recv: binary true
+ping: 2
+pong: pong ka
+closed: nil
+ws server client ok

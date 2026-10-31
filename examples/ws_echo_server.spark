@@ -1,0 +1,38 @@
+// WebSocket echo server: every text or binary message is sent back unchanged.
+//
+//   spark examples/ws_echo_server.spark [port]
+//
+// Port 0 asks the kernel for an ephemeral port; the chosen port is printed.
+// The matching client is examples/ws_echo_client.spark.
+var port = 0;
+if (len(argv) > 1) {
+    port = int(argv[1]);
+}
+
+var server = tcp_listen("127.0.0.1", port);
+print("Serving ws://127.0.0.1:" + str(server.port()) + "/");
+
+while (true) {
+    var transport = server.accept();
+
+    if (transport == nil) {
+        continue;
+    }
+    try {
+        var ws = ws_accept(transport, 5000);
+
+        while (true) {
+            var frame = ws.receive();
+            if (frame == nil) {
+                break;
+            }
+            if (frame.opcode == "text") {
+                ws.send_text(frame.data);
+            } else if (frame.opcode == "binary") {
+                ws.send_binary(frame.data);
+            }
+        }
+    } catch {
+        // The client went away or broke the protocol; serve the next one.
+    }
+}

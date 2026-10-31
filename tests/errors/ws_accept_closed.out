@@ -1,0 +1,2 @@
+exit: 70
+stderr: RuntimeError at line 3: cannot upgrade a closed socket

@@ -87,7 +87,7 @@ for (var i = 0; i < 10; i += 1) {
   Blocking calls yield only their coroutine, so one process serves many
   connections. URL helpers, an HTTP/1.1 client (chunked bodies, redirects, size and
   timeout limits), TLS with certificate and host-name verification, HTTPS, an HTTP
-  server library on the socket layer and an RFC 6455 WebSocket client
+  server library on the socket layer and an RFC 6455 WebSocket client and server
   (`ws://`/`wss://`).
 - A virtual machine with fused superinstructions, hot/cold dispatch, a growable
   value stack and an adaptive garbage collector.
@@ -377,6 +377,7 @@ method form (`sb.append(v)`, `sb.to_string()`, `sb.len()`, `sb.clear()`).
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
 | `tls_connect(host, port, timeout_ms?, ca_file?)` | Connects a TLS client; returns a `socket` with `read`/`write`. |
 | `ws_connect(url, timeout_ms?, ca_file?)` | Opens a WebSocket client; returns a `websocket`. |
+| `ws_accept(socket, timeout_ms?)` | Upgrades an accepted TCP socket to a WebSocket server connection. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server`. |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket; returns a `socket`. |
 | `net_select(readables, timeout_ms?)` | Waits for any socket to be readable; returns the ready indexes. |
@@ -393,7 +394,11 @@ Socket methods: `sock.send` (text or bytes), `sock.recv`, `sock.recv_bytes`,
 `sock.read` and `sock.write` instead of the TCP methods. Server methods:
 `srv.accept`, `srv.port` and `srv.close`. WebSocket methods: `ws.send_text`,
 `ws.send_binary`, `ws.receive`, `ws.ping` and `ws.close`; `receive` returns
-`{opcode, data}` or `nil` and reassembles fragmented messages.
+`{opcode, data}` or `nil` and reassembles fragmented messages. `ws_accept`
+performs the server-side opening handshake synchronously (bounded by its
+timeout) and verifies that client frames are masked; server frames are sent
+unmasked, with the same 16 MiB message, 125-byte control and 123-byte close
+reason limits as the client.
 
 Hosts may be names, IPv4 literals or bracketed IPv6 literals; `localhost` works
 over either family. A blocking call suspends its coroutine and the scheduler polls
@@ -404,7 +409,10 @@ follows redirects and handles chunked bodies within explicit header, body, redir
 and timeout limits; `http_request` accepts a `ca_file` option for a private CA, and
 `lib/http.spark` builds an HTTP server on top of the socket layer with no extra
 native code. [`examples/discord_bot.spark`](examples/discord_bot.spark) shows a
-WebSocket client with heartbeats and a local mock gateway in the test suite.
+WebSocket client with heartbeats and a local mock gateway in the test suite;
+[`examples/ws_echo_server.spark`](examples/ws_echo_server.spark) and
+[`examples/ws_echo_client.spark`](examples/ws_echo_client.spark) are a matching
+server/client pair.
 
 ## Project layout
 

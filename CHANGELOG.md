@@ -55,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A frame or message is capped at 16 MiB and a control payload at 125 bytes.
   `receive` suspends the coroutine through the scheduler and accepts a per-call
   timeout, so a heartbeat loop can time out and retry.
+- WebSocket server: `ws_accept(socket, timeout_ms?)` upgrades a socket from
+  `tcp_listen(...).accept()` after validating the RFC 6455 opening request and
+  answering `101 Switching Protocols`. It returns the same `websocket` object as
+  the client (text, binary, ping/pong, fragmentation and the close handshake),
+  sends unmasked server frames, rejects unmasked client frames with `1002` and
+  enforces the same 16 MiB message, 125-byte control and 123-byte close-reason
+  limits. The handshake is synchronous and bounded by its timeout.
+- `examples/ws_echo_server.spark` and `examples/ws_echo_client.spark`, run against
+  each other by the suite.
 - `examples/discord_bot.spark`: a Discord-shaped gateway client that identifies,
   heartbeats and answers a message event. `tests/run_tests.py` runs it against a
   local mock gateway (HELLO, IDENTIFY, READY, MESSAGE_CREATE), so the example is

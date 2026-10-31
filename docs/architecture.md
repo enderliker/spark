@@ -577,13 +577,15 @@ argument errors, a missing CA file and the three rejection cases.
 `tests/https_client.spark` repeats the trusted and rejection cases through the HTTP
 client, including the system-store failure and `ca_file` validation.
 
-### WebSocket (phase 19)
+### WebSocket (phases 19 and 23)
 
-`ws_connect(url, timeout_ms?, ca_file?)` adds one native and one GC-managed object,
-`ObjWebSocket`. The object borrows an `ObjSocket` (plain TCP or TLS), which keeps
-owning the descriptor and the OpenSSL state; the WebSocket owns only the receive and
-reassembly buffers. The collector traces the transport through the WebSocket and the
-waiter list traces a WebSocket whose `receive` is suspended.
+`ws_connect(url, timeout_ms?, ca_file?)` and `ws_accept(socket, timeout_ms?)` add two
+natives and one GC-managed object, `ObjWebSocket`. The object borrows an `ObjSocket`
+(plain TCP or TLS for a client, plain TCP for a server), which keeps owning the
+descriptor and the OpenSSL state; the WebSocket owns only the receive and reassembly
+buffers. The collector traces the transport through the WebSocket and the waiter list
+traces a WebSocket whose `receive` is suspended. The `server_side` flag flips the
+masking direction for both the parser and the frame writer.
 
 - **Handshake.** The native parses the URL (`ws`/`wss` default to 80/443), connects
   through `net_connect`, and for `wss` builds the same context as `tls_connect` and
@@ -596,13 +598,23 @@ waiter list traces a WebSocket whose `receive` is suspended.
   the WebSocket layer needs no OpenSSL). Bytes the reader buffered
   past the headers are moved into the WebSocket receive buffer, so a frame sent with
   the handshake is not lost.
+- **Server handshake.** `ws_accept` reads the opening request with the same
+  `NetHttpReader` helpers and checks the request line (`GET`, `HTTP/1.1`, an
+  origin-form target) and the upgrade headers (`Upgrade`, `Connection`,
+  `Sec-WebSocket-Version: 13` and a 24-character `Sec-WebSocket-Key`). It answers
+  `101` with `Sec-WebSocket-Accept` from `net_sha1`/`net_base64_encode`; a bad request
+  gets `400 Bad Request` and the transport is disposed. The handshake is
+  synchronous and bounded by the argument timeout, like the HTTP client. The
+  returned WebSocket borrows the accepted socket, and any bytes read past the
+  response (a frame sent with the handshake) move into its receive buffer.
 - **Framing.** Every client frame is masked with four fresh bytes from
-  `/dev/urandom`; the header
-  uses the 7-bit, 16-bit or 64-bit length form and the payload is XORed in place. The
-  parser rejects masked server frames, reserved bits and opcodes, fragmented or
-  oversized control frames, orphan continuations and a new data frame inside a
-  fragmented message. Text messages and close reasons are validated as strict UTF-8
-  (overlong forms, surrogates and out-of-range code points are rejected).
+  `/dev/urandom`; server frames are never masked. The header uses the 7-bit,
+  16-bit or 64-bit length form and a masked payload is XORed in place while it is
+  consumed. The parser rejects masked server frames, unmasked client frames,
+  reserved bits and opcodes, fragmented or oversized control frames, orphan
+  continuations and a new data frame inside a fragmented message. Text messages and
+  close reasons are validated as strict UTF-8 (overlong forms, surrogates and
+  out-of-range code points are rejected).
   Fragmented messages are reassembled up to the 16 MiB cap; control frames may
   interleave. A ping is answered with a pong carrying the same payload; a close frame
   is echoed and completes the receive with `nil`.
@@ -627,11 +639,14 @@ waiter list traces a WebSocket whose `receive` is suspended.
 `tests/ws_client.spark` runs against a scripted Python RFC 6455 server (plain and
 TLS) and covers the handshake, text/binary/ping/pong/close, fragmentation, the size
 cap, masked frames, invalid UTF-8, orphan continuations, reserved bits and close
-codes, timeouts and the `wss://` trust store. `tests/run_tests.py` also runs
+codes, timeouts and the `wss://` trust store. `tests/ws_server.spark` serves
+`tests/ws_server_client.spark` (the same framing round-trip through Spark's own
+server) and six raw Python clients that check masked acceptance, the `1002`
+rejection of unmasked client frames, the 16 MiB frame cap, the 125-byte control cap
+and both sides of the 123-byte close-reason boundary. `tests/run_tests.py` also runs
 `examples/discord_bot.spark` against a local mock gateway (HELLO, IDENTIFY, READY,
-MESSAGE_CREATE and a heartbeat-driven reply), so the Discord example is exercised
-offline. A WebSocket server (T97) is deferred: Spark strings are UTF-8 text, so a
-server-side frame writer needs a byte-buffer type first.
+MESSAGE_CREATE and a heartbeat-driven reply) and the `ws_echo_server`/
+`ws_echo_client` example pair, so both directions are exercised offline.
 
 ### Security and trust model (phase 20)
 

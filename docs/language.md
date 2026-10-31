@@ -857,6 +857,8 @@ names the argument type but never echoes the key or the data.
 | `eof(file)` | Whether file handle has reached end of file. |
 | `tcp_connect(host, port, timeout_ms?)` | Connects a TCP client; returns a `socket`. |
 | `tls_connect(host, port, timeout_ms?, ca_file?)` | Connects a TLS client; returns a `socket` with `read`/`write`. |
+| `ws_connect(url, timeout_ms?, ca_file?)` | Opens an RFC 6455 WebSocket client; returns a `websocket`. |
+| `ws_accept(socket, timeout_ms?)` | Upgrades an accepted TCP socket to an RFC 6455 WebSocket server connection. |
 | `tcp_listen(host, port, backlog?)` | Starts a TCP listener; returns a `server` (port `0` binds an ephemeral port). |
 | `udp_bind(host, port, timeout_ms?)` | Binds a UDP socket for datagrams; returns a `socket`. |
 | `net_hostname()` | The local host name. |
@@ -1409,6 +1411,52 @@ print(socket.receive());               // nil once the peer closes
 - `receive` yields the coroutine while it waits for bytes; `send_text`,
   `send_binary`, `ping` and `close` write synchronously, bounded by the connection
   timeout.
+
+### WebSocket server
+
+`ws_accept(socket, timeout_ms?)` upgrades a socket returned by
+`tcp_listen(...).accept()` to an RFC 6455 server connection. The socket must be
+an open plain TCP socket, and `ws_accept` must be the first read on it: the
+opening request is read and answered before the returned `websocket` takes over
+the descriptor. The handshake is synchronous, bounded by `timeout_ms`, and
+blocks the process (like the HTTP client) rather than yielding the coroutine, so
+run a server that must stay responsive in its own process. A request that is
+not a valid upgrade is answered with `400 Bad Request`, the transport is closed
+and `NetworkError` is raised; read failures such as `TimeoutError` keep their
+type.
+
+```spark
+var server = tcp_listen("127.0.0.1", 8080);
+
+while (true) {
+    var transport = server.accept();
+    var ws = ws_accept(transport, 5000);
+    var frame = ws.receive();
+
+    if (frame != nil) {
+        ws.send_text("echo: " + frame.data);
+    }
+}
+```
+
+The returned `websocket` supports the same methods as the client
+(`send_text`, `send_binary`, `receive`, `ping`, `close`), with three
+differences:
+
+- The server checks the request line (`GET`, `HTTP/1.1`, an origin-form target)
+  and the upgrade headers (`Upgrade: websocket`, `Connection: Upgrade`,
+  `Sec-WebSocket-Version: 13` and a `Sec-WebSocket-Key` that decodes to 16
+  bytes), then answers `101 Switching Protocols` with the matching
+  `Sec-WebSocket-Accept`. Extensions and subprotocols are ignored, never
+  selected.
+- Server frames are sent unmasked; incoming client frames must be masked. An
+  unmasked client frame raises `NetworkError` and closes with `1002`, mirroring
+  the client's rejection of masked server frames.
+- The limits match the client: 16 MiB per frame and assembled message, 125
+  bytes per control payload and 123 bytes per close reason.
+
+`examples/ws_echo_server.spark` and `examples/ws_echo_client.spark` are a
+matching pair, and the test suite runs them against each other.
 
 ### Discord gateway example
 

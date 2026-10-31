@@ -409,18 +409,42 @@ upgrade on the `lib/http.spark` server, then speak the same framing as the clien
 (`lib/ws.spark`); the native route avoids duplicating the framing rules, the library
 route keeps the native surface small (Q13's reasoning).
 **Acceptance criteria:**
-- [ ] A Spark server and a Spark client complete the handshake and exchange text,
+- [x] A Spark server and a Spark client complete the handshake and exchange text,
       binary, ping/pong and a clean close.
-- [ ] Masked client frames are accepted; unmasked client frames are rejected with
+- [x] Masked client frames are accepted; unmasked client frames are rejected with
       `1002`, mirroring the client's validation.
-- [ ] Limits match the client (16 MiB frame/message, 125-byte control payload,
+- [x] Limits match the client (16 MiB frame/message, 125-byte control payload,
       123-byte close reason) with a fixture per limit.
 **Verification:**
-- [ ] Fixtures: Spark server + Spark client, plus the existing Python client; suite +
+- [x] Fixtures: Spark server + Spark client, plus the existing Python client; suite +
       ASan/UBSan; example updated and documented.
 **Dependencies:** T108-T110, T119-T121 (for a Spark-side test harness). **Files:**
 `src/net.c` or `lib/ws.spark`, `examples/`, `tests/`, `docs/language.md`,
 `docs/architecture.md`. **Scope:** M.
+
+**Done notes:** the native route won. `ws_accept(socket, timeout_ms?)` lives in
+`src/net.c` and reuses `ObjWebSocket`, the parser, the frame writer and the limit
+checks, so the two directions cannot drift. `ObjWebSocket` gained a `server_side`
+flag that flips the mask direction: `net_ws_build_frame` takes a mask flag (fresh
+`/dev/urandom` bytes for clients, none for servers) and `net_ws_parse_frame`
+requires masked client frames and unmasks them in place as they are consumed. The
+handshake reuses `NetHttpReader`/`net_http_read_line`/`net_http_read_headers` and
+`net_sha1`/`net_base64_encode`; it validates the `GET`/`HTTP/1.1` origin-form
+request line, `Upgrade`, `Connection`, `Sec-WebSocket-Version: 13` and the
+24-character `Sec-WebSocket-Key`, answers `101`, and moves leftover bytes into the
+receive buffer. A rejected request gets `400 Bad Request`, the transport is
+disposed, and read failures such as timeouts keep their `TimeoutError` type.
+`ws_accept` is synchronous (process-blocking, bounded by its timeout), like the
+HTTP client, and the returned WebSocket owns the accepted socket. `tests/
+ws_server.spark` serves `tests/ws_server_client.spark` and six raw Python clients:
+masked text/binary/ping/close, unmasked `1002`, a header-only >16 MiB frame `1009`,
+a >125-byte control payload `1002`, and both sides of the 123-byte close-reason
+boundary. Three error fixtures cover the argument checks.
+`examples/ws_echo_server.spark` and `examples/ws_echo_client.spark` run against each
+other in the suite, and `docs/language.md`, `README.md`, `docs/architecture.md` and
+`CHANGELOG.md` describe the server. `lib/http.spark` stays a text HTTP server: the
+upgrade is performed directly on the accepted socket rather than through
+`http_serve`.
 
 ## Checkpoint: Phase 22
 - [ ] `bytes` round-trips a valid UTF-8 string unchanged

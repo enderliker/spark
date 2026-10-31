@@ -829,7 +829,7 @@ ObjServer *object_server(int fd)
     return server;
 }
 
-ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms)
+ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms, bool server_side)
 {
     ObjWebSocket *websocket;
 
@@ -838,6 +838,7 @@ ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms)
     mem_pause_gc();
     websocket = allocate_obj(sizeof(ObjWebSocket), OBJ_WEBSOCKET);
     websocket->socket = socket;
+    websocket->server_side = server_side;
     websocket->is_closed = false;
     websocket->peer_closed = false;
     websocket->sent_close = false;

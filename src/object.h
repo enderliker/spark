@@ -302,6 +302,7 @@ typedef enum {
 typedef struct ObjWebSocket {
     Obj obj;
     struct ObjSocket *socket;
+    bool server_side;    /* frames from this peer must be masked */
     bool is_closed;
     bool peer_closed;    /* a close frame arrived from the peer */
     bool sent_close;     /* this side sent a close frame */
@@ -393,7 +394,7 @@ ObjChannel *object_channel(int capacity);
 ObjFile *object_file(FILE *stream, ObjString *path, bool binary);
 ObjSocket *object_socket(int fd, NetKind kind, int64_t timeout_ms);
 ObjServer *object_server(int fd);
-ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms);
+ObjWebSocket *object_websocket(ObjSocket *socket, int64_t timeout_ms, bool server_side);
 ObjStringBuilder *object_string_builder(int initial_capacity);
 bool string_builder_append(ObjStringBuilder *sb, const char *chars, int len);
 void string_builder_clear(ObjStringBuilder *sb);
