@@ -62,6 +62,31 @@ static uint32_t hash_string(const char *chars, int length)
     return hash;
 }
 
+/* Bytes fold with the same FNV-1a loop as strings, so the two hash
+ * consistently. It is computed on demand: unlike a string, an `ObjBytes` is not
+ * interned and has no cached hash field. */
+static uint32_t hash_bytes_data(const unsigned char *data, int length)
+{
+    return hash_string((const char *)data, length);
+}
+
+/* Hash of an object used as a map key. Strings are interned and bytes compare
+ * by content, so both hash by content: two equal values must share an entry.
+ * Every other object is a reference type and hashes by address, which matches
+ * the identity comparison in `keys_equal`. */
+static uint32_t hash_object_key(Obj *obj)
+{
+    if (obj->type == OBJ_STRING) {
+        return ((ObjString *)obj)->hash;
+    }
+    if (obj->type == OBJ_BYTES) {
+        ObjBytes *bytes = (ObjBytes *)obj;
+
+        return hash_bytes_data(bytes->data, bytes->length);
+    }
+    return (uint32_t)(((uintptr_t)obj >> 4) * 2654435761u);
+}
+
 static void intern_grow(void)
 {
     uint32_t new_capacity = intern_capacity == 0 ? 16384 : intern_capacity * 2;
@@ -206,6 +231,23 @@ ObjArray *object_array(void)
     return array;
 }
 
+ObjBytes *object_bytes(int length)
+{
+    ObjBytes *bytes;
+
+    if (length < 0) {
+        length = 0;
+    }
+    /* One allocation: the payload lives in the flexible array member, so the
+     * `data` pointer never outlives the header and needs no separate free. */
+    bytes = allocate_obj(sizeof(ObjBytes) + (size_t)length, OBJ_BYTES);
+    bytes->length = length;
+    if (length > 0) {
+        memset(bytes->data, 0, (size_t)length);
+    }
+    return bytes;
+}
+
 static uint32_t hash_value(Value value)
 {
     switch (value.type) {
@@ -244,19 +286,28 @@ static uint32_t hash_value(Value value)
         return (uint32_t)bits;
     }
     case VAL_OBJ:
-        if (value.as.obj->type == OBJ_STRING) {
-            return ((ObjString *)value.as.obj)->hash;
-        }
-        return (uint32_t)(((uintptr_t)value.as.obj >> 4) * 2654435761u);
+        return hash_object_key(value.as.obj);
     }
     return 0;
+}
+
+static inline bool bytes_data_equal(const ObjBytes *a, const ObjBytes *b)
+{
+    return a->length == b->length &&
+           (a->length == 0 || memcmp(a->data, b->data, (size_t)a->length) == 0);
 }
 
 static inline bool keys_equal(Value a, Value b)
 {
     if (a.type == b.type) {
         if (a.type == VAL_OBJ) {
-            return a.as.obj == b.as.obj;
+            if (a.as.obj == b.as.obj) {
+                return true;
+            }
+            if (a.as.obj->type == OBJ_BYTES && b.as.obj->type == OBJ_BYTES) {
+                return bytes_data_equal((ObjBytes *)a.as.obj, (ObjBytes *)b.as.obj);
+            }
+            return false;
         }
         if (a.type == VAL_INT) {
             return a.as.integer == b.as.integer;
@@ -413,10 +464,7 @@ bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index)
     MapEntry *entries = map->entries;
 
     if (key.type == VAL_OBJ) {
-        void *key_obj = key.as.obj;
-        uint32_t hash = key.as.obj->type == OBJ_STRING
-                            ? ((ObjString *)key_obj)->hash
-                            : (uint32_t)(((uintptr_t)key_obj >> 4) * 2654435761u);
+        uint32_t hash = hash_object_key(key.as.obj);
         uint32_t index = hash & mask;
 
         for (;;) {
@@ -424,8 +472,7 @@ bool map_get_index(ObjMap *map, Value key, Value *out, int *out_index)
             if (entry->state == 0) {
                 return false;
             }
-            if (entry->state == 1 && entry->hash == hash && entry->key.type == VAL_OBJ &&
-                entry->key.as.obj == key_obj) {
+            if (entry->state == 1 && entry->hash == hash && keys_equal(entry->key, key)) {
                 *out = entry->value;
                 if (out_index) {
                     *out_index = (int)index;
@@ -476,16 +523,12 @@ bool map_set(ObjMap *map, Value key, Value value)
     MapEntry *entry;
 
     if (key.type == VAL_OBJ) {
-        void *key_obj = key.as.obj;
-        uint32_t hash = key.as.obj->type == OBJ_STRING
-                            ? ((ObjString *)key_obj)->hash
-                            : (uint32_t)(((uintptr_t)key_obj >> 4) * 2654435761u);
+        uint32_t hash = hash_object_key(key.as.obj);
         if (map->tombstones == 0) {
             uint32_t index = hash & mask;
             for (;;) {
                 entry = &entries[index];
-                if (entry->state == 0 || (entry->hash == hash && entry->key.type == VAL_OBJ &&
-                                          entry->key.as.obj == key_obj)) {
+                if (entry->state == 0 || (entry->hash == hash && keys_equal(entry->key, key))) {
                     break;
                 }
                 index = (index + 1) & mask;
@@ -807,6 +850,9 @@ void object_free(Obj *obj)
     case OBJ_STRING:
         mem_realloc(obj, sizeof(ObjString) + (size_t)((ObjString *)obj)->length + 1, 0);
         break;
+    case OBJ_BYTES:
+        mem_realloc(obj, sizeof(ObjBytes) + (size_t)((ObjBytes *)obj)->length, 0);
+        break;
     case OBJ_ARRAY: {
         ObjArray *array = (ObjArray *)obj;
         mem_realloc(array->items, sizeof(Value) * (size_t)array->capacity, 0);
@@ -943,6 +989,7 @@ const char *obj_type_name(ObjType type)
 {
     switch (type) {
     case OBJ_STRING: return "string";
+    case OBJ_BYTES: return "bytes";
     case OBJ_ARRAY: return "array";
     case OBJ_MAP: return "map";
     case OBJ_FUNCTION: return "function";
@@ -983,7 +1030,13 @@ bool values_equal(Value a, Value b)
     case VAL_NUMBER:
         return a.as.number == b.as.number;
     case VAL_OBJ:
-        return a.as.obj == b.as.obj;
+        if (a.as.obj == b.as.obj) {
+            return true;
+        }
+        if (a.as.obj->type == OBJ_BYTES && b.as.obj->type == OBJ_BYTES) {
+            return bytes_data_equal((ObjBytes *)a.as.obj, (ObjBytes *)b.as.obj);
+        }
+        return false;
     }
     return false;
 }
@@ -1044,6 +1097,41 @@ static void value_format(buf_t *b, Value v, bool repr)
             } else {
                 buf_append(b, s->chars, (size_t)s->length);
             }
+            break;
+        }
+        case OBJ_BYTES: {
+            ObjBytes *bytes = (ObjBytes *)AS_OBJ(v);
+
+            /* A preview, not a lossless conversion: printable ASCII is shown as
+             * itself and every other byte as an escape, so the output is always
+             * valid text. Recovering the bytes from text is an explicit step of
+             * its own, which `str()` and `print` never take; both use this
+             * form. */
+            buf_append_str(b, "b\"");
+            for (int i = 0; i < bytes->length; i++) {
+                unsigned char byte = bytes->data[i];
+
+                switch (byte) {
+                case '\n': buf_append_str(b, "\\n"); break;
+                case '\t': buf_append_str(b, "\\t"); break;
+                case '\r': buf_append_str(b, "\\r"); break;
+                case '\\': buf_append_str(b, "\\\\"); break;
+                case '"': buf_append_str(b, "\\\""); break;
+                default:
+                    if (byte >= 0x20 && byte < 0x7f) {
+                        char character = (char)byte;
+
+                        buf_append(b, &character, 1);
+                    } else {
+                        char escape[8];
+
+                        snprintf(escape, sizeof(escape), "\\x%02x", byte);
+                        buf_append_str(b, escape);
+                    }
+                    break;
+                }
+            }
+            buf_append_str(b, "\"");
             break;
         }
         case OBJ_ARRAY: {

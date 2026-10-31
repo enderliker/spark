@@ -1,0 +1,53 @@
+// The `bytes` type: an immutable byte sequence (phase 22, T108).
+
+// Construction: n zero bytes.
+var zeros = bytes(4);
+print("zeros:", zeros, len(zeros), type(zeros));
+
+// Construction from an array of integers in 0..255.
+var abc = bytes_from([97, 98, 99]);
+print("from array:", abc, len(abc));
+
+// Construction from a string copies its UTF-8 bytes with no conversion:
+// the character count and the byte count differ for non-ASCII text.
+print("from string:", len("héllo"), len(bytes_from("héllo")), bytes_from("héllo"));
+
+// The empty value has two spellings.
+print("empty:", bytes(0), bytes_from(""), bytes(0) == bytes_from(""));
+
+// Content equality: two distinct objects holding the same bytes are equal.
+var abc2 = bytes_from("abc");
+print("equal:", abc == abc2, abc == bytes_from("abd"), abc == bytes(3));
+print("lengths differ:", bytes_from("ab") == bytes_from("abc"));
+
+// There is no implicit conversion between text and bytes (decision A16).
+print("distinct types:", abc == "abc", type(abc) == type("abc"));
+
+// Equal bytes are the same map key, even as different objects.
+var lookup = {};
+lookup[abc] = "first";
+lookup[abc2] = "second";
+print("map:", len(lookup), lookup[bytes_from("abc")], has(lookup, abc2));
+lookup["abc"] = "text key";
+print("coexists with a string key:", len(lookup), lookup["abc"], lookup[abc]);
+del(lookup, bytes_from("abc"));
+print("deleted:", len(lookup), has(lookup, abc));
+
+// The printed form is a preview, not a lossless conversion: printable ASCII is
+// shown as itself and every other byte as an escape, so the text stays valid.
+var preview = bytes_from([65, 66, 10, 9, 13, 34, 92, 0, 31, 32, 126, 127, 128, 255]);
+print("preview:", preview);
+print("str is the preview:", str(preview) == "b\"AB\\n\\t\\r\\\"\\\\\\x00\\x1f ~\\x7f\\x80\\xff\"");
+
+// Immutability: nothing mutates a bytes value in place. `copy` returns a
+// non-collection unchanged, so the value is shared, not cloned.
+var original = bytes_from("keep");
+print("immutable:", original, copy(original) == original, len(original));
+
+// A bytes value stays reachable (and intact) across a collection.
+var kept = [];
+for (var i = 0; i < 500; i += 1) {
+    push(kept, bytes_from([i % 256, 255 - (i % 256)]));
+}
+gc();
+print("survives gc:", len(kept), kept[0], kept[499], len(kept[499]));

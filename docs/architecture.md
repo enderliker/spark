@@ -27,6 +27,7 @@ result / error
 | `chunk.c` | Code, lines and constants arrays; recursive disassembler. |
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
+| `bytes.c` | The immutable `bytes` type: the `bytes` and `bytes_from` constructors. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
 | `table.c` | Hash table used for the global `name -> slot` map (open addressing, tombstones). |
 | `memory.c` | Byte accounting and the GC threshold. |
@@ -71,6 +72,16 @@ Concrete types:
   and doubles when load factor passes 0.75); two equal strings share the same object,
   allowing O(1) pointer-identity equality checks across the VM and maps.
 - `ObjArray`: dynamic array of `Value`.
+- `ObjBytes`: an immutable byte sequence — `int length` plus a flexible array of
+  `unsigned char data[]`, allocated in one block like `ObjString`. It is **not**
+  interned and **not** NUL-terminated, so a consumer must use `length`: `data[length]`
+  is out of bounds. It has no cached hash, so `hash_object_key` folds the bytes on
+  demand with the same FNV-1a loop as strings. Equality (`values_equal`, `keys_equal`)
+  and the map key hash compare by content, so two equal `bytes` are `==` and share a
+  map entry even though they are distinct objects; the map fast paths in `map_get_index`
+  and `map_set` therefore route object keys through `keys_equal`/`hash_object_key`
+  rather than a pointer comparison. It holds no `Value`s, so the collector's `blacken`
+  does not traverse it.
 - `ObjMap`: open-addressing hash table of `MapEntry` (key, value, hash, state). The state is
   `free`, `occupied` or `tombstone`; it caches the key hash to avoid recomputation,
   uses specialized fast probing for object/string keys, and doubles capacity when it fills

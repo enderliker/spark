@@ -154,6 +154,24 @@ Notes that matter for the performance phase:
   `export` land in T154 because they unblock a real `lib/`; the manifest, the resolver and
   the lockfile (T155) move to their own stream, since they add git and network access to
   the surface the test suite has to cover.
+- **A30 - A `bytes` value is never a compile-time constant, so `.sparkc` does not
+  change.** No `bytes` literal syntax is added in 0.2: every value comes from `bytes()`,
+  `bytes_from()` or I/O. `OBJ_BYTES` therefore cannot reach a chunk's constant pool, the
+  serialized format keeps its version and needs no new tag, and no `.sparkc` is
+  invalidated. The guarantee is enforced, not assumed: `serialize_function` writes a
+  constant through a chain that ends in `return false` for any type it does not know, so
+  a future literal that skipped this decision would fail `--compile` with
+  `error serializing function to '<path>'` instead of writing a truncated value. Verified
+  that a partial file cannot be loaded silently either: a truncated `.sparkc` reports
+  `corrupt bytecode file` and a wrong magic reports `invalid Spark bytecode file`, both
+  with exit 65. T112 keeps the version bump unspent and documents the rule instead.
+- **A31 - The A16 conversion messages belong to the direction that can produce them.**
+  A16 requires the message to name `bytes_from`/`to_string`, but each name only exists
+  once its native does: `bytes_from` is T108's, so T108 carries the half that is real
+  (`bytes("abc")` reports a `TypeError` naming `bytes_from`), and `to_string` cannot be
+  named before T110 adds it. T110 therefore owns the bytes-to-text half and must add the
+  message and its fixture when it lands, rather than T108 claiming a criterion it cannot
+  satisfy.
 
 ## Task List
 
@@ -178,7 +196,7 @@ messages)
       sanitizers clean, `fib(27)` min 4.95 ms
 
 ### Phase 22 - `bytes` and binary I/O (P1, A16)
-- [ ] T108 `bytes` core object type
+- [x] T108 `bytes` core object type
 - [ ] T109 VM integration for `bytes`
 - [ ] T110 Encoding bridges and `to_json`
 - [ ] T111 Binary file and socket I/O

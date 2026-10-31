@@ -1,0 +1,3 @@
+// A size must be a non-negative integer.
+var b = bytes(-1);
+print(b);

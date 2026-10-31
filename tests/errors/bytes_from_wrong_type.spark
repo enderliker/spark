@@ -1,0 +1,3 @@
+// `bytes_from` accepts an array of integers or a string, nothing else.
+var b = bytes_from(3);
+print(b);

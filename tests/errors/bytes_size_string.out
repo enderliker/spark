@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 2: 'bytes' expects an integer size, received a string; use 'bytes_from(text)' for the UTF-8 bytes of a string

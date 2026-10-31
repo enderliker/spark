@@ -64,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Network benchmarks: `benchmarks/http_roundtrip.spark` joins the TCP echo
   benchmark in `benchmarks/run_all.py`, which starts a loopback HTTP server in a
   separate process. Both benchmarks run offline on ephemeral ports.
+- A `bytes` type for binary data: `bytes(n)` (n zero bytes) and
+  `bytes_from(array_or_string)` build an immutable byte sequence; `len(b)` counts
+  bytes, `type(b)` is `"bytes"`, and `print`/`str` show a preview with
+  non-printable bytes escaped. Equal bytes compare equal and are the same map key
+  even as different objects. There is no implicit conversion between `string` and
+  `bytes` (decision A16). Indexing, iteration, concatenation and JSON encoding of
+  `bytes` follow in later tasks of the same phase.
 
 ### Security
 

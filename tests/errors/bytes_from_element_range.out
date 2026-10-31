@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 2: 'bytes_from' expects byte values between 0 and 255, received 300 at index 1

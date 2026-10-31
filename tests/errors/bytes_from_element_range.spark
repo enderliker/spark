@@ -1,0 +1,3 @@
+// Every element must fit in a byte.
+var b = bytes_from([1, 300]);
+print(b);

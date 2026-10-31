@@ -208,19 +208,46 @@ no encoding conversion), plus `len(bytes)`, `type(bytes)` reporting `"bytes"`. N
 `src/bytes.c` / `src/bytes.h` registering through `bytes_init()` from `vm_init`, the way
 `net_init()` does (`src/vm.c:8489`); `Makefile` already globs `src/*.c`.
 **Acceptance criteria:**
-- [ ] `bytes` is immutable: no native or operator mutates it in place.
-- [ ] `values_equal` compares content; two identical `bytes` are `==` and usable as the
+- [x] `bytes` is immutable: no native or operator mutates it in place.
+- [x] `values_equal` compares content; two identical `bytes` are `==` and usable as the
       same map key.
-- [ ] `type(b)` is `"bytes"`, `print(b)` shows a printable preview plus an escape form,
+- [x] `type(b)` is `"bytes"`, `print(b)` shows a printable preview plus an escape form,
       and `str(b)` is documented as the preview (not a lossless conversion).
-- [ ] Passing a `string` where `bytes` is required is a `TypeError` naming
-      `bytes_from`/`to_string`; there is no implicit conversion (A16).
+- [x] Passing a `string` where `bytes` is required is a `TypeError` naming
+      `bytes_from`/`to_string`; there is no implicit conversion (A16, split by A31: this
+      task ships the `bytes_from` half, T110 owns the `to_string` half).
 **Verification:**
-- [ ] `tests/cases/bytes_basics.spark`; error fixtures for the wrong-type and
+- [x] `tests/cases/bytes_basics.spark`; error fixtures for the wrong-type and
       negative-size cases; suite + ASan/UBSan.
 **Dependencies:** None. **Files:** `src/value.h`, `src/object.h`, `src/object.c`,
 `src/bytes.c`, `src/bytes.h`, `src/vm.c`, `tests/`, `docs/language.md`.
 **Scope:** M.
+
+**Done notes:** `ObjBytes` uses a flexible array member (`unsigned char data[]`) rather
+than the `unsigned char *data` the sketch named, matching `ObjString`: one allocation,
+no separate free, and `data[length]` is out of bounds, so every consumer uses `length`.
+It is not interned and has no cached hash, so `hash_object_key` folds the bytes on
+demand. The one non-obvious part of the change was not the type but the **map key
+paths**: `map_get_index` and `map_set` each inlined their own object-key hash (pointer
+hash for everything except strings) and compared by pointer identity, so a content-hash
+`hash_value` alone would have made `m[b]`, `map_delete` and `hash_value` disagree. Both
+inlined sites now go through a single `hash_object_key` and `keys_equal`, which compares
+bytes by content and keeps the interned-string case at one pointer compare (identical
+pointers return before the byte check). The A16 message lands on `bytes("abc")` (a
+string where a size belongs), which names `bytes_from`; the reverse direction needs
+`to_string`, which arrives with T110, so the reference documents only the bridge that
+exists (**A31** assigns that half to T110). No `bytes` literal syntax was added, so no
+`OBJ_BYTES` constant can reach the `.sparkc` serializer (**A30**: the format and its
+version stay put, and the serializer's existing `return false` on an unknown constant is
+what enforces it). The docs state plainly
+which operations are still missing (indexing, slicing, iteration, `+`, ordering,
+`contains`/`index_of`, JSON), since T109 wires them up and a reference that stayed
+silent would leave the `TypeError`s unexplained. Verified beyond the fixtures with a
+throwaway stress run (3,000 content-hashed keys through a map rehash, tombstone
+re-insertion, 400 equal-content string/bytes key pairs coexisting, a 100,000-byte
+payload across a collection) under ASan/UBSan. Suite 249/249, sanitizers clean,
+`fib(27)` min 4.98 ms — identical to a clean `HEAD` build measured interleaved (4.98),
+so the ~3% gap from the 4.95 ms recorded at T159 is the shared machine, not this change.
 
 ### T109 - VM integration for `bytes`
 **Description:** Wire `bytes` into the operations the VM already routes per type:
@@ -234,7 +261,9 @@ validation.
       with arrays and per T104.
 - [ ] `for (var byte in b)` does not allocate per element (unlike the string path at
       `src/vm.c:6559`, which materializes an array of one-character strings).
-- [ ] Mixed `bytes + string` is a `TypeError` with the A16 message.
+- [ ] Mixed `bytes + string` is a `TypeError` with the A16 message. Per A31 it names
+      only `bytes_from`, because `to_string` does not exist until T110; extend the
+      message there.
 **Verification:**
 - [ ] Fixtures for indexing, slicing, iteration, concatenation and each error; suite +
       ASan/UBSan; `python3 benchmarks/run.py` unchanged.
@@ -253,6 +282,9 @@ with a documented marker, `from_json` does not produce bytes).
       does not echo the payload.
 - [ ] `bytes` in `to_json` is documented and `from_json(to_json(b))` returns the
       original bytes when the documented decoding helper is applied.
+- [ ] The reverse half of A16 lands here (A31): passing text where `bytes` is required
+      now names `to_string`, and the T108/T109 messages that could only name
+      `bytes_from` are extended to name both, with a fixture for each.
 **Verification:**
 - [ ] Fixtures including the 1 MB round trip; suite + sanitizers.
 **Dependencies:** T108, T109. **Files:** `src/bytes.c`, `src/json.c`, `tests/`,
@@ -278,15 +310,17 @@ unchanged for compatibility.
 `src/net.c`, `tests/`, `docs/language.md`. **Scope:** M.
 
 ### T112 - Serialization, docs and limits for `bytes`
-**Description:** Decide and implement what happens to a `bytes` constant in `.sparkc`
-bytecode (serialize as a length-prefixed blob, or reject with a clear compile error),
+**Description:** Record and document the A30 rule — a `bytes` value is never a
+compile-time constant in 0.2, so `.sparkc` needs no new tag and keeps its version —
 then document the type: a section in `docs/language.md`, the limits it obeys, the
 `type()`/`print` behavior, the conversion rules and the new native rows in the section
 10 and README tables.
 **Acceptance criteria:**
-- [ ] `--compile` then run of a program with a `bytes` literal works, or fails with the
-      documented error; either way the format version is bumped if it changes
-      (`src/bytecode.c`).
+- [ ] Per A30 there is no `bytes` literal, `SPARK_BYTECODE_VERSION` is unchanged, and a
+      compiled program that builds bytes still runs; the serializer's existing
+      rejection of an unknown constant type is documented as the enforcing mechanism.
+- [ ] A truncated or wrong-magic `.sparkc` keeps failing cleanly (exit 65,
+      `corrupt bytecode file` / `invalid Spark bytecode file`) after the type lands.
 - [ ] `docs/architecture.md` describes the object model entry and the GC path.
 - [ ] The `README.md` native table and "Known limits" reflect the new type.
 **Verification:**

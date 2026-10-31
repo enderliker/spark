@@ -1,0 +1,14 @@
+zeros: b"\x00\x00\x00\x00" 4 bytes
+from array: b"abc" 3
+from string: 5 6 b"h\xc3\xa9llo"
+empty: b"" b"" true
+equal: true false false
+lengths differ: false
+distinct types: false false
+map: 1 second true
+coexists with a string key: 2 text key second
+deleted: 1 false
+preview: b"AB\n\t\r\"\\\x00\x1f ~\x7f\x80\xff"
+str is the preview: true
+immutable: b"keep" true 4
+survives gc: 500 b"\x00\xff" b"\xf3\x0c" 2

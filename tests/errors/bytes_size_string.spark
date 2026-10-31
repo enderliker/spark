@@ -1,0 +1,3 @@
+// A string is not a size; the message names the conversion bridge instead.
+var b = bytes("abc");
+print(b);

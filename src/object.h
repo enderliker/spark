@@ -25,6 +25,16 @@ struct ObjString {
     char chars[]; /* NUL-terminated string */
 };
 
+/* An immutable byte sequence. Unlike a string it is not interned and never
+ * NUL-terminated: `data[length]` is out of bounds, and every consumer uses
+ * `length`. Two equal byte sequences are distinct objects that compare equal
+ * by content, so hashing and key comparison in maps look inside them. */
+struct ObjBytes {
+    Obj obj;
+    int length;
+    unsigned char data[];
+};
+
 typedef struct {
     Obj obj;
     Value *items;
@@ -330,6 +340,9 @@ void objects_set_head(Obj *head);
 ObjString *object_string(const char *chars, int length);
 ObjString *object_string_concat(ObjString *a, ObjString *b);
 ObjString *value_to_string(Value v);
+
+/* A bytes object of `length` zero bytes; a negative `length` is clamped to 0. */
+ObjBytes *object_bytes(int length);
 
 ObjArray *object_array(void);
 bool array_push(ObjArray *array, Value value);

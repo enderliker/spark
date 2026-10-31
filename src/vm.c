@@ -20,6 +20,7 @@
 #include "ast.h"
 #include "buf.h"
 #include "bytecode.h"
+#include "bytes.h"
 #include "chunk.h"
 #include "compiler.h"
 #include "debugger.h"
@@ -407,6 +408,8 @@ static void blacken(Obj *object)
 {
     switch (object->type) {
     case OBJ_STRING:
+    case OBJ_BYTES:
+        /* No object-valued fields: the payload is raw bytes. */
         break;
     case OBJ_ARRAY: {
         ObjArray *array = (ObjArray *)object;
@@ -736,6 +739,10 @@ static Value native_len(int arg_count, Value *args)
 
         return INT_VAL(utf8_length(string->chars, string->length));
     }
+    if (is_obj_type(value, OBJ_BYTES)) {
+        /* Bytes are counted in bytes, not characters. */
+        return INT_VAL(AS_BYTES(value)->length);
+    }
     if (is_obj_type(value, OBJ_ARRAY)) {
         return INT_VAL(AS_ARRAY(value)->count);
     }
@@ -758,7 +765,7 @@ static Value native_len(int arg_count, Value *args)
             return result;
         }
     }
-    vm_runtime_error(ERROR_TYPE, "'len' expects a string, an array, a map or an instance "
+    vm_runtime_error(ERROR_TYPE, "'len' expects a string, bytes, an array, a map or an instance "
                      "with '__len__', received %s", value_type_name(value));
     return NIL_VAL;
 }
@@ -8496,6 +8503,7 @@ void vm_init(void)
     define_native("sb_len", native_sb_len, 1);
     define_native("sb_clear", native_sb_clear, 1);
     net_init();
+    bytes_init();
     vm_set_args(0, NULL);
 
     int underscore_slot = vm_global_slot(object_string("_", 1));

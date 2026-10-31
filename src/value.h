@@ -7,6 +7,7 @@
 
 typedef struct Obj Obj;
 typedef struct ObjString ObjString;
+typedef struct ObjBytes ObjBytes;
 
 typedef enum {
     VAL_NIL,
@@ -28,6 +29,7 @@ typedef struct {
 
 typedef enum {
     OBJ_STRING,
+    OBJ_BYTES,
     OBJ_ARRAY,
     OBJ_MAP,
     OBJ_FUNCTION,
@@ -62,6 +64,7 @@ struct Obj {
 #define AS_INT(v) ((v).as.integer)
 #define AS_OBJ(v) ((v).as.obj)
 #define AS_STRING(v) ((ObjString *)(v).as.obj)
+#define AS_BYTES(v) ((ObjBytes *)(v).as.obj)
 #define AS_STRING_BUILDER(v) ((ObjStringBuilder *)(v).as.obj)
 
 static inline bool is_nil(Value v) { return v.type == VAL_NIL; }

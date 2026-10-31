@@ -66,7 +66,7 @@ the docs. Findings, by area:
   `CHANGELOG.md` match the code.
 - All artifacts in English.
 
-## Decisions (A16-A29)
+## Decisions (A16-A31)
 
 Recorded in full in `tasks/plan.md`; the one-line rationale:
 
@@ -103,6 +103,12 @@ Recorded in full in `tasks/plan.md`; the one-line rationale:
   stay global (Q21).
 - **A29** 0.2 ships module namespaces and `import ... as`, not a package manager; the
   manifest, resolver and lockfile move to a later stream.
+- **A30** A `bytes` value is never a compile-time constant: no literal syntax and no
+  `.sparkc` format change, with the serializer's existing rejection of an unknown
+  constant as the enforcement (settled during T108, 2026-10-31).
+- **A31** Each A16 conversion message names only the bridge that exists when it lands:
+  `bytes_from` in T108/T109, `to_string` in T110, which owns the reverse half (settled
+  during T108, 2026-10-31).
 
 ## Answers to the open questions (Q17-Q27)
 

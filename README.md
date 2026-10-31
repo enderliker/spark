@@ -49,7 +49,7 @@ for (var i = 0; i < 10; i += 1) {
 
 ### Language
 
-- Types: `nil`, `bool`, `int`, `number`, `string`, `array`, `map`, `function`,
+- Types: `nil`, `bool`, `int`, `number`, `string`, `bytes`, `array`, `map`, `function`,
   `class`/`instance`, `string_builder`, `coroutine` and `channel`.
 - 64-bit integers alongside doubles: literals, promotion, `div`, `%`, bitwise
   operators (`&`, `|`, `^`, `~`, `<<`, `>>`) and `int`/`float`/`is_int`/`is_nan`.
@@ -260,7 +260,9 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | `is_int(x)` | Whether the value is an integer. |
 | `is_nan(x)` | Whether the value is IEEE 754 NaN. |
 | `type(x)` | Type name; for an instance it is the class name. |
-| `len(x)` | Length of a string (UTF-8 characters), array or map; uses `__len__` on instances. |
+| `len(x)` | Length of a string (UTF-8 characters), bytes (in bytes), array or map; uses `__len__` on instances. |
+| `bytes(n)` | Sequence of `n` zero bytes; `n` must be a non-negative integer. |
+| `bytes_from(x)` | Bytes from an array of integers in `0..255` or from a string (its UTF-8 bytes as they are); there is no implicit conversion. |
 | `assert(cond, message?)` | Stops the program with an error when `cond` is false. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |
 | `isinstance(x, Class)` / `is_a(x, Class)` | Whether `x` is an instance of the class or a subclass. |
@@ -393,6 +395,7 @@ src/
   vm.c                        virtual machine, GC, natives, classes, coroutines
   net.c                       sockets, TLS, URLs, HTTP and WebSocket clients
   object.c                    dynamic values, interned strings, arrays, maps
+  bytes.c                     the immutable `bytes` type and its constructors
   bytecode.c                  .sparkc serialization
   json.c / regex.c            JSON and regular-expression engines
   debugger.c                  interactive debugger
@@ -482,6 +485,10 @@ large strings.
 - Modules share one global namespace; there are no per-module namespaces.
 - Assignments are statements (`x = 1;`), not expressions.
 - Strings are immutable, so `s += x` in a loop is O(n²); use `string_builder`.
+- `bytes` is new: it can be built, compared by content, used as a map key and
+  printed, but with bytes as the subject, indexing, slicing, iteration, `+`
+  concatenation, ordering comparisons, `contains`/`index_of` and JSON encoding are
+  not wired up yet, and there is no `bytes_builder`.
 - Closures capture the *variable*, not a copy. Variables declared in a loop body
   are fresh per iteration, but the loop variable itself is shared across
   iterations.

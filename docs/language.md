@@ -61,6 +61,7 @@ static super instanceof yield
 | `int` | `42`, `-7`, `0xFF` | always truthy (including `0`) |
 | `number` | `3.14`, `1.5e3` | always truthy (including `0`) |
 | `string` | `"hello"` | always truthy (including `""`) |
+| `bytes` | `bytes(3)`, `bytes_from("ab")` | always truthy (including `bytes(0)`) |
 | `array` | `[1, 2]` | always truthy |
 | `map` | `{"a": 1}` | always truthy |
 | `function` | `fn(x) { return x; }`, `print` | always truthy |
@@ -95,8 +96,44 @@ print(9223372036854775807 + 1);    //  9.22337203685478e+18  (promoted to a floa
   `nan == nan` is `false`. Use the native `is_nan(x)` to test if a numeric value is NaN.
 
 Arrays and maps can hold any value, including other arrays and functions. Functions,
-arrays and maps are compared by identity; strings by content. Integers use the same
-equality rules as numbers (`1 == 1.0`, but `2^53 + 1 != 2^53` as a float).
+arrays and maps are compared by identity; strings and bytes by content. Integers use the
+same equality rules as numbers (`1 == 1.0`, but `2^53 + 1 != 2^53` as a float).
+
+### Bytes
+
+`bytes` is an immutable sequence of bytes. Use it for binary data — file and socket
+payloads, protocol frames — where a `string` is the wrong tool: a string holds text and
+counts positions in characters, while `bytes` holds arbitrary values from `0` to `255`
+and counts positions in bytes.
+
+```spark
+var zeros = bytes(3);                  // b"\x00\x00\x00"
+var abc = bytes_from([97, 98, 99]);    // b"abc", one integer per byte
+var raw = bytes_from("héllo");         // b"h\xc3\xa9llo", 6 bytes for 5 characters
+print(len(abc), type(abc));            // 3 bytes
+```
+
+- `bytes(n)` builds `n` zero bytes; a negative `n` is a `ValueError`.
+- `bytes_from(array)` requires every element to be an integer in `0..255`;
+  `bytes_from(string)` copies the string's UTF-8 bytes as they are, with no decoding,
+  and nothing else is accepted (section 10).
+- Two `bytes` values are equal when they hold the same bytes even though they are
+  separate objects, so `==` and map keys compare by content: after `m[b] = 1`, both
+  `m[b]` and `m[bytes_from("ab")]` find the entry, and re-adding an equal key overwrites
+  it instead of creating a second one. A string and the bytes with the same content are
+  **different** keys.
+- There is no implicit conversion between `string` and `bytes` (decision A16).
+  `bytes_from(text)` is the explicit bridge in that direction, and comparing a string
+  with bytes is `false`, never an error.
+- `print` and `str` produce a **preview**, not a lossless conversion: printable ASCII is
+  shown as itself and every other byte as an escape, wrapped in `b"..."`. It is always
+  valid text, and `len(b)` is the byte count.
+- `bytes` is immutable, and no native changes one in place.
+- Not implemented yet with `bytes` as the subject: indexing, slicing, iteration, `+`
+  concatenation, ordering comparisons, `contains`/`index_of` and JSON encoding. Each
+  raises a `TypeError` naming the type. Bytes are ordinary values everywhere else: an
+  array can hold them, `contains(array, bytes)` and `index_of(array, bytes)` compare
+  them by content, and they nest in `print`.
 
 ## 3. Operators
 
@@ -533,7 +570,9 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | Call | Result |
 | --- | --- |
 | `print(a, b, ...)` | Prints the values separated by a space. |
-| `len(x)` | Length of an array, a map or a string. |
+| `len(x)` | Length of an array, a map or a string (in characters), or of bytes (in bytes). |
+| `bytes(n)` | `n` zero bytes (`n` must be a non-negative integer); a `ValueError` otherwise. |
+| `bytes_from(x)` | New `bytes` from an array of integers in `0..255` or from a string (its UTF-8 bytes as they are); any other value is a `TypeError`. |
 | `push(array, value)` | Appends to the end and returns the array. |
 | `pop(array)` | Removes and returns the last element; error if empty. |
 | `str(x)` | Text representing the value. |
@@ -542,7 +581,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `float(x)` | Float from an integer or numeric string. |
 | `is_int(x)` | `true` when the value is an integer. |
 | `is_nan(x)` | `true` when the value is IEEE 754 NaN. |
-| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
+| `type(x)` | `"nil"`, `"bool"`, `"number"`, `"string"`, `"bytes"`, `"array"`, `"map"`, `"function"`, `"class"`, `"file"`, `"string_builder"`, `"coroutine"`, `"channel"`, `"socket"`, `"server"`, `"websocket"`, or the class name of an instance. |
 | `isinstance(x, Class)` | `true` when `x` is an instance of `Class` or a subclass; a type name string (`"array"`, `"number"`, a class name) also works. |
 | `is_a(x, Class)` | Like `isinstance`, but the second argument must be a class; a type name string is a `TypeError`. |
 | `copy(array_or_map)` | Shallow copy; any other value is returned unchanged. |

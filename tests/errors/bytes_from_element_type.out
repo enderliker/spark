@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 2: 'bytes_from' expects an array of integers, received string at index 1
