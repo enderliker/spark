@@ -255,6 +255,7 @@ are in [`docs/architecture.md`](docs/architecture.md).
 | --- | --- |
 | `print(...)` | Prints its arguments separated by spaces and a newline. |
 | `str(x)` | Text representing the value (uses `to_string()` on instances). |
+| `format(template, args...)` | printf-style text (`%s %d %f %g %x %X %o %b %c`, width and precision). |
 | `num(x)` | Number from a numeric string (always a float); numbers pass through. |
 | `int(x)` / `float(x)` | Convert between integers and floats (or from a numeric string). |
 | `is_int(x)` | Whether the value is an integer. |

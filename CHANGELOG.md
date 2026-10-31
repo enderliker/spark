@@ -100,6 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `bytes` has no literal and is never a compile-time constant, so the `.sparkc`
   format keeps its version and constant tags (decision A30); the serializer rejects
   any unknown constant type instead of writing an unreadable file.
+- `format(template, args...)`: printf-style text with `%s %d %i %f %g %x %X %o %b %c`
+  and `%%`, plus the `-`, `0` and `+` flags, width and `.precision`, built in one
+  linear pass.
 
 ### Security
 

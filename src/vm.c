@@ -3151,6 +3151,32 @@ static Value native_sleep(int arg_count, Value *args)
     return NIL_VAL;
 }
 
+/* Encodes one Unicode scalar as UTF-8 and returns the byte count (1..4). The
+ * caller validates the range; `out` needs room for 4 bytes. */
+static int utf8_encode_codepoint(int code, char *out)
+{
+    if (code <= 0x7f) {
+        out[0] = (char)code;
+        return 1;
+    }
+    if (code <= 0x7ff) {
+        out[0] = (char)(0xc0 | (code >> 6));
+        out[1] = (char)(0x80 | (code & 0x3f));
+        return 2;
+    }
+    if (code <= 0xffff) {
+        out[0] = (char)(0xe0 | (code >> 12));
+        out[1] = (char)(0x80 | ((code >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (code & 0x3f));
+        return 3;
+    }
+    out[0] = (char)(0xf0 | (code >> 18));
+    out[1] = (char)(0x80 | ((code >> 12) & 0x3f));
+    out[2] = (char)(0x80 | ((code >> 6) & 0x3f));
+    out[3] = (char)(0x80 | (code & 0x3f));
+    return 4;
+}
+
 static Value native_chr(int arg_count, Value *args)
 {
     (void)arg_count;
@@ -3162,24 +3188,8 @@ static Value native_chr(int arg_count, Value *args)
         vm_runtime_error(ERROR_VALUE, "invalid Unicode codepoint %d", code);
         return NIL_VAL;
     }
-    char buf[5];
-    int len = 0;
-    if (code <= 0x7f) {
-        buf[len++] = (char)code;
-    } else if (code <= 0x7ff) {
-        buf[len++] = (char)(0xc0 | (code >> 6));
-        buf[len++] = (char)(0x80 | (code & 0x3f));
-    } else if (code <= 0xffff) {
-        buf[len++] = (char)(0xe0 | (code >> 12));
-        buf[len++] = (char)(0x80 | ((code >> 6) & 0x3f));
-        buf[len++] = (char)(0x80 | (code & 0x3f));
-    } else {
-        buf[len++] = (char)(0xf0 | (code >> 18));
-        buf[len++] = (char)(0x80 | ((code >> 12) & 0x3f));
-        buf[len++] = (char)(0x80 | ((code >> 6) & 0x3f));
-        buf[len++] = (char)(0x80 | (code & 0x3f));
-    }
-    buf[len] = '\0';
+    char buf[4];
+    int len = utf8_encode_codepoint(code, buf);
     return OBJ_VAL(object_string(buf, len));
 }
 
@@ -3207,6 +3217,458 @@ static Value native_ord(int arg_count, Value *args)
         cp = ((p[0] & 0x07) << 18) | ((p[1] & 0x3f) << 12) | ((p[2] & 0x3f) << 6) | (p[3] & 0x3f);
     }
     return INT_VAL((int64_t)cp);
+}
+
+/* printf-style formatting (T116). `%` stays the modulo operator; `format` is the
+ * only formatting surface. Bodies live in malloc'd buffers, never GC objects, so
+ * the output can grow without rooting intermediates. Width and precision count
+ * characters for text conversions and bytes/digits for numbers. */
+
+enum { FORMAT_MAX_FIELD = 1000000 };
+
+static bool format_append_raw(buf_t *out, const char *data, size_t length)
+{
+    return buf_append_checked(out, data, length, "format");
+}
+
+static bool format_append_padding(buf_t *out, char pad, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (!format_append_raw(out, &pad, 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool format_printf_body(char **out, size_t *length, const char *format, ...)
+{
+    va_list args;
+    va_list copy;
+    char *buffer;
+    int needed;
+
+    va_start(args, format);
+    va_copy(copy, args);
+    needed = vsnprintf(NULL, 0, format, args);
+    va_end(args);
+    if (needed < 0) {
+        va_end(copy);
+        vm_runtime_error(ERROR_VALUE, "'format' could not render a value");
+        return false;
+    }
+    buffer = malloc((size_t)needed + 1);
+    if (!buffer) {
+        va_end(copy);
+        vm_runtime_error(ERROR_MEMORY, "out of memory in 'format'");
+        return false;
+    }
+    vsnprintf(buffer, (size_t)needed + 1, format, copy);
+    va_end(copy);
+    *out = buffer;
+    *length = (size_t)needed;
+    return true;
+}
+
+/* The byte count of the first `max_chars` characters, so a %s precision never
+ * splits a UTF-8 sequence. Malformed input is stepped over one byte at a time. */
+static size_t utf8_prefix_bytes(const char *chars, size_t length, int max_chars)
+{
+    size_t position = 0;
+    int characters = 0;
+
+    while (position < length && characters < max_chars) {
+        unsigned char lead = (unsigned char)chars[position];
+        size_t step = 1;
+
+        if ((lead & 0xe0) == 0xc0) {
+            step = 2;
+        } else if ((lead & 0xf0) == 0xe0) {
+            step = 3;
+        } else if ((lead & 0xf8) == 0xf0) {
+            step = 4;
+        }
+        if (step > length - position) {
+            step = length - position;
+        }
+        position += step;
+        characters++;
+    }
+    return position;
+}
+
+/* A copy of the value's text, never a GC object. */
+static bool format_text_body(Value value, int precision, char **out, size_t *length)
+{
+    ObjString *text = vm_value_to_string(value);
+    size_t take;
+
+    *out = NULL;
+    *length = 0;
+    if (!text) {
+        return false;
+    }
+    take = (size_t)text->length;
+    if (precision >= 0 && precision < text->length) {
+        take = utf8_prefix_bytes(text->chars, take, precision);
+    }
+    if (take > 0) {
+        char *copy = malloc(take);
+
+        if (!copy) {
+            vm_runtime_error(ERROR_MEMORY, "out of memory in 'format'");
+            return false;
+        }
+        memcpy(copy, text->chars, take);
+        *out = copy;
+    }
+    *length = take;
+    return true;
+}
+
+static bool format_integer_value(Value value, char spec, int64_t *out)
+{
+    if (is_int(value)) {
+        *out = AS_INT(value);
+        return true;
+    }
+    if (is_number(value)) {
+        double number = AS_NUMBER(value);
+
+        if (number != floor(number) || !(number >= -TWO_POW_63 && number < TWO_POW_63)) {
+            vm_runtime_error(ERROR_TYPE,
+                             "'format' %%%c expects an integer, received %.15g", spec, number);
+            return false;
+        }
+        *out = (int64_t)number;
+        return true;
+    }
+    vm_runtime_error(ERROR_TYPE, "'format' %%%c expects an integer, received %s", spec,
+                     value_type_name(value));
+    return false;
+}
+
+static bool format_double_value(Value value, char spec, double *out)
+{
+    if (is_int(value)) {
+        *out = (double)AS_INT(value);
+        return true;
+    }
+    if (is_number(value)) {
+        *out = AS_NUMBER(value);
+        return true;
+    }
+    vm_runtime_error(ERROR_TYPE, "'format' %%%c expects a number, received %s", spec,
+                     value_type_name(value));
+    return false;
+}
+
+/* Binary has no snprintf conversion, so the digits are built by hand. */
+static bool format_binary_body(uint64_t value, int precision, char **out, size_t *length)
+{
+    char digits[64];
+    int count = 0;
+    int minimum = precision > 0 ? precision : 1;
+    int total;
+    char *buffer;
+    int position = 0;
+
+    do {
+        digits[count++] = (char)('0' + (value & 1));
+        value >>= 1;
+    } while (value != 0);
+    total = count > minimum ? count : minimum;
+    buffer = malloc((size_t)total);
+    if (!buffer) {
+        vm_runtime_error(ERROR_MEMORY, "out of memory in 'format'");
+        return false;
+    }
+    for (int i = total - count; i > 0; i--) {
+        buffer[position++] = '0';
+    }
+    while (count > 0) {
+        buffer[position++] = digits[--count];
+    }
+    *out = buffer;
+    *length = (size_t)position;
+    return true;
+}
+
+/* Appends one conversion body with its width and flags applied. */
+static bool format_emit(buf_t *out, const char *body, size_t length, int width, bool left,
+                        bool zero, bool plus, bool numeric)
+{
+    size_t displayed = numeric ? length : (size_t)utf8_length(body, (int)length);
+    size_t padding = 0;
+    char pad = ' ';
+    const char *sign = "";
+    size_t sign_length = 0;
+    bool signed_body = length > 0 && (body[0] == '-' || body[0] == '+');
+
+    if (plus && !signed_body) {
+        displayed++;
+    }
+    if (width > 0 && (size_t)width > displayed) {
+        padding = (size_t)width - displayed;
+    }
+    if (zero && !left && numeric && signed_body) {
+        sign = body;
+        sign_length = 1;
+        body++;
+        length--;
+    } else if (plus) {
+        sign = "+";
+        sign_length = 1;
+    }
+    if (zero && !left && numeric) {
+        pad = '0';
+    }
+    if (left) {
+        return format_append_raw(out, sign, sign_length) &&
+               format_append_raw(out, body, length) &&
+               format_append_padding(out, ' ', padding);
+    }
+    return format_append_raw(out, sign, sign_length) &&
+           format_append_padding(out, pad, padding) &&
+           format_append_raw(out, body, length);
+}
+
+static Value native_format(int arg_count, Value *args)
+{
+    ObjString *template;
+    buf_t out;
+    int next = 1;
+    int specifier = 0;
+
+    if (arg_count < 1) {
+        vm_runtime_error(ERROR_ARITY, "'format' expects at least 1 argument (template)");
+        return NIL_VAL;
+    }
+    if (!is_obj_type(args[0], OBJ_STRING)) {
+        vm_runtime_error(ERROR_TYPE, "'format' expects a string template, received %s",
+                         value_type_name(args[0]));
+        return NIL_VAL;
+    }
+    template = AS_STRING(args[0]);
+    buf_init(&out);
+
+    for (int i = 0; i < template->length; i++) {
+        char current = template->chars[i];
+
+        if (current != '%') {
+            if (!format_append_raw(&out, &current, 1)) {
+                goto fail;
+            }
+            continue;
+        }
+        i++;
+        if (i >= template->length) {
+            vm_runtime_error(ERROR_VALUE, "'format' ends with an incomplete '%%'");
+            goto fail;
+        }
+        if (template->chars[i] == '%') {
+            if (!format_append_raw(&out, "%", 1)) {
+                goto fail;
+            }
+            continue;
+        }
+
+        bool left = false;
+        bool zero = false;
+        bool plus = false;
+        while (i < template->length &&
+               (template->chars[i] == '-' || template->chars[i] == '0' ||
+                template->chars[i] == '+')) {
+            if (template->chars[i] == '-') {
+                left = true;
+            } else if (template->chars[i] == '+') {
+                plus = true;
+            } else {
+                zero = true;
+            }
+            i++;
+        }
+        int width = 0;
+        while (i < template->length && template->chars[i] >= '0' && template->chars[i] <= '9') {
+            width = width * 10 + (template->chars[i] - '0');
+            if (width > FORMAT_MAX_FIELD) {
+                vm_runtime_error(ERROR_VALUE, "'format' width is too large (max %d)",
+                                 FORMAT_MAX_FIELD);
+                goto fail;
+            }
+            i++;
+        }
+        int precision = -1;
+        if (i < template->length && template->chars[i] == '.') {
+            i++;
+            precision = 0;
+            while (i < template->length && template->chars[i] >= '0' &&
+                   template->chars[i] <= '9') {
+                precision = precision * 10 + (template->chars[i] - '0');
+                if (precision > FORMAT_MAX_FIELD) {
+                    vm_runtime_error(ERROR_VALUE, "'format' precision is too large (max %d)",
+                                     FORMAT_MAX_FIELD);
+                    goto fail;
+                }
+                i++;
+            }
+        }
+        if (i >= template->length) {
+            vm_runtime_error(ERROR_VALUE, "'format' ends with an incomplete '%%'");
+            goto fail;
+        }
+        char spec = template->chars[i];
+        specifier++;
+        if (!strchr("sdifgxXobc", spec)) {
+            vm_runtime_error(ERROR_VALUE, "'format' does not know the '%%%c' specifier", spec);
+            goto fail;
+        }
+        if (next >= arg_count) {
+            vm_runtime_error(ERROR_ARITY, "'format' has no argument for specifier %d (%%%c)",
+                             specifier, spec);
+            goto fail;
+        }
+        /* A conversion may run user code (to_string), which can grow the stack,
+         * so the argument is read from the live stack top, like print does. */
+        Value value = vm.stack_top[-arg_count + next];
+
+        next++;
+        char *body = NULL;
+        size_t length = 0;
+        bool numeric = spec != 's' && spec != 'c';
+
+        switch (spec) {
+        case 's':
+            if (!format_text_body(value, precision, &body, &length)) {
+                goto fail;
+            }
+            break;
+        case 'c': {
+            int64_t code;
+
+            if (!format_integer_value(value, spec, &code)) {
+                goto fail;
+            }
+            if (code < 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) {
+                vm_runtime_error(ERROR_VALUE,
+                                 "'format' %%c expects a Unicode codepoint in 0..0x10FFFF, "
+                                 "received %lld", (long long)code);
+                goto fail;
+            }
+            char encoded[4];
+            int encoded_length = utf8_encode_codepoint((int)code, encoded);
+
+            body = malloc((size_t)encoded_length);
+            if (!body) {
+                vm_runtime_error(ERROR_MEMORY, "out of memory in 'format'");
+                goto fail;
+            }
+            memcpy(body, encoded, (size_t)encoded_length);
+            length = (size_t)encoded_length;
+            break;
+        }
+        case 'd':
+        case 'i': {
+            int64_t integer;
+
+            if (!format_integer_value(value, spec, &integer)) {
+                goto fail;
+            }
+            bool ok = precision >= 0
+                          ? format_printf_body(&body, &length, "%.*lld", precision,
+                                               (long long)integer)
+                          : format_printf_body(&body, &length, "%lld", (long long)integer);
+
+            if (!ok) {
+                goto fail;
+            }
+            break;
+        }
+        case 'x':
+        case 'X':
+        case 'o': {
+            int64_t integer;
+
+            if (!format_integer_value(value, spec, &integer)) {
+                goto fail;
+            }
+            unsigned long long unsigned_value = (unsigned long long)integer;
+            bool ok;
+
+            if (spec == 'o') {
+                ok = precision >= 0
+                         ? format_printf_body(&body, &length, "%.*llo", precision, unsigned_value)
+                         : format_printf_body(&body, &length, "%llo", unsigned_value);
+            } else if (spec == 'x') {
+                ok = precision >= 0
+                         ? format_printf_body(&body, &length, "%.*llx", precision, unsigned_value)
+                         : format_printf_body(&body, &length, "%llx", unsigned_value);
+            } else {
+                ok = precision >= 0
+                         ? format_printf_body(&body, &length, "%.*llX", precision, unsigned_value)
+                         : format_printf_body(&body, &length, "%llX", unsigned_value);
+            }
+            if (!ok) {
+                goto fail;
+            }
+            break;
+        }
+        case 'b': {
+            int64_t integer;
+
+            if (!format_integer_value(value, spec, &integer)) {
+                goto fail;
+            }
+            if (!format_binary_body((uint64_t)integer, precision, &body, &length)) {
+                goto fail;
+            }
+            break;
+        }
+        case 'f':
+        case 'g': {
+            double number;
+
+            if (!format_double_value(value, spec, &number)) {
+                goto fail;
+            }
+            int digits = precision >= 0 ? precision : 6;
+            bool ok = spec == 'f'
+                          ? format_printf_body(&body, &length, "%.*f", digits, number)
+                          : format_printf_body(&body, &length, "%.*g", digits, number);
+
+            if (!ok) {
+                goto fail;
+            }
+            break;
+        }
+        }
+
+        bool emit_plus = plus && (spec == 'd' || spec == 'i' || spec == 'f' || spec == 'g');
+        bool emitted = format_emit(&out, body, length, width, left, zero, emit_plus, numeric);
+
+        free(body);
+        if (!emitted) {
+            goto fail;
+        }
+    }
+
+    if (next < arg_count) {
+        vm_runtime_error(ERROR_ARITY, "'format' received %d extra argument(s)",
+                         arg_count - next);
+        goto fail;
+    }
+    if (out.len > (size_t)INT_MAX) {
+        vm_runtime_error(ERROR_MEMORY, "'format' result is too long");
+        goto fail;
+    }
+    ObjString *result = object_string(out.data ? out.data : "", (int)out.len);
+
+    buf_free(&out);
+    return OBJ_VAL(result);
+
+fail:
+    buf_free(&out);
+    return NIL_VAL;
 }
 
 static Value pad_string_helper(int arg_count, Value *args, bool start, const char *name)
@@ -8899,6 +9361,7 @@ void vm_init(void)
     define_native("sleep", native_sleep, 1);
     define_native("chr", native_chr, 1);
     define_native("ord", native_ord, 1);
+    define_native("format", native_format, -1);
     define_native("pad_start", native_pad_start, -1);
     define_native("pad_end", native_pad_end, -1);
     define_native("sum", native_sum, 1);

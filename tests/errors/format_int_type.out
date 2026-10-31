@@ -1,0 +1,2 @@
+exit: 70
+stderr: TypeError at line 1: 'format' %d expects an integer, received 3.5

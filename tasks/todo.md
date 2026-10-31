@@ -481,16 +481,31 @@ decompression bomb cannot exhaust memory.
 and basic width/precision, returning a string. No new operator (the `%` operator is
 modulo and stays modulo). Built on the existing string builder so it is linear.
 **Acceptance criteria:**
-- [ ] A missing or extra argument is an `ArityError`-style error naming the specifier
+- [x] A missing or extra argument is an `ArityError`-style error naming the specifier
       index; an unknown specifier is a `ValueError` at runtime with a clear message.
-- [ ] Integers use the int path (`%d` on a float truncates only when `is_int` is false
+- [x] Integers use the int path (`%d` on a float truncates only when `is_int` is false
       and the float is integral, otherwise `TypeError`), matching `int()` semantics.
-- [ ] Width/precision behave as documented, verified by fixtures including `%08.3f`.
+- [x] Width/precision behave as documented, verified by fixtures including `%08.3f`.
 **Verification:**
-- [ ] Fixtures covering every specifier, the errors and a 100k-append benchmark;
+- [x] Fixtures covering every specifier, the errors and a 100k-append benchmark;
       suite.
 **Dependencies:** None (uses `string_builder`). **Files:** `src/vm.c` or
 `src/text.c`, `tests/`, `docs/language.md`. **Scope:** S.
+
+**Done notes:** `format` lives in `vm.c` next to `print`/`str` because `%s` must honor
+the instance `to_string()` protocol through `vm_value_to_string`. It builds the result
+in a `buf_t` (malloc, not a GC object), so no intermediate needs rooting while the
+output grows; it would have used `string_builder`, but that object would need a stack
+root across user-code calls. Each conversion body is copied into a malloc'd buffer
+before it is appended, so a collection triggered by the output buffer cannot free a
+freshly stringified value. `-`, `0` and `+` flags are supported (`+` only for
+`%d/%i/%f/%g`), and `%s` precision counts characters and never splits a UTF-8
+sequence while width counts characters like `len`. `%d` accepts an integral float and
+rejects a fractional one; `%x/%X/%o/%b` print the 64-bit two's-complement value;
+`%c` shares `utf8_encode_codepoint` with the existing `chr`. Fixtures: `format.spark`
+(every specifier, flags, multibyte precision, an instance `to_string`, a 2000-call
+allocation stress and 1000 formatted rows) plus six error fixtures. Suite 278/278,
+sanitizers clean.
 
 ### T117 - Date and time formatting and parsing
 **Description:** New `src/time.c`: `time_format(timestamp?, format)` (strftime subset:

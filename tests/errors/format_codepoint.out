@@ -1,0 +1,2 @@
+exit: 70
+stderr: ValueError at line 1: 'format' %c expects a Unicode codepoint in 0..0x10FFFF, received 55296

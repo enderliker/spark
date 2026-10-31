@@ -621,6 +621,42 @@ the other linear option.
 Appending 200,000 single characters takes about 6 ms with `string_builder` and about
 2.2 s with `s += x` on the development machine (`benchmarks/string_build.spark`).
 
+### Formatting text
+
+`format(template, args...)` assembles text from a template and positional arguments,
+building the result in one pass (linear in the output size). `%` keeps its meaning as
+the modulo operator; there is no formatting operator, only this native.
+
+```spark
+print(format("%s scored %d (%08.3f%%)", "Ada", 42, 98.5));  // Ada scored 42 (0098.500%)
+print(format("%x %X %o %b", 255, 255, 8, 5));               // ff FF 10 101
+print(format("%c%c", 65, 233));                              // Aé
+print(format("%-6s|%+d|%%", "hi", 7));                       // hi    |+7|%
+```
+
+| Specifier | Argument | Result |
+| --- | --- | --- |
+| `%s` | any value | `str(value)`, so an instance's `to_string()` is honored. |
+| `%d` / `%i` | integer, or a float with no fractional part | Decimal digits; a non-integral float or another type is a `TypeError`. |
+| `%x` / `%X` | integer | Hexadecimal, lowercase / uppercase, of the 64-bit two's-complement value. |
+| `%o` | integer | Octal. |
+| `%b` | integer | Binary, of the 64-bit two's-complement value. |
+| `%f` | number | Fixed notation, six decimals by default. |
+| `%g` | number | Shortest of fixed/exponential for the precision, six significant digits by default. |
+| `%c` | integer | One UTF-8 character for a codepoint in `0..0x10FFFF` (surrogates rejected). |
+| `%%` | none | A literal `%`. |
+
+- `-` left-justifies (padding on the right), `0` zero-pads a number after its sign,
+  and `+` forces a sign on `%d`/`%i`/`%f`/`%g`.
+- Width is the minimum field size in characters; `.precision` is the number of
+  decimals for `%f`, significant digits for `%g`, minimum digits for the integer
+  bases, and a maximum character count for `%s` (never splitting a UTF-8 sequence).
+- `%d` on a float truncates **only** when it has no fractional part (`3.0` prints `3`,
+  `3.5` is a `TypeError`), so no value is rounded silently. `%f` accepts an integer.
+- A missing argument is an `ArityError` naming the specifier, an extra argument beyond
+  the template is an `ArityError`, and an unknown specifier, a trailing `%` or an
+  out-of-range width/precision is a `ValueError`.
+
 ## 10. Natives
 
 | Call | Result |
@@ -639,6 +675,7 @@ Appending 200,000 single characters takes about 6 ms with `string_builder` and a
 | `push(array, value)` | Appends to the end and returns the array. |
 | `pop(array)` | Removes and returns the last element; error if empty. |
 | `str(x)` | Text representing the value. |
+| `format(template, args...)` | printf-style text: `%s %d %i %f %g %x %X %o %b %c %%` with `-`, `0`, `+`, width and `.precision` (section 9). |
 | `num(x)` | Number from a numeric string (always a float). |
 | `int(x)` | Integer from a number or numeric string; floats truncate toward zero. |
 | `float(x)` | Float from an integer or numeric string. |

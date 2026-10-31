@@ -1,0 +1,43 @@
+// printf-style `format` (phase 22, T116).
+print(format("plain text"));
+print(format("no args: 100%%"));
+print(format("%s|%s|%s|%s", "text", 42, true, nil));
+print(format("%s", [1, 2]), format("%s", {"a": 1}));
+print(format("%d %i %d", 42, -7, 3.0));
+print(format("%f %f %.0f %.3f", 1.5, -0.0, 2.5, 3.14159));
+print(format("%g %g %g", 0.0001, 123456789.0, 1.0 / 3.0));
+print(format("%08.3f|%-8.3f|%+d|%08d", 3.14159, 3.14159, 5, -42));
+print(format("%x %X %o %b", 255, 255, 8, 5));
+print(format("%x", -1), format("%05x", 255), format("%.8b", 5));
+print(format("%c%c%c", 65, 233, 128512));
+print(format("%3c|%-3c|", 65, 66));
+print(format("%5s|%-5s|", "hi", "hi"));
+print(format("%.3s|%.0s|", "héllo", "x"));
+print(format("%s", "100% literal"), format("%%s"));
+print(format("%s", bytes_from("ok")), format("%s", format));
+print(format("%s", true), format("%s", 1.0));
+
+class Point {
+    init(x) { self.x = x; }
+    to_string() { return "Point(" + str(self.x) + ")"; }
+}
+print(format("<%s>", new Point(7)));
+
+// A conversion can allocate and collect: the loop stresses that path.
+var i = 0;
+while (i < 2000) {
+    format("%s-%s", new Point(i), new Point(i + 1));
+    i += 1;
+}
+gc();
+print("stress ok");
+
+// The output is one string built linearly, not repeated concatenation.
+var row = 0;
+var last = "";
+while (row < 1000) {
+    last = format("%d:%s:%08.3f", row, "x", row / 8.0);
+    row += 1;
+}
+print("1000 rows:", last);
+print(format("empty: [%s]", ""));
