@@ -219,11 +219,14 @@ messages)
 - [ ] T121 Regex: `regex_split` and group references in `regex_replace`
 - [ ] T122 Math natives
 - [ ] T123 String and collection conveniences
+- [x] T160 Buffered standard output (found late, after 0.1.0; not in that tag)
 
 ### Checkpoint: Phase 23
 - [ ] Every native has a fixture and a reference-table row
 - [ ] The tokenizer example in `docs/language.md` uses capture groups and offsets
 - [ ] Suite + sanitizers green
+- [x] T160 verified after the checkpoint closed: suite 342/342, sanitizers clean,
+      `fib(27)` min 4.94 ms
 
 ### Phase 24 - HTTP and network hardening (P1, A21)
 - [ ] T124 gzip through the HTTP client

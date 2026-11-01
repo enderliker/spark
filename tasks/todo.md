@@ -878,10 +878,68 @@ still run (6.57/35.93 ms min), and the full `run_all.py` set is green. Suite
 `README.md`, `docs/architecture.md` (the tail-call note), `CHANGELOG.md` Added and
 Fixed.
 
+### T160 - Buffered standard output
+**Description:** `native_print` ended with an `fflush(stdout)`, so every call cost one
+`write(2)` and a program printing in a loop spent its time in the kernel rather than in
+the VM: a 100,000-line loop made 100,003 writes and 91% of its 33.6 ms was syscall
+time. Hand stdout back to stdio's own buffering — line-buffered on a terminal,
+block-buffered when redirected or piped — and expose the buffer to Spark code as a
+zero-argument `flush()`, so a program can still force a line out.
+**Not in 0.1.0:** the flush was found late, on 2026-10-31, while profiling for the 0.2
+stream, four days after 0.1.0 shipped. It was not backported, because nothing in the
+0.1.0 tree was waiting on it: 0.1.0 built, passed its suite and met its benchmark gate
+with the flush in place, and the cost only appears on output-heavy programs, which no
+0.1.0 gate measured. So the fix is in the unreleased 0.2 section and will ship with the
+0.2 tag — it is in neither the 0.1.0 tag nor the binaries published with it.
+**Acceptance criteria:**
+- [x] `print` does not flush; a 100,000-line loop makes a handful of writes instead of
+      one per line, and the bytes it produces are unchanged.
+- [x] `flush()` is a zero-argument native with a row in `README.md` and
+      `docs/language.md`, a case fixture and an arity-error fixture.
+- [x] `input()` flushes before it reads, a diagnostic flushes stdout before writing to
+      stderr, and the servers that announce their port on stdout flush before they
+      block.
+- [x] The behavior change is recorded under `CHANGELOG.md` Breaking changes.
+**Verification:**
+- [x] `python3 tests/run_tests.py` green; sanitizer run clean (VM change);
+      `python3 benchmarks/run.py` still below 5 ms.
+- [x] Byte-identity against the previous binary: 287 corpus programs, the value
+      formatting of every type and `input()` over a pipe all compare equal.
+**Dependencies:** None (found late, after the phase-23 checkpoint). **Files:**
+`src/vm.c`, `src/error.c`, `README.md`, `docs/language.md`, `docs/architecture.md`,
+`examples/`, `tests/`, `benchmarks/print_loop.spark`, `benchmarks/run_all.py`.
+**Scope:** M.
+
+**Done notes:** Removing the flush is one line; the rest is the ordering it forces.
+`input()` flushes before it reads rather than only when it prints a prompt,
+`error_print` flushes stdout before it writes to stderr (stderr is unbuffered, so
+without it a diagnostic jumped ahead of output the program had already printed), and
+`flush()` exposes the buffer to Spark code. Five suite tests failed on the first run —
+`spark http server starts`, `spark ws server starts`, `echo_server example echoes a
+line`, `http_client example talks to the http_server example` and `ws_echo_client
+example talks to the ws_echo_server example` — because each launches a server with
+`stdout=PIPE` and reads its `listening <port>` line before the server blocks in
+`accept()`; `tests/http_server.spark`, `tests/ws_server.spark`,
+`examples/echo_server.spark`, `examples/http_server.spark` and
+`examples/ws_echo_server.spark` now flush after announcing the port, which is the
+pattern the Breaking changes entry documents for users.
+
+Measurements (min of 20 runs, output to `/dev/null`): 100,003 writes become 169 and
+33.57 ms becomes 13.17 ms for the 100,000-line case; 1,000,000 prints go from 305.75 ms
+to 110.39 ms; the per-print cost falls from 291 ns to 96 ns, of which about 71 ns is
+the integer-to-string conversion and 22 ns the buffered write. That conversion is the
+next candidate and is deliberately not part of this task.
+`benchmarks/print_loop.spark` guards the regression: the same loop with a `flush()` per
+line measures 141.17 ms against 39.20 ms. The two fixtures take the suite from 340 to
+342 tests; `fib(27)` min 4.94 ms, sanitizers clean.
+
 ## Checkpoint: Phase 23
 - [x] Every native has a fixture and a reference-table row
 - [x] The tokenizer example in `docs/language.md` uses capture groups and offsets
 - [x] Suite + sanitizers green; `fib(27)` min unchanged
+- [x] T160 verified after the checkpoint closed: the output buffering was found late
+      and is therefore not in 0.1.0; suite 342/342, sanitizers clean, `fib(27)` min
+      4.94 ms
 
 ---
 
