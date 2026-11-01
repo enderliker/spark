@@ -9,9 +9,17 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and publish the interpreter
-    runs-on: ubuntu-latest
+  build:
+    name: Build ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            asset: spark-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            asset: spark-linux-aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -21,10 +29,44 @@ jobs:
       - name: Run the test suite
         run: python3 tests/run_tests.py
 
-      - name: Publish the GitHub release
+      - name: Package the binary
+        run: |
+          mkdir -p dist
+          strip -o "dist/${{ matrix.asset }}" spark
+          chmod +x "dist/${{ matrix.asset }}"
+          "dist/${{ matrix.asset }}" --version
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish the pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Add checksums
+        working-directory: dist
+        run: sha256sum spark-linux-* > SHA256SUMS
+
+      # A v0.* tag is a pre-1.0 build, so it is published as a GitHub
+      # pre-release. Override with a v1+ tag only once the API is frozen.
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" spark
-          --title "$GITHUB_REF_NAME"
-          --generate-notes
+          TAG: ${{ github.ref_name }}
+        run: |
+          args=(--title "$TAG" --generate-notes)
+          case "$TAG" in
+            v0.*) args+=(--prerelease) ;;
+          esac
+          gh release create "$TAG" dist/* "${args[@]}" -R "$GITHUB_REPOSITORY"

@@ -1,0 +1,44 @@
+name: Architectures
+
+# The interpreter must build, link OpenSSL and pass the whole suite on both
+# instruction-set families before a release tag is cut:
+#
+#   CISC - x86_64, the ubuntu-latest hosted runner
+#   RISC - aarch64, the ubuntu-24.04-arm hosted runner
+#
+# Both runners are native; nothing here runs under emulation.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.arch }} (${{ matrix.isa }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            isa: CISC
+            runner: ubuntu-latest
+          - arch: aarch64
+            isa: RISC
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the runner architecture
+        run: uname -m
+
+      - name: Build (warnings are errors)
+        run: make CFLAGS="-std=c11 -O3 -g -Wall -Wextra -Wpedantic -Werror"
+
+      - name: Run the test suite
+        run: python3 tests/run_tests.py
