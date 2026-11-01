@@ -197,34 +197,34 @@ messages)
 
 ### Phase 22 - `bytes` and binary I/O (P1, A16)
 - [x] T108 `bytes` core object type
-- [ ] T109 VM integration for `bytes`
-- [ ] T110 Encoding bridges and `to_json`
-- [ ] T111 Binary file and socket I/O
-- [ ] T112 Serialization, docs and limits for `bytes`
-- [ ] T113 WebSocket server on `bytes` (carry-over T97)
+- [x] T109 VM integration for `bytes`
+- [x] T110 Encoding bridges and `to_json`
+- [x] T111 Binary file and socket I/O
+- [x] T112 Serialization, docs and limits for `bytes`
+- [x] T113 WebSocket server on `bytes` (carry-over T97)
 
 ### Checkpoint: Phase 22
-- [ ] `bytes` round-trips a valid UTF-8 string unchanged
-- [ ] A Spark program writes and reads a real binary file byte-exactly
-- [ ] Suite + sanitizers green, `fib(27)` min unaffected
+- [x] `bytes` round-trips a valid UTF-8 string unchanged
+- [x] A Spark program writes and reads a real binary file byte-exactly
+- [x] Suite + sanitizers green, `fib(27)` min unaffected
 
 ### Phase 23 - Codecs, text, time, crypto and regex (P1, A17)
-- [ ] T114 `base64_encode`/`base64_decode`, `hex_encode`/`hex_decode`
-- [ ] T115 Deflate/gzip decode (vendored inflate, Q17)
-- [ ] T116 `format` for printf-style text
-- [ ] T117 Date and time formatting and parsing
-- [ ] T118 `sha256`, `hmac_sha256`, `rand_bytes` through OpenSSL
-- [ ] T119 Regex: `{n,m}`, lazy quantifiers, flags and match offsets
-- [ ] T120 Regex: capture groups
-- [ ] T121 Regex: `regex_split` and group references in `regex_replace`
-- [ ] T122 Math natives
-- [ ] T123 String and collection conveniences
+- [x] T114 `base64_encode`/`base64_decode`, `hex_encode`/`hex_decode`
+- [x] T115 Deflate/gzip decode (vendored inflate, Q17)
+- [x] T116 `format` for printf-style text
+- [x] T117 Date and time formatting and parsing
+- [x] T118 `sha256`, `hmac_sha256`, `rand_bytes` through OpenSSL
+- [x] T119 Regex: `{n,m}`, lazy quantifiers, flags and match offsets
+- [x] T120 Regex: capture groups
+- [x] T121 Regex: `regex_split` and group references in `regex_replace`
+- [x] T122 Math natives
+- [x] T123 String and collection conveniences
 - [x] T160 Buffered standard output (found late, after 0.1.0; not in that tag)
 
 ### Checkpoint: Phase 23
-- [ ] Every native has a fixture and a reference-table row
-- [ ] The tokenizer example in `docs/language.md` uses capture groups and offsets
-- [ ] Suite + sanitizers green
+- [x] Every native has a fixture and a reference-table row
+- [x] The tokenizer example in `docs/language.md` uses capture groups and offsets
+- [x] Suite + sanitizers green
 - [x] T160 verified after the checkpoint closed: suite 342/342, sanitizers clean,
       `fib(27)` min 4.94 ms
 
