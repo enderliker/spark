@@ -173,18 +173,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system's CSPRNG (capped at 16 MiB). `rand()` stays the fast, seedable,
   non-cryptographic PRNG. A CSPRNG failure raises instead of falling back.
 
-### Changed
-
-- `print` no longer flushes standard output on every call. Each call ended with an
-  `fflush`, so it cost one `write(2)` apiece: printing 100,000 lines made 100,003
-  writes and spent 91% of its 33.6 ms inside the kernel. Output is now
-  line-buffered on a terminal, as before, and block-buffered when redirected or
-  piped; that same program now makes 169 writes and finishes in 13.8 ms, and
-  1,000,000 `print` calls go from 306 ms to 106 ms. The new `flush()` writes the
-  buffer out on demand; `input()` flushes before it reads so a prompt is still
-  visible, and a diagnostic flushes standard output first so nothing the program
-  printed can appear after its own error.
-
 ### Security
 
 - Network error messages redact URL userinfo (`https://***@host/`) and never echo
@@ -264,6 +252,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The bytecode file format version is now `5` (needed for `OP_YIELD`).
   `.sparkc` files compiled by an earlier build are rejected with exit code 65;
   recompile them with `spark --compile`.
+- `print` no longer flushes standard output. It is line-buffered on a terminal
+  and block-buffered when redirected or piped, so the bytes are the same but they
+  are no longer visible before the program ends or blocks. A program that printed
+  a readiness line, a prompt or a progress line and then waited on a pipe, a
+  socket or stdin must call `flush()` — or use `input()`, which flushes before it
+  reads, where that is the wait. The `examples/` servers and the suite's servers
+  were updated this way. Removing the flush drops one `write(2)` per `print`:
+  100,000 lines go from 100,003 writes and 33.6 ms to 169 writes and 13.8 ms, and
+  1,000,000 `print` calls from 306 ms to 106 ms.
 
 ## [0.1.0] - 2026-10-27
 
