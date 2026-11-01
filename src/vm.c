@@ -10243,6 +10243,7 @@ void vm_free(void)
     }
 
     debugger_free();
+    net_http_pool_release_all();
 
     memset(&vm, 0, sizeof(vm));
     vm.stack_top = vm.stack;

@@ -732,6 +732,114 @@ static InflateStatus inflate_gzip(const unsigned char *data, size_t length, size
     return INFLATE_OK;
 }
 
+bool codec_zlib_header(const unsigned char *data, size_t length)
+{
+    unsigned int cmf;
+    unsigned int flg;
+
+    if (length < 2) {
+        return false;
+    }
+    cmf = data[0];
+    flg = data[1];
+    if ((cmf & 0x0f) != 8 || (cmf >> 4) > 7) {
+        return false; /* CM must be DEFLATE with a 32 KiB window or less */
+    }
+    if (((cmf << 8) | flg) % 31 != 0) {
+        return false; /* the header checksum must be a multiple of 31 */
+    }
+    return (flg & 0x20) == 0; /* FDICT: no preset dictionary is available */
+}
+
+static uint32_t inflate_adler32(const unsigned char *data, size_t length)
+{
+    uint32_t low = 1;
+    uint32_t high = 0;
+
+    for (size_t i = 0; i < length; i++) {
+        low = (low + data[i]) % 65521u;
+        high = (high + low) % 65521u;
+    }
+    return (high << 16) | low;
+}
+
+/* Decodes a complete RFC 1950 (zlib) stream, verifying its Adler-32. */
+static InflateStatus inflate_zlib(const unsigned char *data, size_t length, size_t max,
+                                 buf_t *out)
+{
+    InflateBits bits;
+    InflateStatus status;
+    const unsigned char *trailer;
+    uint32_t stored;
+
+    /* The two-byte header, at least one block and the four-byte trailer. */
+    if (length < 6) {
+        return INFLATE_TRUNCATED;
+    }
+    if (!codec_zlib_header(data, length)) {
+        return INFLATE_INVALID;
+    }
+    bits.data = data + 2;
+    bits.length = length - 2;
+    bits.position = 0;
+    bits.bits = 0;
+    bits.count = 0;
+    status = inflate_raw(&bits, max, out);
+    if (status != INFLATE_OK) {
+        return status;
+    }
+    inflate_align(&bits);
+    if (bits.position + 4 > bits.length) {
+        return INFLATE_TRUNCATED;
+    }
+    /* The Adler-32 trailer is stored most-significant byte first (RFC 1950),
+     * unlike the little-endian gzip trailer above. */
+    trailer = data + 2 + bits.position;
+    stored = ((uint32_t)trailer[0] << 24) | ((uint32_t)trailer[1] << 16) |
+             ((uint32_t)trailer[2] << 8) | (uint32_t)trailer[3];
+
+    if (inflate_adler32((const unsigned char *)out->data, out->len) != stored) {
+        return INFLATE_CHECKSUM;
+    }
+    return INFLATE_OK;
+}
+
+CodecDeflateStatus codec_deflate_decode(const unsigned char *data, size_t length, size_t max,
+                                        CodecDeflateFormat format, buf_t *out)
+{
+    InflateStatus status;
+
+    if (format == CODEC_DEFLATE_GZIP) {
+        status = inflate_gzip(data, length, max, out);
+    } else if (format == CODEC_DEFLATE_ZLIB) {
+        status = inflate_zlib(data, length, max, out);
+    } else {
+        InflateBits bits;
+
+        bits.data = data;
+        bits.length = length;
+        bits.position = 0;
+        bits.bits = 0;
+        bits.count = 0;
+        status = inflate_raw(&bits, max, out);
+    }
+    switch (status) {
+    case INFLATE_OK:
+        return CODEC_DEFLATE_OK;
+    case INFLATE_TRUNCATED:
+        return CODEC_DEFLATE_TRUNCATED;
+    case INFLATE_LIMIT:
+        return CODEC_DEFLATE_LIMIT;
+    case INFLATE_NOT_GZIP:
+        return CODEC_DEFLATE_NOT_GZIP;
+    case INFLATE_CHECKSUM:
+        return CODEC_DEFLATE_CHECKSUM;
+    case INFLATE_INVALID:
+        break;
+    }
+    return CODEC_DEFLATE_INVALID;
+}
+
 /* The first argument of every codec native. */
 static bool codec_input(Value value, const char *function, const unsigned char **data, int *length)
 {
@@ -871,7 +979,7 @@ static Value codec_decompress(int arg_count, Value *args, const char *function, 
     int length;
     int max = INFLATE_MAX_OUTPUT;
     buf_t out;
-    InflateStatus status;
+    CodecDeflateStatus status;
 
     if (arg_count < 1 || arg_count > 2) {
         vm_runtime_error(ERROR_ARITY, "'%s' expects 1 or 2 arguments, received %d", function,
@@ -891,40 +999,30 @@ static Value codec_decompress(int arg_count, Value *args, const char *function, 
     }
 
     buf_init(&out);
-    if (gzip) {
-        status = inflate_gzip(data, (size_t)length, (size_t)max, &out);
-    } else {
-        InflateBits bits;
-
-        bits.data = data;
-        bits.length = (size_t)length;
-        bits.position = 0;
-        bits.bits = 0;
-        bits.count = 0;
-        status = inflate_raw(&bits, (size_t)max, &out);
-    }
-    if (status != INFLATE_OK) {
+    status = codec_deflate_decode(data, (size_t)length, (size_t)max,
+                                  gzip ? CODEC_DEFLATE_GZIP : CODEC_DEFLATE_RAW, &out);
+    if (status != CODEC_DEFLATE_OK) {
         const char *kind = gzip ? "gzip" : "deflate";
 
         buf_free(&out);
         switch (status) {
-        case INFLATE_TRUNCATED:
+        case CODEC_DEFLATE_TRUNCATED:
             vm_runtime_error(ERROR_VALUE, "'%s' received a truncated %s stream", function, kind);
             break;
-        case INFLATE_INVALID:
+        case CODEC_DEFLATE_INVALID:
             vm_runtime_error(ERROR_VALUE, "'%s' received an invalid %s stream", function, kind);
             break;
-        case INFLATE_LIMIT:
+        case CODEC_DEFLATE_LIMIT:
             vm_runtime_error(ERROR_VALUE, "'%s' output exceeds the %d-byte limit", function, max);
             break;
-        case INFLATE_NOT_GZIP:
+        case CODEC_DEFLATE_NOT_GZIP:
             vm_runtime_error(ERROR_VALUE, "'%s' received data that is not a gzip stream",
                              function);
             break;
-        case INFLATE_CHECKSUM:
+        case CODEC_DEFLATE_CHECKSUM:
             vm_runtime_error(ERROR_VALUE, "'%s' checksum mismatch", function);
             break;
-        case INFLATE_OK:
+        case CODEC_DEFLATE_OK:
             break;
         }
         return NIL_VAL;

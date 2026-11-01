@@ -29,7 +29,7 @@ result / error
 | `vm.c` | Stack, frames, closures, natives, errors and the garbage collector. |
 | `object.c` | Dynamic objects, string interning, arrays, maps and value formatting. |
 | `bytes.c` | The `bytes` constructors (`bytes`, `bytes_from`) and the `bytes_builder` natives plus their method dispatch. |
-| `codec.c` | base64/hex codecs over `bytes` and the bounded DEFLATE/gzip decoder (`inflate`, `gunzip`). |
+| `codec.c` | base64/hex codecs over `bytes`, the bounded DEFLATE/gzip/zlib decoder (`inflate`, `gunzip`) and the decode core the HTTP client shares for `Content-Encoding`. |
 | `crypto.c` | SHA-256, HMAC-SHA256 and the CSPRNG (`sha256`, `sha256_hex`, `hmac_sha256`, `rand_bytes`) through OpenSSL (T118). |
 | `datetime.c` | Date/time formatting and parsing. Named `datetime` because `src/time.h` would shadow the system `<time.h>` for every file compiled with `-Isrc`. |
 | `net.c` | TCP/UDP sockets, name resolution and the network natives. |
@@ -517,6 +517,30 @@ client live in `src/net.c` beside the socket layer; the server is a Spark librar
   read-to-EOF; redirects recurse on the same absolute deadline, so the whole chain is
   bounded. Every buffer is a malloc'd `NetBuffer`, so `mem_realloc` accounting (and
   therefore the GC threshold) stays accurate.
+- **Content-Encoding.** The request advertises `Accept-Encoding: gzip, deflate` unless
+  the caller supplies its own header (a caller-set `Accept-Encoding` is never
+  duplicated). `net_http_decode_body` then decodes a `gzip`/`x-gzip` or `deflate`
+  response through the codec module's bounded decoder and replaces the body, so a Spark
+  program only ever sees the decoded bytes. `deflate` is ambiguous on the wire (either
+  RFC 1950 or raw RFC 1951), so `codec_zlib_header` picks the form from the two-byte
+  header. An unsupported encoding (`br`, say) is a `NetworkError` rather than compressed
+  bytes leaking into `body`.
+- **Persistent connections.** The client keeps the connection alive and reuses it, so
+  a run of requests to the same `{scheme, host, port}` costs one TCP (or TLS)
+  connection instead of one per request. A response is reusable only when it was framed
+  by `Content-Length` or by chunked encoding and the reader stopped exactly at the end
+  of the message: a read-to-EOF body always closes, and an HTTP/1.0 status line closes
+  unless the response says otherwise. Idle connections live in a fixed pool of four
+  entries (`NET_HTTP_POOL_MAX`) keyed by origin **and** trust store, so a connection
+  authenticated with an injected `ca_file` is never handed to a request that asked for
+  the system store, and the other way round. `net_http_pool_take` discards an entry
+  older than `NET_HTTP_IDLE_MAX` (30 s) or one the peer already closed (a zero-timeout
+  `poll(2)` finds it readable), and `vm_free` calls `net_http_pool_release_all` so an
+  embedder does not accumulate descriptors across runs. A caller-set `Connection:
+  close` suppresses the reuse for that request, a response that announces `Connection:
+  close` is never pooled, and a failure on a reused connection is retried exactly once
+  on a fresh one — only for a method that is safe to repeat (`GET`, `PUT`, `DELETE`)
+  and only when nothing was received, so no request can be executed twice.
 - **Why synchronous.** The client is a native, and a native cannot suspend halfway
   through a multi-step request: it would have to return the whole state machine to the
   coroutine. The HTTP client therefore blocks the process inside `poll(2)`, bounded by
@@ -525,14 +549,22 @@ client live in `src/net.c` beside the socket layer; the server is a Spark librar
   Spark's own server without a deadlock.
 - **Framing caps.** 64 KiB for the status line plus headers, 1000 headers, five
   redirects, a 16 MiB default body cap and a 30 s default deadline, each with an
-  explicit error. A URL, method or header value containing a newline is rejected so a
-  request cannot be split into extra headers.
+  explicit error. The `max_body` cap applies to the decompressed body as well, so a
+  small compressed response cannot expand past it. A URL, method or header value
+  containing a newline is rejected so a request cannot be split into extra headers.
 - **Server.** `lib/http.spark` parses one request per connection and serializes the
   handler's response; it is pure Spark, so the native surface stays unchanged.
 
 `tests/http_client.spark` exercises the client against a scripted Python server
-(plain, chunked, redirect, redirect loop, oversized header, oversized body, timeout,
-malformed status line and premature EOF); `tests/run_tests.py` starts that server. The
+(plain, gzip and deflate responses, one compressed response on a chunked transfer, a
+compression bomb past `max_body`, a broken compressed stream, an unknown encoding,
+chunked, redirect, redirect loop, oversized header, oversized body, timeout, malformed
+status line and premature EOF); `tests/run_tests.py` starts that server.
+`tests/http_keepalive.spark` drives three more origins that count the connections and
+the requests they accept — one that keeps the connection alive, one that always answers
+`Connection: close`, and one that closes a reused connection without answering — plus a
+TLS origin that reuses one connection for two requests, so both the reuse and its
+refusal are asserted from the server side. The
 same file starts `tests/http_server.spark` (the Spark server) and runs
 `tests/http_server_client.spark` (Spark's client) against it, in separate processes.
 

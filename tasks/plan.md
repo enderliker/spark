@@ -229,8 +229,8 @@ messages)
       `fib(27)` min 4.94 ms
 
 ### Phase 24 - HTTP and network hardening (P1, A21)
-- [ ] T124 gzip through the HTTP client
-- [ ] T125 Keep-alive and connection reuse
+- [x] T124 gzip through the HTTP client
+- [x] T125 Keep-alive and connection reuse
 - [ ] T126 The HTTP client yields its coroutine
 - [ ] T127 HTTP server: concurrency, keep-alive, bounded request bodies
 - [ ] T128 WebSocket keepalive/reconnect library helper

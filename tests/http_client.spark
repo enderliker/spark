@@ -27,6 +27,44 @@ print("put:", put.status, put.body);
 var deleted = http_delete(base + "/echo");
 print("delete:", deleted.status, deleted.body == "");
 
+// Compressed responses are decoded transparently (T124). The request
+// advertises gzip and deflate by default, exactly once.
+var advertised = http_get(base + "/accept-encoding");
+print("accept-encoding:", advertised.body);
+var overridden = http_get(base + "/accept-encoding", nil, {"Accept-Encoding": "identity"});
+print("accept-encoding-override:", overridden.body);
+
+var compressed = http_get(base + "/gzip");
+print("gzip:", compressed.status, compressed.headers["content-encoding"],
+      compressed.body == "gzip payload: hello world\n");
+var compressed_chunked = http_get(base + "/gzip-chunked");
+print("gzip-chunked:", compressed_chunked.status,
+      compressed_chunked.body == "chunked gzip payload\n");
+var deflated = http_get(base + "/deflate");
+print("deflate:", deflated.status, deflated.body == "deflate payload: hello world\n");
+var raw_deflated = http_get(base + "/deflate-raw");
+print("deflate-raw:", raw_deflated.status, raw_deflated.body == "raw deflate payload\n");
+var identity = http_get(base + "/encoding-identity");
+print("encoding-identity:", identity.status, identity.body == "plain body\n");
+
+// The decompressed body obeys max_body, and a broken or unknown encoding is an
+// explicit error rather than compressed bytes leaking into the body.
+try {
+    http_get(base + "/gzip-bomb", nil, nil, 5000, true, 4096);
+} catch (e) {
+    print("gzip-bomb:", e.type, e.message);
+}
+try {
+    http_get(base + "/gzip-bad");
+} catch (e) {
+    print("gzip-bad:", e.type, e.message);
+}
+try {
+    http_get(base + "/encoding-unknown");
+} catch (e) {
+    print("encoding-unknown:", e.type, e.message);
+}
+
 // The map-driven form behaves the same way.
 var mapped = http_request({"url": base + "/hello", "method": "GET"});
 print("map:", mapped.status, mapped.headers["x-test"]);

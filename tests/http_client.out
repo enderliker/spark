@@ -6,6 +6,16 @@ post: 200 payload=1
 header: abc
 put: 200 replacement
 delete: 200 true
+accept-encoding: gzip, deflate
+accept-encoding-override: identity
+gzip: 200 gzip true
+gzip-chunked: 200 true
+deflate: 200 true
+deflate-raw: 200 true
+encoding-identity: 200 true
+gzip-bomb: NetworkError the decompressed body exceeds the maximum of 4096 bytes
+gzip-bad: NetworkError the response claims gzip but is not a gzip stream
+encoding-unknown: NetworkError the response uses an unsupported Content-Encoding 'br'
 map: 200 yes
 loop: NetworkError too many redirects (maximum 5)
 big: NetworkError

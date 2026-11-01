@@ -35,4 +35,8 @@ void net_mark_waiters(void);
 /* Monotonic milliseconds, shared by the socket deadlines and the scheduler. */
 int64_t net_now_ms(void);
 
+/* Closes the idle keep-alive HTTP connections. Called from vm_free so a
+ * long-lived embedder does not accumulate descriptors across runs. */
+void net_http_pool_release_all(void);
+
 #endif

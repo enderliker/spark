@@ -1344,6 +1344,13 @@ system trust store.
 
 - `headers` in the result is a map from lowercased name to value; a repeated header
   keeps the last value.
+- The request advertises `Accept-Encoding: gzip, deflate` and a compressed response is
+  decoded before it is returned, so `body` is always the plain bytes. A `gzip`
+  (`x-gzip`) or `deflate` body is decoded; `deflate` is accepted in both its zlib and
+  its raw form, whichever the server used. Pass your own `Accept-Encoding` header (for
+  example `{"Accept-Encoding": "identity"}`) to override the default — the header is
+  never sent twice. An encoding the client cannot decode (`br`, say) raises
+  `NetworkError` instead of returning compressed bytes as text.
 - A `Content-Length` body, a `Transfer-Encoding: chunked` body and a `Connection:
   close` body that ends at EOF are all handled. `301`, `302`, `303`, `307` and `308`
   are followed by default up to five hops (`303`, and `301`/`302` after a `POST`,
@@ -1351,9 +1358,19 @@ system trust store.
   request URL.
 - The request is bounded: `timeout_ms` defaults to 30000 (a value of `0` also uses
   the default) and covers the whole request, including redirects. `max_body`
-  defaults to 16 MiB and may not exceed that. The status line plus the headers may
+  defaults to 16 MiB and may not exceed that; it applies to the decompressed body, so
+  a small compressed response cannot expand past it. The status line plus the headers may
   not exceed 64 KiB and at most 1000 headers and five redirects are accepted. Each
   limit fails with an explicit `NetworkError`.
+- Connections are persistent: a response bounded by `Content-Length` or by chunked
+  framing leaves the connection open, so repeated requests to the same
+  `{scheme, host, port}` reuse one TCP or TLS connection instead of opening one each
+  time. `Connection: close` in the caller's `headers` closes the connection after that
+  response, a server that announces `Connection: close` is never reused, and a server
+  that closes a reused connection anyway costs one retry — only for `GET`, `PUT` and
+  `DELETE`, which are safe to repeat; a failed `POST` is reported instead of being sent
+  again. Only a request with the same `ca_file` reuses a connection, and an idle
+  connection is dropped after 30 seconds or when the interpreter exits.
 - `http://` and `https://` are both supported. HTTPS verifies the certificate chain
   and the host name with the same rules as `tls_connect`; verification failures raise
   `NetworkError` and there is no way to disable them. A malformed status line, a
@@ -1996,8 +2013,12 @@ Linter rules:
   CPU. Inside a native callback or an imported module a would-block call is an error.
 - The HTTP client is bounded: the status line plus the headers may not exceed 64 KiB,
   at most 1000 headers and five redirects are accepted, the body defaults to a 16 MiB
-  cap (`max_body`) and the whole request defaults to a 30 s deadline (`timeout_ms`).
-  It blocks the process rather than yielding the coroutine.
+  cap (`max_body`) - applied to the decompressed body when the response is gzip- or
+  deflate-encoded, so a compression bomb cannot expand past it - and the whole request
+  defaults to a 30 s deadline (`timeout_ms`). It blocks the process rather than
+  yielding the coroutine, and it advertises `Accept-Encoding: gzip, deflate`, decoding
+  what it gets back. It keeps up to four idle connections alive for reuse, each for at
+  most 30 seconds, and only for a request with the same origin and `ca_file`.
 - A WebSocket frame and an assembled message are capped at 16 MiB, a control payload
   at 125 bytes and a close reason at 123 bytes. Text and close reasons are validated
   as UTF-8; protocol violations close with `1002`, `1007` or `1009`.

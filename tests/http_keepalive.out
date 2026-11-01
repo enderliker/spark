@@ -1,0 +1,7 @@
+keep-alive: true
+explicit-close: 200 /closing
+after-close: 200 /after
+closing-server: true
+stale-retry: true
+tls-reuse: true
+http keep-alive ok

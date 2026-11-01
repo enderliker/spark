@@ -30,9 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from key to an array of values).
 - An HTTP/1.1 client: `http_get`, `http_post`, `http_put`, `http_delete` and the
   map-driven `http_request` return `{status, headers, body}` and handle chunked
-  bodies, `Content-Length`, read-to-EOF, redirects and the `Connection: close`
-  framing, within explicit header (64 KiB), header-count, redirect (5), body
-  (16 MiB) and timeout (30 s) limits.
+  bodies, `Content-Length`, read-to-EOF and redirects, within explicit header
+  (64 KiB), header-count, redirect (5), body (16 MiB) and timeout (30 s) limits.
+  Connections are persistent: requests to one origin reuse a single TCP or TLS
+  connection (`Connection: close` is honored in both directions, a connection the
+  server closed anyway costs one retry on a request that is safe to repeat, a
+  connection is only reused under the same `ca_file`, and idle ones are dropped
+  after 30 s), which takes the `http` benchmark's 200 requests from 50.5 ms to
+  14.6 ms (min of 7, WSL2).
 - `lib/http.spark`: an HTTP/1.1 server written in Spark on the socket layer, with
   request parsing and a handler callback, used by `examples/http_server.spark`.
 - TLS: `tls_connect(host, port, timeout_ms?, ca_file?)` returns a `socket` with
@@ -172,6 +177,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or a string, `hmac_sha256(key, data)`, and `rand_bytes(n)` from the operating
   system's CSPRNG (capped at 16 MiB). `rand()` stays the fast, seedable,
   non-cryptographic PRNG. A CSPRNG failure raises instead of falling back.
+- The HTTP client advertises `Accept-Encoding: gzip, deflate` and decodes a
+  compressed response transparently: `gzip`/`x-gzip` and both the zlib and the raw
+  form of `deflate` (told apart by the stream's header), so `body` is always the
+  plain bytes. The `max_body` cap is applied to the decompressed body, so a
+  compression bomb raises `NetworkError` instead of exhausting memory. A
+  caller-supplied `Accept-Encoding` header replaces the default (the header is never
+  sent twice), and an encoding the client cannot decode (`br`, say) is a
+  `NetworkError` rather than compressed bytes leaking into the body. The decoder is
+  the codec module's, so the two paths cannot drift.
 
 ### Security
 
@@ -230,9 +244,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Error messages that name a value type no longer pick a fixed article, which produced
   `tried to update a instance`. They now say `a value of type instance`, and the index
   type error says `received array` instead of `received a array`.
+- A server that closes the connection before it answers now reports
+  `NetworkError: the HTTP response ended before the status line` (or `... inside the
+  headers`). The two branches were unreachable, so both cases returned with no message
+  filled in and the error could show whatever the stack happened to hold.
+- The HTTP client no longer reuses a connection that was authenticated with a different
+  `ca_file`: the persistent-connection pool is keyed by origin **and** trust store, so a
+  request for the system store can never ride a connection verified against an injected
+  CA.
 
 ### Breaking changes
 
+- The HTTP client keeps its connections alive instead of sending `Connection: close`
+  with every request. A server that counted one connection per call, or a test that
+  asserted a fresh connection each time, now sees a single reused connection; a
+  program that needs the old behavior sets `Connection: close` in the `headers`
+  argument. Idle connections are closed after 30 s and when the interpreter exits.
+  Reusing a connection is also refused when the request asks for a different
+  `ca_file` than the one the connection was verified against.
 - Regular expressions use leftmost-first semantics (decision Q27). A pattern
   such as `a|ab` now matches `"a"` in `"ab"` where the previous engine returned
   the longest match `"ab"`, and `regex_find("<.*>", "<a><b>")` returns

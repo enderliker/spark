@@ -1,0 +1,70 @@
+// T125: keep-alive and connection reuse. The three local origins count the TCP
+// connections and the requests they accept, so run_tests.py can assert that the
+// client really reuses one; here the responses are checked.
+var keep_port = int(argv[1]);
+var close_port = int(argv[2]);
+var retry_port = int(argv[3]);
+
+var keep = "http://127.0.0.1:" + str(keep_port) + "/";
+var closing = "http://127.0.0.1:" + str(close_port) + "/";
+var retry = "http://127.0.0.1:" + str(retry_port) + "/";
+
+// Six requests (five GET, one POST) ride one TCP connection: HTTP/1.1 keeps it
+// alive by default, so no `Connection` header is sent and nothing is closed
+// between requests.
+var reused = true;
+
+for (var i = 0; i < 5; i += 1) {
+    var suffix = "item/" + str(i);
+    var response = http_get(keep + suffix);
+
+    reused = reused and response.status == 200 and response.body == "/" + suffix;
+}
+var posted = http_post(keep + "post", "payload");
+reused = reused and posted.status == 200 and posted.body == "payload";
+print("keep-alive:", reused);
+
+// A caller that asks for Connection: close gets it, and the connection is not
+// reused afterwards: the next request opens a fresh one.
+var explicit = http_get(keep + "closing", nil, {"Connection": "close"});
+print("explicit-close:", explicit.status, explicit.body);
+var after = http_get(keep + "after");
+print("after-close:", after.status, after.body);
+
+// A server that answers Connection: close and hangs up: every request succeeds.
+var closed_ok = true;
+
+for (var i = 0; i < 3; i += 1) {
+    var response = http_get(closing + "close/" + str(i));
+
+    closed_ok = closed_ok and response.status == 200 and
+                response.headers["connection"] == "close";
+}
+print("closing-server:", closed_ok);
+
+// This origin serves one request, then closes the connection when the next
+// request arrives on it, without answering. The pooled connection fails and the
+// idempotent request is retried once on a fresh one, so it still succeeds.
+var retry_ok = true;
+
+for (var i = 0; i < 2; i += 1) {
+    var suffix = "retry/" + str(i);
+    var response = http_get(retry + suffix);
+
+    retry_ok = retry_ok and response.status == 200 and response.body == "/" + suffix;
+}
+print("stale-retry:", retry_ok);
+
+// TLS connections are pooled too: two requests over one TLS connection, with
+// the test CA injected.
+var secure = "https://localhost:" + str(argv[4]) + "/";
+var tls_ok = true;
+
+for (var i = 0; i < 2; i += 1) {
+    var suffix = "tls/" + str(i);
+    var response = http_request({"url": secure + suffix, "ca_file": argv[5]});
+
+    tls_ok = tls_ok and response.status == 200 and response.body == "/" + suffix;
+}
+print("tls-reuse:", tls_ok);
+print("http keep-alive ok");

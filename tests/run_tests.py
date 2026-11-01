@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import difflib
+import gzip
 import hashlib
 import json
 import os
@@ -17,8 +18,10 @@ import subprocess
 import sys
 import threading
 import time
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import cast
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = ROOT / "spark"
@@ -679,6 +682,37 @@ class ScriptedHandler(BaseHTTPRequestHandler):
             self.close_connection = True
         elif path == "/hdr":
             self.reply(200, self.headers.get("X-Probe", "").encode("utf-8"))
+        elif path == "/accept-encoding":
+            # Every value the client sent, so a duplicated header shows up.
+            values = self.headers.get_all("Accept-Encoding") or []
+            self.reply(200, ", ".join(values).encode("utf-8"))
+        elif path == "/gzip":
+            self.reply(200, gzip.compress(b"gzip payload: hello world\n"),
+                       [("Content-Encoding", "gzip")])
+        elif path == "/gzip-chunked":
+            payload = gzip.compress(b"chunked gzip payload\n")
+            self.send_response(200)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(b"%x\r\n" % len(payload) + payload + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
+        elif path == "/gzip-bomb":
+            # Small on the wire, 200 KiB once decoded.
+            self.reply(200, gzip.compress(b"x" * 200000), [("Content-Encoding", "gzip")])
+        elif path == "/gzip-bad":
+            self.reply(200, b"this is not a gzip stream", [("Content-Encoding", "gzip")])
+        elif path == "/deflate":
+            self.reply(200, zlib.compress(b"deflate payload: hello world\n"),
+                       [("Content-Encoding", "deflate")])
+        elif path == "/deflate-raw":
+            compressor = zlib.compressobj(wbits=-zlib.MAX_WBITS)
+            raw = compressor.compress(b"raw deflate payload\n") + compressor.flush()
+            self.reply(200, raw, [("Content-Encoding", "deflate")])
+        elif path == "/encoding-identity":
+            self.reply(200, b"plain body\n", [("Content-Encoding", "identity")])
+        elif path == "/encoding-unknown":
+            self.reply(200, b"whatever", [("Content-Encoding", "br")])
         else:
             self.reply(404, b"not found")
 
@@ -701,6 +735,99 @@ class QuietHTTPServer(ThreadingHTTPServer):
 
     def handle_error(self, request, client_address):
         pass
+
+
+class ReuseHandler(socketserver.BaseRequestHandler):
+    """Serves several requests on one connection (HTTP/1.1 keep-alive).
+
+    It answers with the request body when there is one, the request path
+    otherwise, and counts what the origin accepted so the client's reuse is
+    observable. `mode` decides how the connection ends, so a single handler
+    covers every keep-alive case the client has to deal with:
+
+    * ``keep-alive`` - leave the connection open for the next request;
+    * ``close`` - answer ``Connection: close`` and hang up;
+    * ``drop-reused`` - serve one request, then close the connection when the
+      next one arrives on it, which is what the client's stale-connection
+      retry is for.
+    """
+
+    def read_request(self, buffer: bytes) -> tuple[bytes, bytes, bytes] | None:
+        """Reads one request; returns (path, body, rest) or None at end of stream."""
+        while b"\r\n\r\n" not in buffer:
+            chunk = self.request.recv(4096)
+            if not chunk:
+                return None
+            buffer += chunk
+        head, buffer = buffer.split(b"\r\n\r\n", 1)
+        lines = head.split(b"\r\n")
+        length = 0
+        for line in lines[1:]:
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+        while len(buffer) < length:
+            chunk = self.request.recv(4096)
+            if not chunk:
+                return None
+            buffer += chunk
+        return lines[0].split(b" ")[1], buffer[:length], buffer[length:]
+
+    def handle(self):
+        server = cast(ReuseServer, self.server)
+        with server.lock:
+            server.connections += 1
+        served = 0
+        buffer = b""
+        while True:
+            request = self.read_request(buffer)
+            if request is None:
+                return
+            path, body, buffer = request
+            if server.mode == "drop-reused" and served == 1 and not server.dropped:
+                # One request was served on this connection; the next one is
+                # closed without an answer, so the client has to notice and
+                # retry. The drop happens after the request was read, which is
+                # too late for the client's pre-send liveness check.
+                with server.lock:
+                    server.dropped = True
+                return
+            served += 1
+            with server.lock:
+                server.requests += 1
+            payload = body if body else path
+            response = b"HTTP/1.1 200 OK\r\n"
+            if server.mode == "close":
+                response += b"Connection: close\r\n"
+            response += b"Content-Length: %d\r\n\r\n" % len(payload) + payload
+            self.request.sendall(response)
+            if server.mode == "close":
+                return
+
+
+class ReuseServer(socketserver.ThreadingTCPServer):
+    """A local origin that counts the connections and the requests it served."""
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def __init__(self, mode: str, cert_name: str | None = None):
+        self.mode = mode
+        self.lock = threading.Lock()
+        self.connections = 0
+        self.requests = 0
+        self.dropped = False
+        super().__init__(("127.0.0.1", 0), ReuseHandler)
+        if cert_name:
+            self.socket = tls_context(cert_name).wrap_socket(self.socket, server_side=True)
+
+    def handle_error(self, request, client_address):
+        pass
+
+
+def start_reuse_server(mode: str, cert_name: str | None = None) -> ReuseServer:
+    server = ReuseServer(mode, cert_name)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 class TlsEchoHandler(socketserver.BaseRequestHandler):
@@ -1327,6 +1454,77 @@ def test_http_client() -> None:
         server.server_close()
 
 
+def test_http_keepalive() -> None:
+    print("\nHTTP keep-alive")
+    servers: list[ReuseServer] = []
+    try:
+        keeping = start_reuse_server("keep-alive")
+        servers.append(keeping)
+        closing = start_reuse_server("close")
+        servers.append(closing)
+        dropping = start_reuse_server("drop-reused")
+        servers.append(dropping)
+        secure = start_reuse_server("keep-alive", "server")
+        servers.append(secure)
+        completed = run(
+            [
+                str(ROOT / "tests" / "http_keepalive.spark"),
+                str(keeping.server_address[1]),
+                str(closing.server_address[1]),
+                str(dropping.server_address[1]),
+                str(secure.server_address[1]),
+                str(TLS / "ca.pem"),
+            ],
+            timeout=60,
+        )
+        expected = (ROOT / "tests" / "http_keepalive.out").read_text(encoding="utf-8")
+        detail = ""
+        ok = completed.returncode == 0 and completed.stdout == expected and not completed.stderr
+        if completed.returncode != 0:
+            detail += f"exit code {completed.returncode} (expected 0)\n"
+        if completed.stdout != expected:
+            detail += unified(expected, completed.stdout)
+        if completed.stderr:
+            detail += "unexpected stderr:\n" + completed.stderr
+        # Eight requests (five GET, one POST, one `Connection: close`, one after
+        # it) travel over two connections: the pooled one and the fresh one the
+        # caller's close forced.
+        if (keeping.connections, keeping.requests) != (2, 8):
+            ok = False
+            detail += (
+                f"the keep-alive origin saw {keeping.connections} connections and "
+                f"{keeping.requests} requests (expected 2 and 8)\n"
+            )
+        # A server that answers Connection: close is never reused.
+        if (closing.connections, closing.requests) != (3, 3):
+            ok = False
+            detail += (
+                f"the closing origin saw {closing.connections} connections and "
+                f"{closing.requests} requests (expected 3 and 3)\n"
+            )
+        # The connection reused for the second request is closed without an
+        # answer; exactly one retry, on one fresh connection, is what makes the
+        # request succeed.
+        if (dropping.connections, dropping.requests) != (2, 2):
+            ok = False
+            detail += (
+                f"the retry origin saw {dropping.connections} connections and "
+                f"{dropping.requests} requests (expected 2 and 2)\n"
+            )
+        # TLS connections are pooled the same way.
+        if (secure.connections, secure.requests) != (1, 2):
+            ok = False
+            detail += (
+                f"the TLS origin saw {secure.connections} connections and "
+                f"{secure.requests} requests (expected 1 and 2)\n"
+            )
+        report("keep-alive reuses a connection, honors close and retries a stale one", ok, detail)
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+
+
 def test_http_server() -> None:
     print("\nHTTP server")
     server = subprocess.Popen(
@@ -1524,6 +1722,7 @@ def main() -> int:
     test_crypto()
     test_network_limits()
     test_http_client()
+    test_http_keepalive()
     test_http_server()
     test_examples()
     test_tls_client()

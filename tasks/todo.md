@@ -950,16 +950,40 @@ line measures 141.17 ms against 39.20 ms. The two fixtures take the suite from 3
 to disable it) and transparently decode `Content-Encoding` on the response, applying the
 `max_body` cap **after** decompression so the bound still holds.
 **Acceptance criteria:**
-- [ ] A local server that answers gzip-compressed returns the decoded body; a server
+- [x] A local server that answers gzip-compressed returns the decoded body; a server
       that answers identity still works.
-- [ ] The decompressed size is capped by `max_body` with an explicit `NetworkError`;
+- [x] The decompressed size is capped by `max_body` with an explicit `NetworkError`;
       the bomb fixture from T115 is reused at the HTTP level.
-- [ ] `Accept-Encoding` can be overridden through the `headers` argument without
+- [x] `Accept-Encoding` can be overridden through the `headers` argument without
       duplicating the header.
 **Verification:**
-- [ ] Fixtures against the local Python server (offline); suite + sanitizers.
+- [x] Fixtures against the local Python server (offline); suite + sanitizers.
 **Dependencies:** T115. **Files:** `src/net.c`, `tests/`, `docs/language.md`.
 **Scope:** S.
+
+**Done notes:** The decompression itself is T115's codec through a new shared seam:
+`codec_deflate_decode` (bounded by `max`, raising no VM error) plus `codec_zlib_header`,
+and the `inflate`/`gunzip` natives now go through the same core, so the language path
+and the HTTP path cannot drift. `deflate` needed a new branch: RFC 9110 allows either
+the zlib (RFC 1950) or the raw (RFC 1951) form under that name, so the two-byte header
+picks it. The RFC 1950 trailer is an Adler-32 stored **big-endian**, unlike gzip's
+little-endian CRC-32/ISIZE - the first fixture run caught exactly that (`checksum
+mismatch` on a `zlib.compress` body). `net.c` sends `Accept-Encoding: gzip, deflate`
+through the same "the caller's header wins" check that governs the other defaults, and
+`net_http_decode_body` runs after `net_http_read_body` and before the redirect logic,
+replacing the body via `net_http_response_set_body` (which releases the compressed
+buffer with its own capacity, so `net_http_response_free` stays correct). A body-less
+response is skipped, because a `204` or a `HEAD` answer may carry the header with no
+body. The cap applies to the decompressed bytes, so the T115 bomb becomes a
+`NetworkError` at the HTTP level. Fixtures: `ScriptedHandler` gained `/gzip`,
+`/gzip-chunked`, `/gzip-bomb`, `/gzip-bad`, `/deflate`, `/deflate-raw`,
+`/encoding-identity`, `/encoding-unknown` and `/accept-encoding` (which echoes every
+value the client sent, so a duplicated default would show up); `tests/http_client.spark`
+and its `.out` grew ten lines. Suite 342/342 - no new test function was needed, the
+fixture is driven by the existing `test_http_client` - sanitizers clean, `fib(27)` min
+4.88 ms. `http_roundtrip` measured interleaved against a `HEAD` build: 45.60 ms min
+against 47.15 ms, on a machine considerably quieter than the baseline table's window,
+so only the interleaved comparison is meaningful.
 
 ### T125 - Keep-alive and connection reuse
 **Description:** Stop forcing `Connection: close` (`src/net.c:1767`) and reuse one
@@ -967,16 +991,63 @@ connection per `{scheme, host, port}` across requests, with `Connection: close` 
 honored on request and respected when the server sends it, plus `Connection: keep-alive`
 timeout handling and stale-connection retry on a safe (idempotent) request.
 **Acceptance criteria:**
-- [ ] N sequential requests to the same local host reuse one TCP connection (asserted by
+- [x] N sequential requests to the same local host reuse one TCP connection (asserted by
       counting accepts on the server side).
-- [ ] A server that closes the connection anyway does not break the next request.
-- [ ] The `http` benchmark improves measurably against the baseline (157 ms min) and the
+- [x] A server that closes the connection anyway does not break the next request.
+- [x] The `http` benchmark improves measurably against the baseline (157 ms min) and the
       number is recorded in the task.
 **Verification:**
-- [ ] Fixtures: reuse count, server-side close, stale retry; `benchmarks/run_all.py`
+- [x] Fixtures: reuse count, server-side close, stale retry; `benchmarks/run_all.py`
       before/after; suite + sanitizers.
 **Dependencies:** T124. **Files:** `src/net.c`, `tests/`, `benchmarks/`,
 `docs/architecture.md`. **Scope:** M.
+
+**Done notes:** `net_http_build_request` no longer sends `Connection: close`; an idle
+connection for `{scheme, host, port, ca_file}` lives in a fixed pool of four entries and
+the next request takes it. A connection is pooled only when the response was framed
+(`Content-Length` or chunked, reported by a new `framed` out-parameter of
+`net_http_read_body`), the reader stopped exactly at the end of the message, the status
+line is HTTP/1.1, and neither side asked for a close, so the next request always starts
+on a clean stream. HTTP/1.0 closes because `response->http11` is false. A caller-set
+`Connection: close` suppresses pooling for that request; a response that says
+`Connection: close` is never pooled. `net_http_pool_take` drops an entry older than
+`NET_HTTP_IDLE_MAX` (30 s) or one whose `poll(0)` already reports readable, which is how
+a peer close is caught before the request; if the failure still happens after the send,
+`net_http_perform` retries exactly once, and only when the connection was reused, nothing
+was received and the method is not `POST` - `idempotent = strcmp(method, "POST") != 0`,
+so a `POST` is reported instead of being sent twice. `net_http_pool_release_all()` is
+called from `vm_free` so an embedder does not accumulate descriptors.
+
+Two defects surfaced while fixturing this, both fixed here. (1) `net_http_read_status`
+and `net_http_read_headers` wrote their premature-EOF message under an unreachable
+`if (status == 0)` inside `if (status != 0)`, so a server that closed without answering
+returned with `err` unfilled: what the user saw was `malformed HTTP status line
+'(null)'`, built from a NULL line and a stale error buffer. The condition is `status == 1`
+now and both cases report `the HTTP response ended before the status line` / `inside the
+headers`. (2) The pool key did not include `ca_file`, so a TLS connection authenticated
+with an injected CA was handed to a request that asked for the system store - the
+existing `test_https_client` caught it (`system:` line missing, because the second request
+succeeded on the pooled connection). The key is now origin **and** trust store
+(`net_http_ca_matches`, NULL meaning the system store), and the copy is owned by the
+connection and released in `net_http_connection_close`.
+
+Fixtures: `tests/http_keepalive.spark` against four origins in `tests/run_tests.py`
+(`ReuseHandler`/`ReuseServer` count connections and requests, one handler with a mode per
+scenario): the keep-alive origin serves 8 requests (5 GET, 1 POST, one with
+`Connection: close`, one after it) over exactly 2 connections; the closing origin answers
+`Connection: close` and is never reused (3 connections, 3 requests); the drop-reused
+origin serves one request and closes the next without answering, so the retry is
+observable (2 connections, 2 requests); and a TLS origin serves 2 requests over
+1 connection with `ca_file` injected, which exercises reuse of a pooled `SSL`.
+
+Measurements, interleaved A/B on the same keep-alive origin (min of 7, WSL2):
+`http_roundtrip` 50.46 ms for a `HEAD` build against 14.62 ms for this tree (median
+51.05 vs 15.74), a 3.45x improvement; against an origin that closes every connection
+both builds land at ~46 ms, so the plan's 157 ms baseline was that machine window rather
+than a comparable instrument. The benchmark's own origin in `benchmarks/run_all.py`
+answered with `Connection: close`, which made reuse unmeasurable, so it now serves
+requests on one connection. suite 343/343 (the new `test_http_keepalive` is the +1),
+sanitizers clean, `fib(27)` min 4.91 ms with a `HEAD` build at 5.00 ms interleaved.
 
 ### T126 - The HTTP client yields its coroutine
 **Description:** Remove the documented "the HTTP client is synchronous" limitation

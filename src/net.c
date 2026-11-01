@@ -34,6 +34,7 @@
 #include <unistd.h>
 
 #include "buf.h"
+#include "codec.h"
 #include "memory.h"
 #include "vm.h"
 
@@ -1677,6 +1678,7 @@ typedef struct {
 
 typedef struct {
     int status;
+    bool http11;
     NetHttpHeader *headers;
     int header_count;
     int header_capacity;
@@ -1763,8 +1765,13 @@ static void net_http_build_request(NetBuffer *out, const char *method, const cha
     if (!net_http_user_has_header(headers, "accept")) {
         net_buffer_puts(out, "Accept: */*\r\n");
     }
-    if (!net_http_user_has_header(headers, "connection")) {
-        net_buffer_puts(out, "Connection: close\r\n");
+    /* HTTP/1.1 keeps the connection alive by default, so no `Connection`
+     * header is sent unless the caller asked for one (the loop below emits it);
+     * the connection is pooled for reuse. Compressed responses are decoded
+     * transparently, and a caller that wants the raw bytes overrides the
+     * Accept-Encoding default with a header of its own. */
+    if (!net_http_user_has_header(headers, "accept-encoding")) {
+        net_buffer_puts(out, "Accept-Encoding: gzip, deflate\r\n");
     }
 
     if (headers) {
@@ -1876,7 +1883,7 @@ static bool net_http_read_status(NetHttpReader *reader, NetHttpResponse *respons
     int status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
 
     if (status != 0) {
-        if (status == 0) {
+        if (status == 1) {
             net_fail(err, ERROR_NETWORK, "the HTTP response ended before the status line");
         }
         return false;
@@ -1889,6 +1896,7 @@ static bool net_http_read_status(NetHttpReader *reader, NetHttpResponse *respons
         return false;
     }
     response->status = (line[9] - '0') * 100 + (line[10] - '0') * 10 + (line[11] - '0');
+    response->http11 = line[7] == '1';
     mem_realloc(line, length + 1, 0);
 
     if (response->status < 100 || response->status > 599) {
@@ -1908,7 +1916,7 @@ static bool net_http_read_headers(NetHttpReader *reader, NetHttpResponse *respon
         int status = net_http_read_line(reader, NET_HTTP_HEADER_MAX, &line, &length, err);
 
         if (status != 0) {
-            if (status == 0) {
+            if (status == 1) {
                 net_fail(err, ERROR_NETWORK, "the HTTP response ended inside the headers");
             }
             return false;
@@ -2161,14 +2169,23 @@ static char *net_http_resolve_location(const NetUrl *base, const char *location)
     return result;
 }
 
+/* Reads the response body. `framed` reports whether the body ended where the
+ * message did (Content-Length or chunked), which is what a keep-alive
+ * connection needs; it stays false on the read-to-EOF path, where the server
+ * has to close the connection to delimit the body. */
 static bool net_http_read_body(NetHttpReader *reader, NetHttpResponse *response, int64_t max_body,
-                               NetError *err)
+                               bool *framed, NetError *err)
 {
     const char *transfer = net_http_response_header(response, "transfer-encoding");
     const char *length_header = net_http_response_header(response, "content-length");
 
+    *framed = false;
     if (transfer && strstr(transfer, "chunked")) {
-        return net_http_read_chunked(reader, max_body, response, err);
+        if (!net_http_read_chunked(reader, max_body, response, err)) {
+            return false;
+        }
+        *framed = true;
+        return true;
     }
     if (length_header) {
         char *end = NULL;
@@ -2184,6 +2201,7 @@ static bool net_http_read_body(NetHttpReader *reader, NetHttpResponse *response,
             return false;
         }
         if (declared == 0) {
+            *framed = true;
             return true;
         }
         response->body = mem_realloc(NULL, 0, (size_t)declared);
@@ -2197,9 +2215,339 @@ static bool net_http_read_body(NetHttpReader *reader, NetHttpResponse *response,
             return false;
         }
         response->body_length = (size_t)declared;
+        *framed = true;
         return true;
     }
     return net_http_read_to_eof(reader, max_body, response, err);
+}
+
+/* Replaces the response body with `length` bytes copied from `data`. The old
+ * body is released; a zero-length body leaves `body` NULL, matching the
+ * Content-Length: 0 path. */
+static void net_http_response_set_body(NetHttpResponse *response, const char *data, size_t length)
+{
+    mem_realloc(response->body, response->body_capacity, 0);
+    response->body = NULL;
+    response->body_capacity = 0;
+    if (length > 0) {
+        response->body = mem_realloc(NULL, 0, length);
+        memcpy(response->body, data, length);
+        response->body_capacity = length;
+    }
+    response->body_length = length;
+}
+
+/* True when a Content-Encoding value is exactly `name` (ASCII, case-insensitive). */
+static bool net_http_encoding_is(const char *value, const char *name)
+{
+    while (*value != '\0' && *name != '\0') {
+        if (tolower((unsigned char)*value) != tolower((unsigned char)*name)) {
+            return false;
+        }
+        value++;
+        name++;
+    }
+    return *value == '\0' && *name == '\0';
+}
+
+/* Decodes a gzip or deflate Content-Encoding in place, bounded by `max_body` so
+ * a small compressed body cannot expand past the caller's cap. The transfer
+ * layer already bounded the compressed size (the body was read within it). */
+static bool net_http_decode_body(NetHttpResponse *response, int64_t max_body, NetError *err)
+{
+    const char *encoding = net_http_response_header(response, "content-encoding");
+    CodecDeflateFormat format;
+    CodecDeflateStatus status;
+    buf_t decoded;
+
+    /* A body-less response (204, HEAD) may still carry the header. */
+    if (!response->body || response->body_length == 0 ||
+        !encoding || *encoding == '\0' || net_http_encoding_is(encoding, "identity")) {
+        return true;
+    }
+    if (net_http_encoding_is(encoding, "gzip") || net_http_encoding_is(encoding, "x-gzip")) {
+        format = CODEC_DEFLATE_GZIP;
+    } else if (net_http_encoding_is(encoding, "deflate")) {
+        /* RFC 9110 allows the zlib or the raw form under this name. */
+        format = codec_zlib_header((const unsigned char *)response->body, response->body_length)
+                     ? CODEC_DEFLATE_ZLIB
+                     : CODEC_DEFLATE_RAW;
+    } else {
+        net_fail(err, ERROR_NETWORK, "the response uses an unsupported Content-Encoding '%s'",
+                 encoding);
+        return false;
+    }
+
+    buf_init(&decoded);
+    status = codec_deflate_decode((const unsigned char *)response->body, response->body_length,
+                                  (size_t)max_body, format, &decoded);
+    if (status != CODEC_DEFLATE_OK) {
+        buf_free(&decoded);
+        switch (status) {
+        case CODEC_DEFLATE_LIMIT:
+            net_fail(err, ERROR_NETWORK,
+                     "the decompressed body exceeds the maximum of %lld bytes",
+                     (long long)max_body);
+            break;
+        case CODEC_DEFLATE_TRUNCATED:
+            net_fail(err, ERROR_NETWORK, "the compressed response body is truncated");
+            break;
+        case CODEC_DEFLATE_CHECKSUM:
+            net_fail(err, ERROR_NETWORK, "the compressed response body failed its checksum");
+            break;
+        case CODEC_DEFLATE_NOT_GZIP:
+            net_fail(err, ERROR_NETWORK, "the response claims gzip but is not a gzip stream");
+            break;
+        default:
+            net_fail(err, ERROR_NETWORK, "the response body is not a valid %s stream",
+                     format == CODEC_DEFLATE_GZIP ? "gzip" : "deflate");
+            break;
+        }
+        return false;
+    }
+
+    net_http_response_set_body(response, decoded.data, decoded.len);
+    buf_free(&decoded);
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* Keep-alive connection pool                                          */
+/* ------------------------------------------------------------------ */
+
+/* One idle connection, keyed by {scheme, host, port}. A connection reaches the
+ * pool only when both sides agreed to keep it alive and the body ended exactly
+ * where the message did, so the next request starts on a clean stream. */
+typedef struct {
+    bool active;
+    char *scheme;
+    char *host;
+    int64_t port;
+    char *ca_file; /* NULL for the system trust store */
+    int fd;
+    void *tls; /* SSL * when the connection is TLS, NULL otherwise */
+    SSL_CTX *tls_context;
+    int64_t idle_since;
+} NetHttpConnection;
+
+#define NET_HTTP_POOL_MAX 4
+/* How long an idle connection may be reused. Every client keeps its own value;
+ * this one is short enough that a server's own timeout is unlikely to fire
+ * first, and a stale connection is retried anyway. */
+#define NET_HTTP_IDLE_MAX 30000
+
+static NetHttpConnection net_http_pool[NET_HTTP_POOL_MAX];
+
+/* Releases an owned string held by a connection. */
+static void net_http_free_string(char **slot)
+{
+    if (*slot) {
+        mem_realloc(*slot, strlen(*slot) + 1, 0);
+        *slot = NULL;
+    }
+}
+
+static void net_http_connection_close(NetHttpConnection *connection)
+{
+    if (connection->tls) {
+        SSL_shutdown((SSL *)connection->tls);
+        ERR_clear_error();
+        SSL_free((SSL *)connection->tls);
+    }
+    if (connection->tls_context) {
+        SSL_CTX_free(connection->tls_context);
+    }
+    if (connection->fd >= 0) {
+        close(connection->fd);
+    }
+    net_http_free_string(&connection->scheme);
+    net_http_free_string(&connection->host);
+    net_http_free_string(&connection->ca_file);
+    memset(connection, 0, sizeof(*connection));
+    connection->fd = -1;
+}
+
+static void net_http_connection_init(NetHttpConnection *connection)
+{
+    memset(connection, 0, sizeof(*connection));
+    connection->fd = -1;
+}
+
+/* True when both requests resolve certificates against the same trust store:
+ * the same file, or the system store on both sides. A connection authenticated
+ * under an injected CA must never be reused by a request that asked for the
+ * system store (or the other way round). */
+static bool net_http_ca_matches(const char *left, const char *right)
+{
+    if (!left || !right) {
+        return left == right;
+    }
+    return strcmp(left, right) == 0;
+}
+
+/* True when `connection` belongs to the same origin as `url` and was
+ * established under the same trust configuration. */
+static bool net_http_connection_matches(const NetHttpConnection *connection, const NetUrl *url,
+                                        const char *ca_file)
+{
+    return strcmp(connection->scheme, url->scheme) == 0 &&
+           strcmp(connection->host, url->host) == 0 && connection->port == url->port &&
+           net_http_ca_matches(connection->ca_file, ca_file);
+}
+
+/* True when an idle connection is no longer usable: the peer closed it, or it
+ * sent bytes nobody asked for. Catching this before the request saves the
+ * round trip that a stale reuse would cost. */
+static bool net_http_connection_stale(int fd)
+{
+    struct pollfd descriptor;
+
+    descriptor.fd = fd;
+    descriptor.events = POLLIN;
+    descriptor.revents = 0;
+    for (;;) {
+        int ready = poll(&descriptor, 1, 0);
+
+        if (ready < 0 && errno == EINTR) {
+            continue;
+        }
+        return ready != 0;
+    }
+}
+
+/* Takes the idle connection for `url` into `out`. Returns false (and leaves
+ * `out` closed) when there is none, the idle window has passed or the peer has
+ * already closed it. */
+static bool net_http_pool_take(const NetUrl *url, const char *ca_file, NetHttpConnection *out)
+{
+    net_http_connection_init(out);
+    for (int i = 0; i < NET_HTTP_POOL_MAX; i++) {
+        NetHttpConnection *entry = &net_http_pool[i];
+
+        if (!entry->active || !net_http_connection_matches(entry, url, ca_file)) {
+            continue;
+        }
+        *out = *entry;
+        net_http_connection_init(entry);
+        if (net_now_ms() - out->idle_since > NET_HTTP_IDLE_MAX ||
+            net_http_connection_stale(out->fd)) {
+            net_http_connection_close(out);
+            continue;
+        }
+        out->active = false;
+        return true;
+    }
+    return false;
+}
+
+/* Keeps `connection` for later reuse, or closes it when the pool is full. */
+static void net_http_pool_put(NetHttpConnection *connection)
+{
+    for (int i = 0; i < NET_HTTP_POOL_MAX; i++) {
+        if (net_http_pool[i].active) {
+            continue;
+        }
+        connection->active = true;
+        connection->idle_since = net_now_ms();
+        net_http_pool[i] = *connection;
+        net_http_connection_init(connection);
+        return;
+    }
+    net_http_connection_close(connection);
+}
+
+/* Closes every idle connection. Called from vm_free so a long-lived embedder
+ * does not accumulate descriptors across runs. */
+void net_http_pool_release_all(void)
+{
+    for (int i = 0; i < NET_HTTP_POOL_MAX; i++) {
+        if (net_http_pool[i].active) {
+            net_http_pool[i].active = false;
+            net_http_connection_close(&net_http_pool[i]);
+        }
+    }
+}
+
+/* Case-insensitive search for `token` inside a header value. */
+static bool net_http_value_has(const char *value, const char *token)
+{
+    size_t length = strlen(token);
+
+    for (const char *cursor = value; *cursor != '\0'; cursor++) {
+        if (strncasecmp(cursor, token, length) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* True when the response announces that it will close the connection. */
+static bool net_http_response_wants_close(const NetHttpResponse *response)
+{
+    const char *value = net_http_response_header(response, "connection");
+
+    return value != NULL && net_http_value_has(value, "close");
+}
+
+/* True when the caller asked for the connection to be closed after this
+ * request, so it must not be pooled. */
+static bool net_http_request_wants_close(ObjMap *headers)
+{
+    if (!headers) {
+        return false;
+    }
+    for (int i = 0; i < headers->capacity; i++) {
+        MapEntry *entry = &headers->entries[i];
+
+        if (entry->state == 1 && is_obj_type(entry->key, OBJ_STRING) &&
+            is_obj_type(entry->value, OBJ_STRING) &&
+            strcasecmp(AS_STRING(entry->key)->chars, "connection") == 0) {
+            return net_http_value_has(AS_STRING(entry->value)->chars, "close");
+        }
+    }
+    return false;
+}
+
+/* Sends one request on `connection` and reads the response, including a
+ * Content-Encoding decode. `received` reports whether the server sent any
+ * bytes, which decides whether a failed attempt on a reused connection may be
+ * retried. */
+static bool net_http_exchange(NetHttpConnection *connection, const char *request,
+                              size_t request_length, int64_t deadline, int64_t max_body,
+                              NetHttpResponse *response, bool *received, NetError *err)
+{
+    NetHttpReader reader;
+    bool framed = false;
+
+    if (!net_http_send_all(connection->fd, connection->tls, request, request_length, deadline,
+                           err)) {
+        return false;
+    }
+    net_http_reader_init(&reader, connection->fd, connection->tls, deadline);
+    bool ok = net_http_read_status(&reader, response, err);
+
+    if (ok) {
+        ok = net_http_read_headers(&reader, response, err);
+    }
+    if (ok) {
+        ok = net_http_read_body(&reader, response, max_body, &framed, err);
+    }
+    *received = reader.length > 0;
+    if (!ok) {
+        net_http_reader_free(&reader);
+        return false;
+    }
+    if (!net_http_decode_body(response, max_body, err)) {
+        net_http_reader_free(&reader);
+        return false;
+    }
+    /* Reusable only when the stream is positioned exactly at the end of the
+     * message, the server agreed to keep it alive and the status line is
+     * HTTP/1.1 (an HTTP/1.0 server closes unless it says otherwise). */
+    connection->active = framed && reader.position == reader.length && response->http11 &&
+                         !net_http_response_wants_close(response);
+    net_http_reader_free(&reader);
+    return true;
 }
 
 /* Performs one request (plus redirects), filling `response`. `deadline` is an
@@ -2233,11 +2581,12 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
 
     NetBuffer target;
     NetBuffer request;
-    NetHttpReader reader;
+    NetHttpConnection connection;
+    /* A failed attempt on a reused connection is retried once with a fresh one,
+     * and only for a method that is safe to repeat. */
+    bool idempotent = strcmp(method, "POST") != 0;
+    bool request_closes = net_http_request_wants_close(headers);
     bool ok = false;
-    int fd = -1;
-    SSL_CTX *tls_context = NULL;
-    SSL *tls = NULL;
 
     net_buffer_init(&target);
     net_buffer_init(&request);
@@ -2250,54 +2599,56 @@ static bool net_http_perform(const char *url_text, const char *method, ObjMap *h
     net_http_build_request(&request, method, target.data, &url, headers, body, body_length,
                            has_body);
 
-    fd = net_connect(url.host, url.port, deadline, err);
-    if (fd < 0) {
-        goto cleanup;
-    }
-    if (secure) {
-        tls_context = net_tls_context(ca_file, err);
-        if (!tls_context) {
-            goto cleanup;
-        }
-        tls = net_tls_client(tls_context, url.host, fd, err);
-        if (!tls) {
-            goto cleanup;
-        }
-        if (!net_tls_handshake_blocking(tls, fd, deadline, err)) {
-            goto cleanup;
-        }
-    }
-    if (!net_http_send_all(fd, tls, request.data, request.length, deadline, err)) {
-        goto cleanup;
-    }
+    for (int attempt = 0; attempt < 2; attempt++) {
+        bool reused = net_http_pool_take(&url, ca_file, &connection);
+        bool received = false;
 
-    net_http_reader_init(&reader, fd, tls, deadline);
-    if (!net_http_read_status(&reader, response, err)) {
-        net_http_reader_free(&reader);
-        goto cleanup;
-    }
-    if (!net_http_read_headers(&reader, response, err)) {
-        net_http_reader_free(&reader);
-        goto cleanup;
-    }
-    if (!net_http_read_body(&reader, response, max_body, err)) {
-        net_http_reader_free(&reader);
-        goto cleanup;
-    }
-    net_http_reader_free(&reader);
-    ok = true;
+        if (!reused) {
+            int fd = net_connect(url.host, url.port, deadline, err);
 
-cleanup:
-    if (tls) {
-        SSL_shutdown(tls);
-        ERR_clear_error();
-        SSL_free(tls);
-    }
-    if (tls_context) {
-        SSL_CTX_free(tls_context);
-    }
-    if (fd >= 0) {
-        close(fd);
+            if (fd < 0) {
+                break;
+            }
+            connection.fd = fd;
+            connection.port = url.port;
+            connection.scheme = net_strndup_owned(url.scheme, strlen(url.scheme));
+            connection.host = net_strndup_owned(url.host, strlen(url.host));
+            if (ca_file) {
+                connection.ca_file = net_strndup_owned(ca_file, strlen(ca_file));
+            }
+            if (secure) {
+                connection.tls_context = net_tls_context(ca_file, err);
+                if (!connection.tls_context) {
+                    net_http_connection_close(&connection);
+                    break;
+                }
+                connection.tls = net_tls_client(connection.tls_context, url.host, fd, err);
+                if (!connection.tls ||
+                    !net_tls_handshake_blocking(connection.tls, fd, deadline, err)) {
+                    net_http_connection_close(&connection);
+                    break;
+                }
+            }
+        }
+
+        ok = net_http_exchange(&connection, request.data, request.length, deadline, max_body,
+                               response, &received, err);
+        if (ok) {
+            if (!request_closes && connection.active) {
+                net_http_pool_put(&connection);
+            } else {
+                net_http_connection_close(&connection);
+            }
+            break;
+        }
+        net_http_connection_close(&connection);
+        /* A pooled connection the server had already closed fails the same way
+         * an unreachable one does; retry once on a fresh connection. Nothing
+         * was received, so no request can have been executed twice. */
+        if (!reused || received || !idempotent || attempt == 1) {
+            break;
+        }
+        net_http_response_free(response);
     }
     net_buffer_free(&target);
     net_buffer_free(&request);

@@ -33,18 +33,30 @@ RUNS = 7
 
 
 class LocalHTTPHandler(socketserver.BaseRequestHandler):
-    """Answers every request with a fixed small response."""
+    """Answers every request with a fixed small response, on a keep-alive
+    connection, so the HTTP benchmark measures the client's request path
+    instead of a TCP handshake per call."""
 
     def handle(self):
         data = b""
-        while b"\r\n\r\n" not in data:
-            chunk = self.request.recv(4096)
-            if not chunk:
-                return
-            data += chunk
-        self.request.sendall(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
-        )
+        while True:
+            while b"\r\n\r\n" not in data:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            head, data = data.split(b"\r\n\r\n", 1)
+            length = 0
+            for line in head.split(b"\r\n")[1:]:
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1])
+            while len(data) < length:
+                chunk = self.request.recv(4096)
+                if not chunk:
+                    return
+                data += chunk
+            data = data[length:]
+            self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
 
 
 class LocalHTTPServer(socketserver.ThreadingTCPServer):
