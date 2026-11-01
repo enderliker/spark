@@ -728,7 +728,22 @@ static Value native_print(int arg_count, Value *args)
         }
         fwrite(text->chars, 1, (size_t)text->length, stdout);
     }
+    /* No flush: stdout is line-buffered on a terminal and block-buffered
+     * everywhere else, but flushing on every call turned each print into its own
+     * write(2), so a program printing in a loop spent far more time in the kernel
+     * than in the VM. A caller that needs the line visible now calls flush(). */
     fputc('\n', stdout);
+    return NIL_VAL;
+}
+
+/* The escape hatch for the buffering above: stdout is line-buffered on a
+ * terminal and block-buffered otherwise, so output that has to be visible
+ * before the program ends or blocks (a progress line, a prompt, a log being
+ * tailed) asks for it explicitly. */
+static Value native_flush(int arg_count, Value *args)
+{
+    (void)arg_count;
+    (void)args;
     fflush(stdout);
     return NIL_VAL;
 }
@@ -2881,11 +2896,15 @@ static Value native_input(int arg_count, Value *args)
         } else {
             value_print(stdout, args[0]);
         }
-        fflush(stdout);
     } else if (arg_count > 1) {
         vm_runtime_error(ERROR_ARITY, "'input' expects 0 or 1 argument, received %d", arg_count);
         return NIL_VAL;
     }
+
+    /* Everything printed so far has to reach the terminal before the read:
+     * stdout is block-buffered when it is not one, and the prompt would sit in
+     * the buffer while the process waits on stdin. */
+    fflush(stdout);
 
     char *line = NULL;
     size_t capacity = 0;
@@ -10015,6 +10034,7 @@ void vm_init(void)
     vm_ready = true;
 
     define_native("print", native_print, -1);
+    define_native("flush", native_flush, 0);
     define_native("len", native_len, 1);
     define_native("push", native_push, 2);
     define_native("pop", native_pop, 1);

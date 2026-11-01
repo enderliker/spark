@@ -1,0 +1,6 @@
+// print buffers its output, so flush() is what makes a line visible before the
+// program ends. The captured text is the same either way; this fixture pins that
+// the native exists, takes no arguments and leaves print's output intact.
+print("buffered");
+flush();
+print("and visible");

@@ -755,7 +755,8 @@ names the argument type but never echoes the key or the data.
 
 | Call | Result |
 | --- | --- |
-| `print(a, b, ...)` | Prints the values separated by a space. |
+| `print(a, b, ...)` | Prints the values separated by a space. Output is buffered (line-buffered on a terminal, block-buffered otherwise); a program that must show a line before it ends or blocks calls `flush()`. |
+| `flush()` | Writes buffered standard output now. |
 | `len(x)` | Length of an array, a map or a string (in characters), or of bytes (in bytes). |
 | `bytes(n)` | `n` zero bytes (`n` must be a non-negative integer); a `ValueError` otherwise. |
 | `bytes_from(x)` | New `bytes` from an array of integers in `0..255` or from a string (its UTF-8 bytes as they are); any other value is a `TypeError`. |

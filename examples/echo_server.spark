@@ -13,6 +13,9 @@ if (len(argv) > 1) {
 
 var server = tcp_listen("127.0.0.1", port);
 print("listening " + str(server.port()));
+// The port has to reach whoever launched the server before accept() blocks, and
+// print() only buffers the line.
+flush();
 
 while (true) {
     var client = server.accept();

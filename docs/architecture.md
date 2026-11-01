@@ -416,6 +416,20 @@ for strings. The same rule applies to a callback result that is stored after
 - The REPL compiles in `repl_mode`, which turns each expression statement into
   `PRINT_REPL` to show its value.
 
+## Standard output and buffering
+
+Standard output goes through stdio and is left to its own buffering: line-buffered
+on a terminal, block-buffered when redirected or piped. `print` deliberately does
+not flush — flushing per call cost one `write(2)` per line, which dominated any
+program that printed in a loop — so two rules follow for anything else that
+touches stdout:
+
+- A native that must be visible before the program ends or blocks (a prompt, a
+  readiness line) flushes first: `input` does it before reading, and the server
+  examples do it before `accept`. `flush()` exposes the same to Spark code.
+- A diagnostic flushes stdout before writing to stderr, because stderr is
+  unbuffered and would otherwise overtake output the program had already printed.
+
 ## Networking
 
 The socket layer lives in `src/net.c`. The socket, URL and HTTP layers add no

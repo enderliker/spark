@@ -15,6 +15,7 @@ BENCHMARKS = [
     ("fib(27)", BENCH_DIR / "fib.spark"),
     ("echo (2k round-trips)", BENCH_DIR / "echo.spark"),
     ("http (200 round-trips)", BENCH_DIR / "http_roundtrip.spark", ["{http_port}"]),
+    ("print_loop (300k)", BENCH_DIR / "print_loop.spark"),
     ("int_loop (5M)", BENCH_DIR / "int_loop.spark"),
     ("float_loop (3M)", BENCH_DIR / "float_loop.spark"),
     ("closures (1M)", BENCH_DIR / "closures.spark"),

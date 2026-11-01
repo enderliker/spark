@@ -11,6 +11,9 @@ if (len(argv) > 1) {
 
 var server = tcp_listen("127.0.0.1", port);
 print("Serving ws://127.0.0.1:" + str(server.port()) + "/");
+// The address has to reach whoever launched the server before accept() blocks,
+// and print() only buffers the line.
+flush();
 
 while (true) {
     var transport = server.accept();

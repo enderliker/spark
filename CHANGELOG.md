@@ -173,6 +173,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   system's CSPRNG (capped at 16 MiB). `rand()` stays the fast, seedable,
   non-cryptographic PRNG. A CSPRNG failure raises instead of falling back.
 
+### Changed
+
+- `print` no longer flushes standard output on every call. Each call ended with an
+  `fflush`, so it cost one `write(2)` apiece: printing 100,000 lines made 100,003
+  writes and spent 91% of its 33.6 ms inside the kernel. Output is now
+  line-buffered on a terminal, as before, and block-buffered when redirected or
+  piped; that same program now makes 169 writes and finishes in 13.8 ms, and
+  1,000,000 `print` calls go from 306 ms to 106 ms. The new `flush()` writes the
+  buffer out on demand; `input()` flushes before it reads so a prompt is still
+  visible, and a diagnostic flushes standard output first so nothing the program
+  printed can appear after its own error.
+
 ### Security
 
 - Network error messages redact URL userinfo (`https://***@host/`) and never echo

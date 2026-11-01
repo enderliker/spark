@@ -2,6 +2,8 @@
 // It serves exactly argv[1] connections and prints its ephemeral port first.
 var server = tcp_listen("127.0.0.1", 0);
 print("listening " + str(server.port()));
+// The port has to reach the test runner before accept() blocks.
+flush();
 
 var target = int(argv[1]);
 var served = 0;

@@ -1,0 +1,14 @@
+// Output throughput: 300,000 print calls, one line each.
+//
+// print() buffers its output, so this measures the value formatting and the
+// buffer copy rather than one write(2) per line. Flushing on every call — what
+// print used to do — makes this benchmark several times slower, which is the
+// regression this guards against.
+var start = clock();
+for (var i = 0; i < 300000; i += 1) {
+    print(i);
+}
+var end = clock();
+
+print("printed 300000 lines");
+print((end - start) * 1000);

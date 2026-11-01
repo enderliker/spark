@@ -56,6 +56,11 @@ void error_print(ErrorType type, int line, int column, const char *source, const
     const char *text = NULL;
     int length;
 
+    /* stdout is block-buffered when it is not a terminal and stderr is not, so
+     * without this the diagnostic would jump ahead of output the program had
+     * already printed. */
+    fflush(stdout);
+
     fprintf(stderr, "%s at line %d: %s\n", error_type_name(type), line, message);
     if (!source || line < 1) {
         fflush(stderr);

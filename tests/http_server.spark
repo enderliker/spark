@@ -13,6 +13,8 @@ fn handle(request) {
 
 var server = tcp_listen("127.0.0.1", 0);
 print("listening " + str(server.port()));
+// The port has to reach the test runner before http_serve blocks.
+flush();
 var served = http_serve(server, handle, int(argv[1]));
 server.close();
 print("served " + str(served));

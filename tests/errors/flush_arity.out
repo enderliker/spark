@@ -1,0 +1,2 @@
+exit: 70
+stderr: ArityError at line 1: the function 'flush' expects 0 argument(s) but received 1

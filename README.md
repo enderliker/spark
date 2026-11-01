@@ -253,7 +253,8 @@ are in [`docs/architecture.md`](docs/architecture.md).
 
 | Function | Description |
 | --- | --- |
-| `print(...)` | Prints its arguments separated by spaces and a newline. |
+| `print(...)` | Prints its arguments separated by spaces and a newline. Output is buffered; call `flush()` to force it out. |
+| `flush()` | Writes buffered standard output immediately. |
 | `str(x)` | Text representing the value (uses `to_string()` on instances). |
 | `format(template, args...)` | printf-style text (`%s %d %f %g %x %X %o %b %c`, width and precision). |
 | `time_format(timestamp?, format, local?)` / `time_parse(text, format, local?)` | Date/time formatting and parsing; UTC unless `local` is true. |
@@ -340,7 +341,7 @@ are in [`docs/architecture.md`](docs/architecture.md).
 
 | Function | Description |
 | --- | --- |
-| `input(prompt?)` | Reads a line from standard input; returns `nil` on EOF. |
+| `input(prompt?)` | Reads a line from standard input; returns `nil` on EOF. Flushes standard output first, so a prompt is visible before the read. |
 | `read_file(path)` / `write_file(path, data)` / `append_file(path, data)` | Whole-file text helpers. |
 | `read_bytes(path, max?)` / `write_bytes(path, data)` / `append_bytes(path, data)` | Whole-file binary helpers; `read_bytes` caps at 16 MiB. |
 | `file_exists(path)` | Whether the path exists. |
